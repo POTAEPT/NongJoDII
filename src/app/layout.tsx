@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { Clarity } from "./clarity";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -23,7 +24,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <head>
+        <Clarity />
+      </head>
+      {/* Clarity recordings must not capture Task titles, nicknames or chat-derived text, so all page text is masked. */}
+      <body className="min-h-full flex flex-col" data-clarity-mask="True">{children}</body>
     </html>
   );
 }

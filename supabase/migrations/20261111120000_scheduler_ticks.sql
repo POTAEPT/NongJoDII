@@ -19,10 +19,10 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net with schema extensions;
 
--- Calls the tick route once. kind is 'daily' or 'weekly'; the route decides
--- what to do. SECURITY DEFINER so cron can read Vault; execute is revoked
--- from everyone else because the function reaches decrypted secrets.
-create or replace function public.call_tick(kind text)
+-- Calls the tick route once. The route decides what is due; the body only says
+-- it is a scheduled tick. SECURITY DEFINER so cron can read Vault; execute is
+-- revoked from everyone else because the function reaches decrypted secrets.
+create or replace function public.call_tick()
 returns bigint
 language plpgsql
 security definer
@@ -33,10 +33,6 @@ declare
   tick_secret text;
   request_id  bigint;
 begin
-  if kind not in ('daily', 'weekly') then
-    raise exception 'unknown tick kind: %', kind;
-  end if;
-
   select decrypted_secret into tick_url
     from vault.decrypted_secrets where name = 'nongjodii_tick_url';
   select decrypted_secret into tick_secret
@@ -48,7 +44,7 @@ begin
 
   select net.http_post(
     url                  := tick_url,
-    body                 := jsonb_build_object('kind', kind),
+    body                 := jsonb_build_object('kind', 'tick'),
     headers              := jsonb_build_object(
                               'Content-Type', 'application/json',
                               'x-tick-secret', tick_secret),
@@ -59,16 +55,24 @@ begin
 end;
 $$;
 
-revoke all on function public.call_tick(text) from public, anon, authenticated;
+revoke all on function public.call_tick() from public, anon, authenticated;
 
--- pg_cron schedules in UTC. Bangkok is UTC+7 all year (no daylight saving),
--- so 09:00 Asia/Bangkok = 02:00 UTC.
+-- One job, every 15 minutes (pg_cron standard 5-field syntax, UTC). Reminder and
+-- summary times are chosen per group in onboarding (groups.daily_reminder_time,
+-- weekly_summary_weekday, weekly_summary_time; Asia/Bangkok wall-clock, on the
+-- quarter hour), so there are no fixed daily or weekly jobs. Re-running
+-- cron.schedule with the same job name replaces the job.
 --
--- PLACEHOLDERS: the real daily and weekly times are NOT decided yet. Change
--- the two cron expressions below (re-running cron.schedule with the same job
--- name replaces the job) once the team decides.
-
--- What the daily tick does with the schema (the route holds the logic):
+-- What each tick does with the schema (the route holds the logic):
+--   * Daily reminders: live groups with feature_track_remind whose
+--     daily_reminder_time has passed today (Bangkok) and whose
+--     daily_reminder_last_sent_on is null or before today (groups_daily_due_idx).
+--     The route claims the slot first (update ... set daily_reminder_last_sent_on
+--     = today where it is null or older, returning id) and sends only if a row
+--     came back, so a group never gets two in one day.
+--   * Weekly summaries: same with feature_weekly_summary, weekly_summary_weekday
+--     equal to today's ISO weekday, weekly_summary_time passed and
+--     weekly_summary_last_sent_on (groups_weekly_due_idx).
 --   * Purge groups past delete_after (groups_delete_after_idx).
 --   * No new Owner: groups with owner_left_at older than 7 days,
 --     owner_confirmed_at null and left_at null (groups_owner_left_idx). The bot
@@ -80,16 +84,9 @@ revoke all on function public.call_tick(text) from public, anon, authenticated;
 --       update public.groups set project_id = null, takeover_asked_at = null
 --        where takeover_asked_at < now() - interval '7 days';
 --     They then need their own setup and Owner.
--- PLACEHOLDER: daily 09:00 Asia/Bangkok = 02:00 UTC.
+-- The purge and 7-day checks are cheap and idempotent, so they run on every tick.
 select cron.schedule(
-  'nongjodii-daily-tick',
-  '0 2 * * *',
-  $$select public.call_tick('daily')$$
-);
-
--- PLACEHOLDER: weekly, Monday 09:00 Asia/Bangkok = Monday 02:00 UTC.
-select cron.schedule(
-  'nongjodii-weekly-tick',
-  '0 2 * * 1',
-  $$select public.call_tick('weekly')$$
+  'nongjodii-tick',
+  '*/15 * * * *',
+  $$select public.call_tick()$$
 );

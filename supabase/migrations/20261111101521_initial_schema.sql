@@ -26,6 +26,14 @@
 --     days (takeover_asked_at), the Sub groups detach from the Project (see
 --     groups, change_project_owner and answer_subgroup_takeover below).
 --
+-- Onboarding and schedule (decided 2026-11-11): the setup form collects what the
+-- group works on, Members' nicknames and roles, the features to use, the Owner
+-- and the reminder and summary times; all of it is editable later in Settings.
+-- Homes: groups.work_description, group_members.nicknames and role, the
+-- groups.feature_* toggles, groups.nominated_owner_line_user_id, and the
+-- groups schedule columns (daily reminder time, weekly summary weekday and time,
+-- always Asia/Bangkok) with their last-sent dates (see groups below).
+--
 -- Removal (#11): deleting a row in `groups` cascades to that group's messages,
 -- Summaries, Tasks, files, members and insights. Usage, push counts and webhook
 -- event IDs do NOT cascade, so a purge cannot reset the Fair-use cap, the push
@@ -139,6 +147,38 @@ create table public.groups (
   -- after it, the daily tick detaches the Sub group (project_id = null, this
   -- column cleared in the same update); it then needs its own setup and Owner.
   takeover_asked_at               timestamptz,
+  -- Setup form, "what the group works on": free text the AI reads as context.
+  -- Null until given; editable later in Settings.
+  work_description                text
+                                    check (work_description is null or char_length(work_description) <= 2000),
+  -- Setup form, "features to use". Each is on unless the group turns it off
+  -- (editable in Settings). The app checks the toggle before running the
+  -- feature; the Owner checks above apply on top of it.
+  feature_summarize               boolean not null default true,   -- Summary on request
+  feature_draft_tasks             boolean not null default true,   -- Task candidates from a Summary
+  feature_save_files              boolean not null default true,   -- save files to Drive
+  feature_track_remind            boolean not null default true,   -- progress tracking, reminders, gap flags
+  feature_weekly_summary          boolean not null default true,   -- weekly insight post
+  -- Times chosen in the setup form (defaults prefilled), editable in Settings.
+  -- Local Asia/Bangkok wall-clock time (UTC+7, no daylight saving), so no time
+  -- zone column. The tick runs every 15 minutes, so times sit on a quarter hour.
+  daily_reminder_time             time not null default '09:00',
+  weekly_summary_weekday          smallint not null default 1,     -- ISO: 1 = Monday ... 7 = Sunday
+  weekly_summary_time             time not null default '09:00',
+  -- Once-only guards for the tick: the Bangkok calendar date a daily reminder
+  -- or weekly summary was last sent for this group. A group is due when its
+  -- time has passed today (Bangkok) and the date here is null or before today.
+  -- The tick claims the slot BEFORE sending, in one statement, so two ticks
+  -- that overlap cannot both send:
+  --   update public.groups set daily_reminder_last_sent_on = <today BKK>
+  --    where id = $1 and (daily_reminder_last_sent_on is null
+  --                       or daily_reminder_last_sent_on < <today BKK>)
+  --    returning id;
+  -- (same for weekly_summary_last_sent_on). Send only if a row came back. A
+  -- changed time later the same day does not send again. weekly_insights has
+  -- its own unique (group_id, week_start) as a second guard for the weekly post.
+  daily_reminder_last_sent_on     date,
+  weekly_summary_last_sent_on     date,
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now(),
   constraint groups_main_needs_project check (not is_main or project_id is not null),
@@ -152,7 +192,15 @@ create table public.groups (
   -- a pending group has no confirmed Owner. A detach must clear the column.
   constraint groups_takeover_pending_rules
     check (takeover_asked_at is null
-           or (project_id is not null and not is_main and owner_confirmed_at is null))
+           or (project_id is not null and not is_main and owner_confirmed_at is null)),
+  constraint groups_weekly_weekday_range check (weekly_summary_weekday between 1 and 7),
+  -- On the quarter hour, no seconds: the 15-minute tick can hit it exactly.
+  constraint groups_daily_time_quarter_hour
+    check (extract(minute from daily_reminder_time)::int % 15 = 0
+           and extract(second from daily_reminder_time) = 0),
+  constraint groups_weekly_time_quarter_hour
+    check (extract(minute from weekly_summary_time)::int % 15 = 0
+           and extract(second from weekly_summary_time) = 0)
 );
 
 -- "Groups this user admins" (the group picker, the Fair-use cap): confirmed
@@ -257,6 +305,16 @@ create index groups_takeover_expiry_idx on public.groups (takeover_asked_at)
 -- leaves them once owner_left_at is more than 7 days old).
 create index groups_owner_left_idx on public.groups (owner_left_at)
   where owner_left_at is not null and owner_confirmed_at is null and left_at is null;
+
+-- Tick: groups that may be due for the daily reminder or the weekly summary.
+-- Live groups (bot still in) with the feature on; the tick then compares the
+-- time and last_sent_on with the current Bangkok time. Reminders keep working
+-- without a confirmed Owner, so the Owner is not part of the filter.
+create index groups_daily_due_idx on public.groups (daily_reminder_time, daily_reminder_last_sent_on)
+  where left_at is null and feature_track_remind;
+create index groups_weekly_due_idx
+  on public.groups (weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on)
+  where left_at is null and feature_weekly_summary;
 
 create trigger groups_updated_at before update on public.groups
   for each row execute function public.set_updated_at();

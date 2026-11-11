@@ -21,6 +21,10 @@
 --     owner_confirmed_at is set; Tasks, reminders and the Dashboard keep working.
 --   * No confirmed Owner 7 days after owner_left_at: the daily tick makes the
 --     bot leave the group (see groups below).
+--   * Owner change of a whole Project: the new main-group Owner confirms first;
+--     the Sub group take-over question is answered separately. Unanswered for 7
+--     days (takeover_asked_at), the Sub groups detach from the Project (see
+--     groups, change_project_owner and answer_subgroup_takeover below).
 --
 -- Removal (#11): deleting a row in `groups` cascades to that group's messages,
 -- Summaries, Tasks, files, members and insights. Usage, push counts and webhook
@@ -127,6 +131,14 @@ create table public.groups (
   -- left_at and delete_after and, if there is still no confirmed Owner, resets
   -- owner_left_at to the re-invite time so the group gets a fresh 7 days.
   owner_left_at                   timestamptz,
+  -- Sub groups only. Set when the Project's main group got a confirmed new Owner
+  -- and the take-over question for this Sub group is still unanswered
+  -- (change_project_owner sets it, answer_subgroup_takeover clears it). While it
+  -- is set the Sub group waits paused: owner_confirmed_at is null, so Owner-backed
+  -- features stop, and it may still name its old Owner (check_same_owner). 7 days
+  -- after it, the daily tick detaches the Sub group (project_id = null, this
+  -- column cleared in the same update); it then needs its own setup and Owner.
+  takeover_asked_at               timestamptz,
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now(),
   constraint groups_main_needs_project check (not is_main or project_id is not null),
@@ -135,7 +147,12 @@ create table public.groups (
     check (owner_confirmed_at is null or nominated_owner_line_user_id is not null),
   -- A group with a confirmed Owner has no "Owner left" mark.
   constraint groups_owner_left_not_confirmed
-    check (owner_left_at is null or owner_confirmed_at is null)
+    check (owner_left_at is null or owner_confirmed_at is null),
+  -- A pending take-over question exists only for an attached Sub group, and
+  -- a pending group has no confirmed Owner. A detach must clear the column.
+  constraint groups_takeover_pending_rules
+    check (takeover_asked_at is null
+           or (project_id is not null and not is_main and owner_confirmed_at is null))
 );
 
 -- "Groups this user admins" (the group picker, the Fair-use cap): confirmed
@@ -173,9 +190,11 @@ create trigger groups_owner_rules before insert or update on public.groups
   for each row execute function public.groups_owner_rules();
 
 -- Same-admin grouping rule: every group attached to a Project names the
--- Project's owner (projects.owner_line_user_id) as its Owner. One exception: a
--- Project's main group may name a different, still unconfirmed nominee while
--- an Owner change is pending (see change_project_owner below).
+-- Project's owner (projects.owner_line_user_id) as its Owner. Two exceptions
+-- while an Owner change is pending (see change_project_owner below): the
+-- Project's main group may name a different, still unconfirmed nominee, and a
+-- Sub group with an unanswered take-over question (takeover_asked_at) may still
+-- name its old Owner.
 -- This is a DEFERRABLE constraint trigger on both tables, checked at COMMIT:
 -- it re-checks a group when its Project, nominee or confirmation changes, and
 -- all of a Project's groups when projects.owner_line_user_id changes. So one
@@ -194,6 +213,7 @@ begin
      where g.project_id = new.id
        and g.nominated_owner_line_user_id is distinct from new.owner_line_user_id
        and not (g.is_main and g.owner_confirmed_at is null)
+       and g.takeover_asked_at is null
      limit 1;
   else
     select g.id into bad_group_id
@@ -202,6 +222,7 @@ begin
      where g.id = new.id
        and g.nominated_owner_line_user_id is distinct from p.owner_line_user_id
        and not (g.is_main and g.owner_confirmed_at is null)
+       and g.takeover_asked_at is null
      limit 1;
   end if;
   if bad_group_id is not null then
@@ -213,7 +234,8 @@ end;
 $$;
 
 create constraint trigger groups_same_owner
-  after insert or update of project_id, is_main, nominated_owner_line_user_id, owner_confirmed_at
+  after insert or update of project_id, is_main, nominated_owner_line_user_id, owner_confirmed_at,
+                            takeover_asked_at
   on public.groups
   deferrable initially deferred
   for each row execute function public.check_same_owner();
@@ -227,6 +249,10 @@ create constraint trigger projects_same_owner
 create unique index groups_one_main_per_project on public.groups (project_id) where is_main;
 create index groups_project_idx on public.groups (project_id);
 create index groups_delete_after_idx on public.groups (delete_after) where delete_after is not null;
+-- Daily tick: Sub groups whose take-over question has waited 7 days
+-- (takeover_asked_at < now() - interval '7 days'); see the scheduler migration.
+create index groups_takeover_expiry_idx on public.groups (takeover_asked_at)
+  where takeover_asked_at is not null;
 -- Daily tick: groups whose Owner left and nobody confirmed since (the bot
 -- leaves them once owner_left_at is more than 7 days old).
 create index groups_owner_left_idx on public.groups (owner_left_at)
@@ -235,29 +261,38 @@ create index groups_owner_left_idx on public.groups (owner_left_at)
 create trigger groups_updated_at before update on public.groups
   for each row execute function public.set_updated_at();
 
--- Owner change of a whole Project (decided 2026-11-11). The new Owner is first
--- named as the main group's nominee (app code, which sets
--- groups.nominated_owner_line_user_id on the main group). When that person
--- confirms with LINE login, the app calls this function once; it runs as one
--- transaction:
---   * projects.owner_line_user_id becomes the new Owner;
---   * the main group is confirmed (owner_confirmed_at = now());
---   * each Sub group in p_takeover_group_ids (those that agree to be taken
---     over) names the new Owner and is confirmed with the same confirmation;
---   * every other Sub group of the Project detaches (project_id = null) and
---     needs its own setup; it keeps its old Owner and Drive folder;
---   * the Project's active Drive connection is marked 'replaced' (the old
---     Owner's Drive keeps the saved files, files.drive_connection_id says
---     which) and the Project's folder IDs are cleared, until the new Owner
---     connects their own Drive.
+-- Owner change of a whole Project (decided 2026-11-11), in two separate steps.
+-- The new Owner is first named as the main group's nominee (app code, which sets
+-- groups.nominated_owner_line_user_id on the main group).
+--
+-- Step 1, change_project_owner: when that person confirms with LINE login, the
+-- app calls it once. In one transaction it
+--   * makes projects.owner_line_user_id the new Owner and clears the Project's
+--     folder ID;
+--   * confirms the main group (owner_confirmed_at = now(), folder ID cleared);
+--   * marks the active Drive connection 'replaced' (the old Owner's Drive keeps
+--     the saved files; files.drive_connection_id says which), until the new
+--     Owner connects their own Drive;
+--   * starts the take-over question for every attached Sub group: takeover_asked_at
+--     = now() and owner_confirmed_at = null. Those Sub groups wait paused, still
+--     naming their old Owner.
+-- Step 2, answer_subgroup_takeover: when the new Owner answers, the app calls it
+-- with the Sub groups they agree to take over (see below). It may come in the
+-- same request as step 1 or days later.
 -- The same-admin rule is re-checked at COMMIT (check_same_owner).
--- NOT DECIDED: what happens when the new Owner never answers. Until they do,
--- the Project keeps the old owner in projects.owner_line_user_id and the main
--- group stays unconfirmed (Owner-backed features paused).
+--
+-- No answer within 7 days (decided 2026-11-11): the daily tick detaches the
+-- Sub groups still waiting, in one statement the route runs:
+--   update public.groups
+--      set project_id = null, takeover_asked_at = null
+--    where takeover_asked_at < now() - interval '7 days';
+-- (groups_takeover_expiry_idx finds them). A detached Sub group keeps its old
+-- Owner nomination (unconfirmed) and Drive folder, and needs its own setup and
+-- Owner. Until then the Project keeps working with the new Owner and the main
+-- group.
 create function public.change_project_owner(
-  p_project_id          uuid,
-  p_new_owner           text,
-  p_takeover_group_ids  uuid[] default '{}'
+  p_project_id  uuid,
+  p_new_owner   text
 )
 returns void
 language plpgsql
@@ -265,7 +300,6 @@ set search_path = ''
 as $$
 declare
   main_group_id uuid;
-  takeover      uuid[] := coalesce(p_takeover_group_ids, '{}');
 begin
   select g.id into main_group_id
     from public.groups g
@@ -277,40 +311,23 @@ begin
     raise exception 'main group of the Project must name % as its nominee', p_new_owner
       using errcode = 'check_violation';
   end if;
-  if exists (
-    select 1 from unnest(takeover) as t(id)
-     where not exists (
-       select 1 from public.groups g
-        where g.id = t.id and g.project_id = p_project_id and not g.is_main)
-  ) then
-    raise exception 'takeover groups must be Sub groups of the Project'
-      using errcode = 'check_violation';
-  end if;
 
   update public.projects
      set owner_line_user_id = p_new_owner,
          drive_project_folder_id = null
    where id = p_project_id;
 
-  -- Nominate first: the BEFORE trigger clears the confirmation whenever the
-  -- nominee changes, so the confirmation is a second statement.
-  update public.groups
-     set nominated_owner_line_user_id = p_new_owner,
-         owner_nominated_by_line_user_id = p_new_owner,
-         owner_nominated_at = now()
-   where id = any (takeover)
-     and nominated_owner_line_user_id is distinct from p_new_owner;
-
-  update public.groups
-     set project_id = null
-   where project_id = p_project_id
-     and not is_main
-     and id <> all (takeover);
-
   update public.groups
      set owner_confirmed_at = now(),
          drive_folder_id = null
-   where project_id = p_project_id;
+   where id = main_group_id;
+
+  -- Sub groups wait paused; the question restarts if an Owner change repeats.
+  update public.groups
+     set takeover_asked_at = now(),
+         owner_confirmed_at = null
+   where project_id = p_project_id
+     and not is_main;
 
   update public.drive_connections
      set status = 'replaced', status_changed_at = now()
@@ -318,7 +335,73 @@ begin
 end;
 $$;
 
-revoke all on function public.change_project_owner(uuid, text, uuid[])
+revoke all on function public.change_project_owner(uuid, text)
+  from public, anon, authenticated;
+
+-- Step 2: the new Owner answers the take-over question. p_takeover_group_ids are
+-- the waiting Sub groups they take over; every other waiting Sub group of the
+-- Project detaches. Taken-over Sub groups name the new Owner, are confirmed,
+-- and clear their folder ID (old files stay in the old Owner's Drive). A Sub
+-- group that already expired and detached is no longer waiting, so naming it
+-- raises an error; the call with no ids detaches every waiting Sub group.
+create function public.answer_subgroup_takeover(
+  p_project_id          uuid,
+  p_takeover_group_ids  uuid[] default '{}'
+)
+returns void
+language plpgsql
+set search_path = ''
+as $$
+declare
+  new_owner text;
+  takeover  uuid[] := coalesce(p_takeover_group_ids, '{}');
+begin
+  select p.owner_line_user_id into new_owner
+    from public.projects p
+   where p.id = p_project_id
+   for update;
+  if new_owner is null then
+    raise exception 'unknown Project %', p_project_id
+      using errcode = 'check_violation';
+  end if;
+  if exists (
+    select 1 from unnest(takeover) as t(id)
+     where not exists (
+       select 1 from public.groups g
+        where g.id = t.id
+          and g.project_id = p_project_id
+          and g.takeover_asked_at is not null)
+  ) then
+    raise exception 'takeover groups must be Sub groups of the Project waiting for the answer'
+      using errcode = 'check_violation';
+  end if;
+
+  -- Detach first (project_id and takeover_asked_at together, see
+  -- groups_takeover_pending_rules).
+  update public.groups
+     set project_id = null,
+         takeover_asked_at = null
+   where project_id = p_project_id
+     and takeover_asked_at is not null
+     and id <> all (takeover);
+
+  -- Nominate first: the BEFORE trigger clears the confirmation whenever the
+  -- nominee changes, so the confirmation is a second statement.
+  update public.groups
+     set nominated_owner_line_user_id = new_owner,
+         owner_nominated_by_line_user_id = new_owner,
+         owner_nominated_at = now(),
+         takeover_asked_at = null
+   where id = any (takeover);
+
+  update public.groups
+     set owner_confirmed_at = now(),
+         drive_folder_id = null
+   where id = any (takeover);
+end;
+$$;
+
+revoke all on function public.answer_subgroup_takeover(uuid, uuid[])
   from public, anon, authenticated;
 
 -- Members per group. Nicknames and role come from the setup form (Figma #2c)
@@ -529,12 +612,39 @@ create table public.task_prompts (
   answered_by_line_user_id text references public.line_users (line_user_id),
   answered_at              timestamptz,
   constraint task_prompts_task_kinds_need_task
-    check (kind in ('member_left', 'owner_needed') or task_id is not null)
+    check (kind in ('member_left', 'owner_needed') or task_id is not null),
+  -- A member_left card is about one leaver; the open-card unique index below
+  -- needs the person.
+  constraint task_prompts_member_left_needs_subject
+    check (kind <> 'member_left' or subject_line_user_id is not null),
+  -- Which answers each kind of card allows (null = still open). Inferred from
+  -- the buttons in docs/PROJECT.md: reminders answer Done or Postpone
+  -- (need_time); a progress question answers yes or no; an unowned Task card
+  -- offers Assign, I'll take it and Not a task; a member_left card lists Tasks
+  -- with Assign and I'll take it; owner_needed is answered by the new Owner's
+  -- confirm.
+  constraint task_prompts_answer_fits_kind
+    check (answer is null or case kind
+      when 'mark_done'    then answer in ('yes', 'no')
+      when 'reminder'     then answer in ('done', 'need_time')
+      when 'gap_flag'     then answer in ('done', 'need_time')
+      when 'assign'       then answer in ('assigned', 'taken', 'not_a_task')
+      when 'member_left'  then answer in ('assigned', 'taken')
+      when 'owner_needed' then answer = 'owner_confirmed'
+    end)
 );
 
 create index task_prompts_task_idx on public.task_prompts (task_id, asked_at desc);
 create index task_prompts_open_idx on public.task_prompts (task_id) where answer is null;
 create index task_prompts_group_open_idx on public.task_prompts (group_id, kind) where answer is null;
+-- An open card has answer null. At most one open owner_needed card per group,
+-- and at most one open member_left card per group and leaving person.
+create unique index task_prompts_one_open_owner_needed
+  on public.task_prompts (group_id)
+  where kind = 'owner_needed' and answer is null;
+create unique index task_prompts_one_open_member_left
+  on public.task_prompts (group_id, subject_line_user_id)
+  where kind = 'member_left' and answer is null;
 
 -- Tasks listed on a member_left card. Needed because the Tasks no longer name
 -- the leaver once they are back to Not Assigned.
@@ -567,6 +677,43 @@ create table public.files (
   -- Duplicate (same hash) in the same group is saved once.
   constraint files_one_per_hash unique (group_id, content_sha256)
 );
+
+-- The Drive connection must belong to the file's Project: the connection's
+-- project_id equals the project of the file's group, and the connection must be
+-- active when the row is inserted (or when drive_connection_id is changed).
+-- Later the connection may become 'replaced'; that is the history this column
+-- exists for, so only inserts and connection changes are checked.
+create function public.files_check_drive_connection()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  group_project_id uuid;
+  conn_project_id  uuid;
+  conn_status      text;
+begin
+  select g.project_id into group_project_id
+    from public.groups g where g.id = new.group_id;
+  select c.project_id, c.status into conn_project_id, conn_status
+    from public.drive_connections c where c.id = new.drive_connection_id
+   for share;
+  if group_project_id is null or conn_project_id is distinct from group_project_id then
+    raise exception 'file Drive connection must belong to the Project of the file''s group'
+      using errcode = 'check_violation';
+  end if;
+  if (tg_op = 'INSERT' or new.drive_connection_id is distinct from old.drive_connection_id)
+     and conn_status <> 'active' then
+    raise exception 'file Drive connection must be active'
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger files_check_drive_connection
+  before insert or update of group_id, drive_connection_id on public.files
+  for each row execute function public.files_check_drive_connection();
 
 create index files_group_saved_idx on public.files (group_id, saved_at desc);
 create index files_drive_connection_idx on public.files (drive_connection_id);

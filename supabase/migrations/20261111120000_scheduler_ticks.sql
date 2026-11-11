@@ -75,6 +75,11 @@ revoke all on function public.call_tick(text) from public, anon, authenticated;
 --     leaves each one; when LINE's leave call succeeds the app sets left_at = now()
 --     and delete_after = now() + 7 days at once, without waiting for the leave
 --     event.
+--   * Unanswered Sub group take-over: Sub groups with takeover_asked_at older than
+--     7 days (groups_takeover_expiry_idx) detach from the Project, in one update:
+--       update public.groups set project_id = null, takeover_asked_at = null
+--        where takeover_asked_at < now() - interval '7 days';
+--     They then need their own setup and Owner.
 -- PLACEHOLDER: daily 09:00 Asia/Bangkok = 02:00 UTC.
 select cron.schedule(
   'nongjodii-daily-tick',

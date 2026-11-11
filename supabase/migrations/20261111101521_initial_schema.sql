@@ -13,6 +13,15 @@
 -- group they admin. The group picker lists only groups the user admins.
 -- There are no plan or payment tables: the plan screens are a static mock.
 --
+-- Member and Owner changes (decided 2026-11-11):
+--   * A Member who leaves keeps their group_members row with left_at set, so
+--     names stay on Done Tasks; a rejoin clears left_at.
+--   * An Owner who leaves: groups.owner_left_at is set and owner_confirmed_at is
+--     cleared. Owner-backed features (file saving, Summaries) run only while
+--     owner_confirmed_at is set; Tasks, reminders and the Dashboard keep working.
+--   * No confirmed Owner 7 days after owner_left_at: the daily tick makes the
+--     bot leave the group (see groups below).
+--
 -- Removal (#11): deleting a row in `groups` cascades to that group's messages,
 -- Summaries, Tasks, files, members and insights. Usage, push counts and webhook
 -- event IDs do NOT cascade, so a purge cannot reset the Fair-use cap, the push
@@ -86,8 +95,14 @@ create table public.groups (
   -- Main group: "Main group files" folder. Sub group: its own folder.
   drive_folder_id    text,
   joined_at          timestamptz not null default now(),
+  -- Bot left the group. The app sets left_at AND delete_after (now + 7 days)
+  -- itself, as soon as LINE's leave call succeeds, without waiting for the
+  -- leave event (decided 2026-11-11). That covers "Stop using" and the
+  -- "no new Owner in 7 days" case. When LINE removes the bot instead, the
+  -- leave event sets them. A leave event that arrives later must not move
+  -- them (write only where left_at is null). A re-invite clears both (#11).
   left_at            timestamptz,
-  -- Set to left_at + 7 days on leave; cleared on re-invite (#11).
+  -- left_at + 7 days; the daily job purges rows past it (#11).
   delete_after       timestamptz,
   -- Owner (admin) of this group. Two states:
   --   nominated: nominated_owner_line_user_id set, owner_confirmed_at null.
@@ -95,16 +110,32 @@ create table public.groups (
   --   confirmed: owner_confirmed_at set (the nominee confirmed with LINE login).
   --              The nominee is now this group's admin.
   -- Changing the nominee clears owner_confirmed_at (trigger below).
+  -- Owner-backed features (file saving, Summaries) run only while
+  -- owner_confirmed_at is set; the app checks it before each of them.
   nominated_owner_line_user_id    text references public.line_users (line_user_id),
   owner_nominated_by_line_user_id text references public.line_users (line_user_id),
   owner_nominated_at              timestamptz,
   owner_confirmed_at              timestamptz,
+  -- When the Owner left this group (LINE memberLeft for the confirmed Owner).
+  -- Setting it clears owner_confirmed_at (trigger below), so the features above
+  -- pause. The nominee column keeps the old Owner until a new one is named.
+  -- A new nominee does not stop the clock: only a confirmed Owner does, and
+  -- confirming clears owner_left_at (trigger below). Rule for the daily tick:
+  -- a group with owner_left_at older than 7 days, owner_confirmed_at null and
+  -- left_at null is one the bot leaves by itself; the app then sets left_at and
+  -- delete_after as described above. If the bot is re-invited, the app clears
+  -- left_at and delete_after and, if there is still no confirmed Owner, resets
+  -- owner_left_at to the re-invite time so the group gets a fresh 7 days.
+  owner_left_at                   timestamptz,
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now(),
   constraint groups_main_needs_project check (not is_main or project_id is not null),
   constraint groups_delete_after_needs_leave check (delete_after is null or left_at is not null),
   constraint groups_confirmed_needs_nominee
-    check (owner_confirmed_at is null or nominated_owner_line_user_id is not null)
+    check (owner_confirmed_at is null or nominated_owner_line_user_id is not null),
+  -- A group with a confirmed Owner has no "Owner left" mark.
+  constraint groups_owner_left_not_confirmed
+    check (owner_left_at is null or owner_confirmed_at is null)
 );
 
 -- "Groups this user admins" (the group picker, the Fair-use cap): confirmed
@@ -112,8 +143,10 @@ create table public.groups (
 create index groups_admin_idx on public.groups (nominated_owner_line_user_id)
   where owner_confirmed_at is not null;
 
--- Same-admin grouping rule, kept simple: a group attached to a Project must
--- name the Project's owner as its Owner. A new nominee resets the confirmation.
+-- Owner bookkeeping (BEFORE trigger, runs for every insert/update):
+--   * A new nominee resets the confirmation.
+--   * Setting owner_left_at (the Owner left) clears owner_confirmed_at.
+--   * Confirming an Owner clears owner_left_at.
 -- The picker (app code) additionally lists only groups the requester admins,
 -- i.e. owner_confirmed_at is not null.
 create function public.groups_owner_rules()
@@ -126,11 +159,11 @@ begin
      and new.nominated_owner_line_user_id is distinct from old.nominated_owner_line_user_id then
     new.owner_confirmed_at := null;
   end if;
-  if new.project_id is not null
-     and new.nominated_owner_line_user_id is distinct from
-         (select p.owner_line_user_id from public.projects p where p.id = new.project_id) then
-    raise exception 'group Owner must be the Project owner'
-      using errcode = 'check_violation';
+  if new.owner_left_at is not null
+     and (tg_op = 'INSERT' or old.owner_left_at is null) then
+    new.owner_confirmed_at := null;
+  elsif new.owner_confirmed_at is not null then
+    new.owner_left_at := null;
   end if;
   return new;
 end;
@@ -139,13 +172,154 @@ $$;
 create trigger groups_owner_rules before insert or update on public.groups
   for each row execute function public.groups_owner_rules();
 
+-- Same-admin grouping rule: every group attached to a Project names the
+-- Project's owner (projects.owner_line_user_id) as its Owner. One exception: a
+-- Project's main group may name a different, still unconfirmed nominee while
+-- an Owner change is pending (see change_project_owner below).
+-- This is a DEFERRABLE constraint trigger on both tables, checked at COMMIT:
+-- it re-checks a group when its Project, nominee or confirmation changes, and
+-- all of a Project's groups when projects.owner_line_user_id changes. So one
+-- transaction can change the Project's owner and its groups together.
+create function public.check_same_owner()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  bad_group_id uuid;
+begin
+  if tg_table_name = 'projects' then
+    select g.id into bad_group_id
+      from public.groups g
+     where g.project_id = new.id
+       and g.nominated_owner_line_user_id is distinct from new.owner_line_user_id
+       and not (g.is_main and g.owner_confirmed_at is null)
+     limit 1;
+  else
+    select g.id into bad_group_id
+      from public.groups g
+      join public.projects p on p.id = g.project_id
+     where g.id = new.id
+       and g.nominated_owner_line_user_id is distinct from p.owner_line_user_id
+       and not (g.is_main and g.owner_confirmed_at is null)
+     limit 1;
+  end if;
+  if bad_group_id is not null then
+    raise exception 'group Owner must be the Project owner'
+      using errcode = 'check_violation';
+  end if;
+  return null;
+end;
+$$;
+
+create constraint trigger groups_same_owner
+  after insert or update of project_id, is_main, nominated_owner_line_user_id, owner_confirmed_at
+  on public.groups
+  deferrable initially deferred
+  for each row execute function public.check_same_owner();
+
+create constraint trigger projects_same_owner
+  after update of owner_line_user_id on public.projects
+  deferrable initially deferred
+  for each row execute function public.check_same_owner();
+
 -- Exactly one main group per Project.
 create unique index groups_one_main_per_project on public.groups (project_id) where is_main;
 create index groups_project_idx on public.groups (project_id);
 create index groups_delete_after_idx on public.groups (delete_after) where delete_after is not null;
+-- Daily tick: groups whose Owner left and nobody confirmed since (the bot
+-- leaves them once owner_left_at is more than 7 days old).
+create index groups_owner_left_idx on public.groups (owner_left_at)
+  where owner_left_at is not null and owner_confirmed_at is null and left_at is null;
 
 create trigger groups_updated_at before update on public.groups
   for each row execute function public.set_updated_at();
+
+-- Owner change of a whole Project (decided 2026-11-11). The new Owner is first
+-- named as the main group's nominee (app code, which sets
+-- groups.nominated_owner_line_user_id on the main group). When that person
+-- confirms with LINE login, the app calls this function once; it runs as one
+-- transaction:
+--   * projects.owner_line_user_id becomes the new Owner;
+--   * the main group is confirmed (owner_confirmed_at = now());
+--   * each Sub group in p_takeover_group_ids (those that agree to be taken
+--     over) names the new Owner and is confirmed with the same confirmation;
+--   * every other Sub group of the Project detaches (project_id = null) and
+--     needs its own setup; it keeps its old Owner and Drive folder;
+--   * the Project's active Drive connection is marked 'replaced' (the old
+--     Owner's Drive keeps the saved files, files.drive_connection_id says
+--     which) and the Project's folder IDs are cleared, until the new Owner
+--     connects their own Drive.
+-- The same-admin rule is re-checked at COMMIT (check_same_owner).
+-- NOT DECIDED: what happens when the new Owner never answers. Until they do,
+-- the Project keeps the old owner in projects.owner_line_user_id and the main
+-- group stays unconfirmed (Owner-backed features paused).
+create function public.change_project_owner(
+  p_project_id          uuid,
+  p_new_owner           text,
+  p_takeover_group_ids  uuid[] default '{}'
+)
+returns void
+language plpgsql
+set search_path = ''
+as $$
+declare
+  main_group_id uuid;
+  takeover      uuid[] := coalesce(p_takeover_group_ids, '{}');
+begin
+  select g.id into main_group_id
+    from public.groups g
+   where g.project_id = p_project_id
+     and g.is_main
+     and g.nominated_owner_line_user_id = p_new_owner
+   for update;
+  if main_group_id is null then
+    raise exception 'main group of the Project must name % as its nominee', p_new_owner
+      using errcode = 'check_violation';
+  end if;
+  if exists (
+    select 1 from unnest(takeover) as t(id)
+     where not exists (
+       select 1 from public.groups g
+        where g.id = t.id and g.project_id = p_project_id and not g.is_main)
+  ) then
+    raise exception 'takeover groups must be Sub groups of the Project'
+      using errcode = 'check_violation';
+  end if;
+
+  update public.projects
+     set owner_line_user_id = p_new_owner,
+         drive_project_folder_id = null
+   where id = p_project_id;
+
+  -- Nominate first: the BEFORE trigger clears the confirmation whenever the
+  -- nominee changes, so the confirmation is a second statement.
+  update public.groups
+     set nominated_owner_line_user_id = p_new_owner,
+         owner_nominated_by_line_user_id = p_new_owner,
+         owner_nominated_at = now()
+   where id = any (takeover)
+     and nominated_owner_line_user_id is distinct from p_new_owner;
+
+  update public.groups
+     set project_id = null
+   where project_id = p_project_id
+     and not is_main
+     and id <> all (takeover);
+
+  update public.groups
+     set owner_confirmed_at = now(),
+         drive_folder_id = null
+   where project_id = p_project_id;
+
+  update public.drive_connections
+     set status = 'replaced', status_changed_at = now()
+   where project_id = p_project_id and status = 'active';
+end;
+$$;
+
+revoke all on function public.change_project_owner(uuid, text, uuid[])
+  from public, anon, authenticated;
 
 -- Members per group. Nicknames and role come from the setup form (Figma #2c)
 -- so the AI knows who the chat means.
@@ -157,14 +331,20 @@ create table public.group_members (
   nicknames      text[] not null default '{}',
   role           text,
   is_pm          boolean not null default false,
+  -- 'member_join': the person joined the group after the bot (LINE memberJoined).
   source         text not null default 'message'
-                   check (source in ('message', 'liff', 'setup_form')),
+                   check (source in ('message', 'liff', 'setup_form', 'member_join')),
+  -- Null while the person is in the group. Set on LINE memberLeft; the row is
+  -- kept so names stay on Done Tasks. A left Member has no Dashboard access.
+  -- A rejoin (memberJoined) clears it. Live Members: left_at is null.
+  left_at        timestamptz,
   first_seen_at  timestamptz not null default now(),
   updated_at     timestamptz not null default now(),
   primary key (group_id, line_user_id)
 );
 
 create index group_members_user_idx on public.group_members (line_user_id);
+create index group_members_active_idx on public.group_members (group_id) where left_at is null;
 
 create trigger group_members_updated_at before update on public.group_members
   for each row execute function public.set_updated_at();
@@ -201,7 +381,8 @@ create trigger google_accounts_updated_at before update on public.google_account
   for each row execute function public.set_updated_at();
 
 -- Which Google account holds a Project's files. One active row per Project;
--- the connected account can change (#3), so old rows stay as 'replaced'.
+-- the connected account can change (#3), so old rows stay as 'replaced' and
+-- are history: files.drive_connection_id records which one holds each file.
 -- A revoked token shows on google_accounts.token_status; Tasks stay and the
 -- Owner is asked to sign in again.
 create table public.drive_connections (
@@ -321,21 +502,49 @@ create index tasks_due_idx on public.tasks (due_at) where status <> 'done' and d
 create trigger tasks_updated_at before update on public.tasks
   for each row execute function public.set_updated_at();
 
--- "Mark as Done?" questions (#7) and reminder answers (#8). Status changes
--- only when a person answers.
+-- Cards the bot posts in a group, and the answers to them. Status changes
+-- only when a person answers. kind:
+--   mark_done, reminder, gap_flag  Task questions (#7, #8).
+--   assign        unowned Task card with Assign and I'll take it.
+--   member_left   card listing a leaver's Tasks that went back to Not
+--                 Assigned (the Tasks are in task_prompt_tasks).
+--   owner_needed  card asking someone to become the group's Owner.
+-- task_id is null for member_left and owner_needed, which are about a group,
+-- not one Task; group_id is always set. subject_line_user_id is the person the
+-- card is about (the leaver; the old Owner).
 create table public.task_prompts (
   id                       uuid primary key default gen_random_uuid(),
-  task_id                  uuid not null references public.tasks (id) on delete cascade,
-  kind                     text not null check (kind in ('mark_done', 'reminder', 'gap_flag')),
+  group_id                 uuid not null references public.groups (id) on delete cascade,
+  task_id                  uuid references public.tasks (id) on delete cascade,
+  kind                     text not null check (kind in (
+                             'mark_done', 'reminder', 'gap_flag',
+                             'assign', 'member_left', 'owner_needed')),
+  subject_line_user_id     text references public.line_users (line_user_id),
   trigger_message_id       uuid references public.messages (id) on delete set null,
   asked_at                 timestamptz not null default now(),
-  answer                   text check (answer in ('yes', 'no', 'done', 'need_time')),
+  answer                   text check (answer in (
+                             'yes', 'no', 'done', 'need_time',
+                             'assigned', 'taken', 'not_a_task', 'owner_confirmed')),
+  -- Nullable: a group postback may not carry the user ID.
   answered_by_line_user_id text references public.line_users (line_user_id),
-  answered_at              timestamptz
+  answered_at              timestamptz,
+  constraint task_prompts_task_kinds_need_task
+    check (kind in ('member_left', 'owner_needed') or task_id is not null)
 );
 
 create index task_prompts_task_idx on public.task_prompts (task_id, asked_at desc);
 create index task_prompts_open_idx on public.task_prompts (task_id) where answer is null;
+create index task_prompts_group_open_idx on public.task_prompts (group_id, kind) where answer is null;
+
+-- Tasks listed on a member_left card. Needed because the Tasks no longer name
+-- the leaver once they are back to Not Assigned.
+create table public.task_prompt_tasks (
+  prompt_id  uuid not null references public.task_prompts (id) on delete cascade,
+  task_id    uuid not null references public.tasks (id) on delete cascade,
+  primary key (prompt_id, task_id)
+);
+
+create index task_prompt_tasks_task_idx on public.task_prompt_tasks (task_id);
 
 -- ---------------------------------------------------------------------------
 -- Files (#4)
@@ -346,6 +555,9 @@ create table public.files (
   group_id             uuid not null references public.groups (id) on delete cascade,
   message_id           uuid references public.messages (id) on delete set null,
   sender_line_user_id  text references public.line_users (line_user_id),
+  -- The Drive connection the file was saved through, so every file records
+  -- which Drive holds it even after the Project's connection is replaced.
+  drive_connection_id  uuid not null references public.drive_connections (id),
   file_name            text not null,
   content_sha256       text not null,
   drive_file_id        text not null,
@@ -357,6 +569,7 @@ create table public.files (
 );
 
 create index files_group_saved_idx on public.files (group_id, saved_at desc);
+create index files_drive_connection_idx on public.files (drive_connection_id);
 
 -- ---------------------------------------------------------------------------
 -- Fair-use cap (#6) and push quota (#8)
@@ -452,6 +665,7 @@ alter table public.summaries         enable row level security;
 alter table public.task_candidates   enable row level security;
 alter table public.tasks             enable row level security;
 alter table public.task_prompts      enable row level security;
+alter table public.task_prompt_tasks enable row level security;
 alter table public.files             enable row level security;
 alter table public.ai_usage          enable row level security;
 alter table public.push_log          enable row level security;

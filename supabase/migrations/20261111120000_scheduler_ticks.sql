@@ -68,6 +68,13 @@ revoke all on function public.call_tick(text) from public, anon, authenticated;
 -- the two cron expressions below (re-running cron.schedule with the same job
 -- name replaces the job) once the team decides.
 
+-- What the daily tick does with the schema (the route holds the logic):
+--   * Purge groups past delete_after (groups_delete_after_idx).
+--   * No new Owner: groups with owner_left_at older than 7 days,
+--     owner_confirmed_at null and left_at null (groups_owner_left_idx). The bot
+--     leaves each one; when LINE's leave call succeeds the app sets left_at = now()
+--     and delete_after = now() + 7 days at once, without waiting for the leave
+--     event.
 -- PLACEHOLDER: daily 09:00 Asia/Bangkok = 02:00 UTC.
 select cron.schedule(
   'nongjodii-daily-tick',

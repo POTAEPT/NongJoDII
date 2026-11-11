@@ -15,6 +15,7 @@ Apply each rule to the code a pull request adds or changes. The code is still a 
 
 - Model output is a proposal. A Task is created only after a person confirms it (#5), and its status changes only on a person's explicit answer: Yes to "Mark as Done?" (#7) or an answer to a reminder (#8). No code path writes a Task straight from model output.
 - Editing, assigning and deleting a Task are person actions too. Delete asks for a confirm and offers undo (decided 2026-11-11).
+- A button press in a group (such as I'll take it) is never assigned to a person from a missing `userId`: LINE guarantees `userId` only on message events, for iOS and Android users, so when it is absent the bot opens a LIFF page and LINE login identifies the presser (decided 2026-11-11).
 - A new Task gets the tagged person as owner, otherwise Not Assigned, and the confirmer is recorded as creator (#5). Status values are Not Assigned, In Process and Done (#7).
 - Summarize answers both "NongJoDII summarize" and "NongJoDII สรุปหน่อย". Reminder answers come from buttons, with "NongJoDII done" and "NongJoDII need time" as typed fallbacks (decided 2026-11-11).
 - Every AI call records the token counts from its response against the Owner's usage, summed across every group the Owner admins, in tokens and dollars (#6).
@@ -31,6 +32,9 @@ Apply each rule to the code a pull request adds or changes. The code is still a 
 - No code deletes files in the Owner's Drive, the removal job included (#11).
 - When the Owner connects Google Drive, each Project folder is shared once as "anyone with the link can view" and saved files rely on that inherited sharing; no code shares files one by one or with named accounts (decided 2026-11-11).
 - A reply that quotes a saved file message with the command "NongJoDII ขอไฟล์" is answered with that file's Drive link as a reply, never a push. The file is found from the reply's `quotedMessageId` through the stored copy of the quoted message, never from quoted content, which LINE does not return; the answer is the link, not a LINE file message (decided 2026-11-11).
+- The "saved" card is sent as a reply when the file is saved within about 50 seconds of the webhook, and as a push otherwise; the push adds to the push count and is skipped near the monthly quota limit (decided 2026-11-11).
+- The LINE `imageSet` ID is stored on each image message, and photos sharing it get one "saved N photos" card per batch, never one card per photo and not dependent on webhook arrival order (decided 2026-11-11).
+- The folder the bot creates in the Owner's Drive is named "NongJoDII" (decided 2026-11-11).
 - Drive connections are kept as history, with at most one active connection per Project, and each saved file record stores the Drive connection it was saved through; no code overwrites or deletes a connection row that a file record points to (decided 2026-11-11).
 
 ## Groups, Owner and access (#2, #9)
@@ -42,19 +46,26 @@ Apply each rule to the code a pull request adds or changes. The code is still a 
 - On a LINE `memberJoined` event, the person is stored as a Member at once, named from their LINE profile, and the bot answers with a reply (never a push) carrying a short welcome and a button to the setup form for nickname and role; the Owner can edit nicknames and roles in Settings (decided 2026-11-11).
 - When the Owner leaves a group, file saving and Summaries stop for that group while Tasks, reminders and the Dashboard keep working; the bot posts a card asking someone to become Owner, and the role changes only after that person confirms with LINE login and connects their Drive; files already saved stay in the old Owner's Drive (decided 2026-11-11).
 - If no new Owner is confirmed within 7 days after the Owner left, the bot leaves the group, which starts the 7-day deletion in "Removal and unsend"; a re-invite inside those 7 days clears the mark (decided 2026-11-11).
-- When the main group gets a new Owner, the Project's Sub groups change Owner only after that Owner confirms the take-over; with it, their plan, Fair-use cap and Drive follow and old files stay in the old Owner's Drive, and without it the Sub groups detach from the Project and need their own setup and Owner. No code decides the case where the new Owner never answers (decided 2026-11-11).
+- When the main group gets a new Owner, the Project's Sub groups change Owner only after that Owner confirms the take-over; with it, their plan, Fair-use cap and Drive follow and old files stay in the old Owner's Drive, and without it the Sub groups detach from the Project and need their own setup and Owner. If the new Owner confirms but never answers the take-over question, the Sub groups wait paused for 7 days, then detach from the Project and need their own setup and Owner (decided 2026-11-11).
+- While a Project's Owner change is pending, the main group may name a new Owner who has not confirmed yet (decided 2026-11-11).
+- Re-inviting the bot to a group that still has no confirmed Owner restarts the 7-day count (decided 2026-11-11).
+- On an Owner change the old Drive connection is retired (kept as history) and the folder IDs are cleared, so the new Owner connects their own Drive; old files stay in the old Drive (decided 2026-11-11).
+- Nicknames from the setup form are used only by the AI to work out who a chat message is about; pickers, cards and the Dashboard show LINE names, never nicknames (decided 2026-11-11).
+- The daily tick checks each known member of a group with LINE's group member profile API; a 404 marks the person as left and applies the `memberLeft` rule above, in case the leave event was lost (decided 2026-11-11).
 - Dashboard data is limited to what the requester may see: a PM sees all groups of the Project, a Member only their own groups and Tasks, and an outsider is refused (#9).
 
 ## Scheduling and pushes (#8, #10)
 
-- The daily and weekly ticks come from Supabase `pg_cron` and enter the same handler as the webhook (#8, decided 2026-11-11).
+- The scheduler tick comes from Supabase `pg_cron` every 15 minutes and enters the same handler as the webhook (#8, decided 2026-11-11).
+- Daily reminders and the weekly insight go out at the group's own chosen time, not at a fixed system time; each tick serves the groups whose chosen time has come (decided 2026-11-11).
 - Reminders and flags are posted in the group where the Task lives, never in a 1:1 chat (#8, decided 2026-11-11).
 - Every push adds to the push count kept against the LINE monthly quota. Near the limit, the bot stops pushing and the items show on the Dashboard only (#8, decided 2026-11-11).
 - The weekly insight is counts from code, posted to the group; it makes no AI call (decided 2026-11-11, replaces the AI paragraph in #10).
+- Every onboarding setting (what the group works on, members' nicknames and roles, the features in use, the Owner, and the reminder and weekly summary times) is editable later in Settings (decided 2026-11-11).
 
 ## Removal and unsend (#11)
 
-- When the bot leaves a group, that group's data is marked for deletion 7 days later; the daily job purges only past-due rows, and a re-invite inside 7 days clears the mark (#11).
+- When the bot leaves a group, that group's data is marked for deletion 7 days later; the scheduler tick purges only past-due rows, and a re-invite inside 7 days clears the mark (#11).
 - Stop using in Settings makes the bot leave the group, so the rule above applies (decided 2026-11-11).
 - When the bot leaves a group by itself (no new Owner after 7 days, or Stop using), the 7-day deletion mark is set as soon as the leave API call is accepted, not when a `leave` event arrives (decided 2026-11-11).
 - An unsend event deletes the stored copy of that message; confirmed Tasks stay (decided 2026-11-11).

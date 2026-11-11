@@ -1,0 +1,3 @@
+{
+  "instructions": "NongJoDII is a LINE bot plus a LIFF Dashboard in one Next.js app. It turns LINE group chat into Tasks that a person confirms, saves group files to the Owner's Google Drive, and shows progress across groups. Product context, terms and open decisions: docs/PROJECT.md. Review rules: .greptile/rules.md."
+}

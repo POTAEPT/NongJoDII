@@ -511,10 +511,41 @@ create table public.messages (
   sender_line_user_id   text references public.line_users (line_user_id),
   message_type          text not null,   -- text, image, file, video, audio, sticker, ...
   text                  text,
-  sent_at               timestamptz not null
+  sent_at               timestamptz not null,
+  -- Photos sent together (decided 2026-11-11): LINE sends one webhook per photo,
+  -- in any order, all sharing message.imageSet.id. index and total come from the
+  -- same object; total is missing for LINE 11.15 or earlier on Android. All three
+  -- are null for a photo sent alone and for every non-image message.
+  image_set_id          text,
+  image_set_index       integer,
+  image_set_total       integer,
+  constraint messages_image_set_parts_need_id
+    check (image_set_id is not null
+           or (image_set_index is null and image_set_total is null)),
+  constraint messages_image_set_index_nonneg check (image_set_index is null or image_set_index >= 0),
+  constraint messages_image_set_total_nonneg check (image_set_total is null or image_set_total >= 0)
 );
 
 create index messages_group_sent_idx on public.messages (group_id, sent_at desc);
+-- The photos of one set in one group (batch card, "saved N photos").
+create index messages_image_set_idx on public.messages (group_id, image_set_id)
+  where image_set_id is not null;
+
+-- One row per photo batch whose "saved N photos" card was claimed. The webhooks
+-- of one batch run at the same time and in any order, so "was the card already
+-- sent?" must be decided by the database, not by reading messages. The app
+-- claims the batch with
+--   insert into public.image_set_cards (group_id, image_set_id) values (...)
+--   on conflict do nothing returning image_set_id;
+-- and posts the card only when a row came back. Reply or push (reply within
+-- about 50 seconds of the file save, else push) is app logic; pushes are
+-- counted in push_log as before. Cascades with the group (#11).
+create table public.image_set_cards (
+  group_id      uuid not null references public.groups (id) on delete cascade,
+  image_set_id  text not null,
+  claimed_at    timestamptz not null default now(),
+  primary key (group_id, image_set_id)
+);
 
 -- ---------------------------------------------------------------------------
 -- Summaries and Tasks (#5, #7, #8)
@@ -674,6 +705,9 @@ create table public.files (
   drive_link           text not null,
   sent_at              timestamptz not null,
   saved_at             timestamptz not null default now(),
+  -- LINE file events carry fileSize in bytes; shown on the "saved" card. Null
+  -- for an image when LINE gave no size.
+  size_bytes           bigint check (size_bytes >= 0),
   -- Duplicate (same hash) in the same group is saved once.
   constraint files_one_per_hash unique (group_id, content_sha256)
 );
@@ -808,6 +842,7 @@ alter table public.google_accounts   enable row level security;
 alter table public.drive_connections enable row level security;
 alter table public.webhook_events    enable row level security;
 alter table public.messages          enable row level security;
+alter table public.image_set_cards   enable row level security;
 alter table public.summaries         enable row level security;
 alter table public.task_candidates   enable row level security;
 alter table public.tasks             enable row level security;

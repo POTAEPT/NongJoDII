@@ -16,9 +16,9 @@ export type AppConfig = {
 }
 
 const NAMES = [
-  'LINE_CHANNEL_SECRET',
-  'LINE_CHANNEL_ACCESS_TOKEN',
-  'LINE_LOGIN_CHANNEL_ID',
+  'LINE_MESSAGING_CHANNEL_SECRET',
+  'LINE_MESSAGING_CHANNEL_ACCESS_TOKEN',
+  'LINE_MINIAPP_CHANNEL_ID',
   'NEXT_PUBLIC_LIFF_ID',
   'APP_BASE_URL',
   'SUPABASE_URL',
@@ -40,9 +40,9 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
   if (tokenEncryptionKey.length !== 32) throw new Error('TOKEN_ENCRYPTION_KEY must be 32 bytes base64')
 
   return {
-    lineChannelSecret: get('LINE_CHANNEL_SECRET'),
-    lineChannelAccessToken: get('LINE_CHANNEL_ACCESS_TOKEN'),
-    lineLoginChannelId: get('LINE_LOGIN_CHANNEL_ID'),
+    lineChannelSecret: get('LINE_MESSAGING_CHANNEL_SECRET'),
+    lineChannelAccessToken: get('LINE_MESSAGING_CHANNEL_ACCESS_TOKEN'),
+    lineLoginChannelId: get('LINE_MINIAPP_CHANNEL_ID'),
     liffId: get('NEXT_PUBLIC_LIFF_ID'),
     appBaseUrl: get('APP_BASE_URL').replace(/\/+$/, ''),
     supabaseUrl: get('SUPABASE_URL'),

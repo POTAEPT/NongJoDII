@@ -5,9 +5,9 @@ const KEY_32 = Buffer.alloc(32, 1).toString('base64')
 
 function fullEnv(): Record<string, string | undefined> {
   return {
-    LINE_CHANNEL_SECRET: 'secret-value-aaa',
-    LINE_CHANNEL_ACCESS_TOKEN: 'access-token-bbb',
-    LINE_LOGIN_CHANNEL_ID: '1650000000',
+    LINE_MESSAGING_CHANNEL_SECRET: 'secret-value-aaa',
+    LINE_MESSAGING_CHANNEL_ACCESS_TOKEN: 'access-token-bbb',
+    LINE_MINIAPP_CHANNEL_ID: '1650000000',
     NEXT_PUBLIC_LIFF_ID: '2000000000-abcdefgh',
     APP_BASE_URL: 'https://nongjodii.example.app',
     SUPABASE_URL: 'https://proj.supabase.co',
@@ -41,7 +41,7 @@ describe('loadConfig', () => {
 
   test('missing names are listed together, without any values', () => {
     const env = fullEnv()
-    delete env.LINE_CHANNEL_SECRET
+    delete env.LINE_MESSAGING_CHANNEL_SECRET
     env.OPENROUTER_API_KEY = undefined
     let message = ''
     try {
@@ -50,7 +50,7 @@ describe('loadConfig', () => {
       message = (err as Error).message
     }
     expect(message).toContain('Missing env:')
-    expect(message).toContain('LINE_CHANNEL_SECRET')
+    expect(message).toContain('LINE_MESSAGING_CHANNEL_SECRET')
     expect(message).toContain('OPENROUTER_API_KEY')
     for (const value of Object.values(env)) {
       if (value) expect(message).not.toContain(value)

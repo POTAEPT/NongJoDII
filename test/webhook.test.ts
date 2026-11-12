@@ -81,6 +81,39 @@ describe('webhook', () => {
     expect(without).toMatchObject({ imageSetId: null, imageSetIndex: null, imageSetTotal: null, text: null })
   })
 
+  it('6b. stores each mention with the tagged userId, and null without a tag', async () => {
+    const { send, store } = setup()
+    await send(webhookBody(
+      ev.groupText({
+        text: '@Pim @All ดูด้วย', messageId: 'm-tag',
+        mentionees: [
+          { index: 0, length: 4, type: 'user', userId: 'Upim', isSelf: false },
+          { index: 5, length: 4, type: 'all' },
+          { index: 0, length: 4, type: 'user' }, // no profile consent: LINE leaves userId out
+        ],
+      }),
+      ev.groupText({ text: 'ไม่มีแท็ก', messageId: 'm-plain' }),
+    ))
+    const tagged = store.tables.messages.find((m) => m.lineMessageId === 'm-tag')
+    const plain = store.tables.messages.find((m) => m.lineMessageId === 'm-plain')
+    expect(tagged?.mentions).toEqual([
+      { index: 0, length: 4, type: 'user', userId: 'Upim' },
+      { index: 5, length: 4, type: 'all', userId: null },
+      { index: 0, length: 4, type: 'user', userId: null },
+    ])
+    expect(plain?.mentions).toBeNull()
+  })
+
+  it('6c. drops malformed mention entries', async () => {
+    const { send, store } = setup()
+    const event = ev.groupText({ text: '@Pim hi', messageId: 'm-bad' })
+    ;(event.message as { mention?: unknown }).mention = {
+      mentionees: [{ index: '0', length: 4, type: 'user', userId: 'U1' }, { index: 0, length: 4, type: 'group' }, null],
+    }
+    await send(webhookBody(event))
+    expect(store.tables.messages[0].mentions).toBeNull()
+  })
+
   it('7. empty events returns 200 and stores nothing', async () => {
     const { send, store, deferred } = setup()
     const res = await send(webhookBody())

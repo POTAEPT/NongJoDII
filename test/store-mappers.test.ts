@@ -22,13 +22,18 @@ describe('toGroupRow', () => {
 })
 
 describe('toStoredMessage', () => {
-  const row = { id: 'm1', sender_line_user_id: 'U1', text: 'hi', sent_at: '2026-11-12T03:00:00+00:00' }
+  const row = { id: 'm1', sender_line_user_id: 'U1', text: 'hi', sent_at: '2026-11-12T03:00:00+00:00', mentions: null }
 
   it('takes senderDisplayName from the nested line_users object', () => {
     expect(toStoredMessage({ ...row, line_users: { display_name: 'Pim' } })).toEqual({
       id: 'm1', senderLineUserId: 'U1', senderDisplayName: 'Pim', text: 'hi',
-      sentAt: new Date('2026-11-12T03:00:00Z'),
+      sentAt: new Date('2026-11-12T03:00:00Z'), mentions: null,
     })
+  })
+
+  it('keeps the stored mentions', () => {
+    const mentions = [{ index: 0, length: 4, type: 'user' as const, userId: 'U2' }, { index: 5, length: 4, type: 'all' as const, userId: null }]
+    expect(toStoredMessage({ ...row, mentions, line_users: null }).mentions).toEqual(mentions)
   })
 
   it('gives null when there is no sender row or no name', () => {

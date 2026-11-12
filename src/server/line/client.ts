@@ -4,7 +4,7 @@ import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
 
-/** LINE Messaging API (reply, group member profile) and LINE Login ID token verify.
+/** LINE Messaging API (reply, push, quota, group member profile) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
 export class LineHttpClient implements LinePort {
   private readonly token: string
@@ -40,12 +40,17 @@ export class LineHttpClient implements LinePort {
     if (!res.ok) throw new AdapterError(`line reply ${res.status}`)
   }
 
-  async push(to: string, messages: LineMessage[]): Promise<void> {
+  /** With a retry key, LINE accepts the push at most once per key (24 h): a repeat
+   *  answers 409, which means it was already sent, so it counts as success. */
+  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
+    if (opts?.retryKey) headers['X-Line-Retry-Key'] = opts.retryKey
     const res = await this.fetchImpl(`${API}/v2/bot/message/push`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ to, messages }),
     })
+    if (res.status === 409 && opts?.retryKey) return
     if (!res.ok) throw new AdapterError(`line push ${res.status}`)
   }
 
@@ -57,6 +62,22 @@ export class LineHttpClient implements LinePort {
     const body = (await res.json()) as { displayName?: unknown }
     if (typeof body.displayName !== 'string') throw new AdapterError('line profile 200')
     return { displayName: body.displayName }
+  }
+
+  async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
+    const headers = { Authorization: `Bearer ${this.token}` }
+    const [quota, usage] = await Promise.all([
+      this.fetchImpl(`${API}/v2/bot/message/quota`, { method: 'GET', headers }),
+      this.fetchImpl(`${API}/v2/bot/message/quota/consumption`, { method: 'GET', headers }),
+    ])
+    if (!quota.ok) throw new AdapterError(`line quota ${quota.status}`)
+    if (!usage.ok) throw new AdapterError(`line quota consumption ${usage.status}`)
+    const q = (await quota.json()) as { type?: unknown; value?: unknown }
+    const u = (await usage.json()) as { totalUsage?: unknown }
+    if (typeof u.totalUsage !== 'number') throw new AdapterError('line quota consumption 200')
+    if (q.type === 'none') return { limit: null, used: u.totalUsage }
+    if (q.type !== 'limited' || typeof q.value !== 'number') throw new AdapterError('line quota 200')
+    return { limit: q.value, used: u.totalUsage }
   }
 
   /** LINE checks the signature, aud (= the LINE Login channel ID) and exp. */

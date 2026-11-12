@@ -16,6 +16,7 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  PushBudgetClaim,
   NewWeeklyInsight,
   ProgressAnswer,
   ProgressPromptRow,
@@ -57,7 +58,7 @@ const GROUP_COLS =
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
 const TASK_COLS =
-  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, groups(line_group_id)'
+  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, announced_at, groups(line_group_id)'
 const PROMPT_COLS =
   'id, group_id, task_id, target_status, subject_line_user_id, trigger_message_id, asked_at, answer, answered_by_line_user_id, answered_at'
 
@@ -317,6 +318,46 @@ export class SupabaseStore implements StorePort {
     const { data, error } = await this.db.from('tasks').select(TASK_COLS).eq('id', taskId).maybeSingle()
     check('getTask', error)
     return data ? toTaskRow(data as unknown as DbTask) : null
+  }
+
+  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
+    if (taskIds.length === 0) return []
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ announced_at: at.toISOString() })
+      .in('id', taskIds)
+      .is('announced_at', null)
+      .is('deleted_at', null)
+      .select('id')
+    check('claimTaskAnnouncements', error)
+    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+
+  async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
+    if (taskIds.length === 0) return
+    const { error } = await this.db.from('tasks').update({ announced_at: null }).in('id', taskIds)
+    check('releaseTaskAnnouncements', error)
+  }
+
+  async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {
+    const { data, error } = await this.db.rpc('claim_push_budget', {
+      p_purpose: c.purpose, p_line_target_id: c.lineTargetId, p_message_count: c.messageCount,
+      p_line_used: c.lineUsed, p_allowed: c.allowed,
+    })
+    check('claimPushBudget', error)
+    return { pushLogId: typeof data === 'string' ? data : null }
+  }
+
+  async releasePushBudget(pushLogId: string): Promise<void> {
+    const { error } = await this.db.from('push_log').delete().eq('id', pushLogId)
+    check('releasePushBudget', error)
+  }
+
+  async listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]> {
+    if (candidateIds.length === 0) return []
+    const { data, error } = await this.db.from('tasks').select(TASK_COLS).in('candidate_id', candidateIds)
+    check('listTasksByCandidates', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
   }
 
   async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {

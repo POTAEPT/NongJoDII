@@ -5,11 +5,13 @@ export interface LinePort {
   reply(replyToken: string, messages: LineMessage[]): Promise<void>
   /** Push to a LINE group ID. Unlike a reply, a push counts against the monthly
    *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes). */
-  push(to: string, messages: LineMessage[]): Promise<void>
+  push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
   /** null when LINE rejects the ID token. */
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
+  /** This month's push budget: limit null = no limit; used = messages counted so far. */
+  getMessageQuota(): Promise<{ limit: number | null; used: number }>
 }
 
 // ---- OpenRouter ----
@@ -76,6 +78,7 @@ export type TaskRow = {
   id: string; groupId: string; lineGroupId: string; candidateId: string | null; title: string
   details: string | null; status: TaskStatus; assigneeLineUserId: string | null
   createdByLineUserId: string; dueAt: Date | null; deletedAt: Date | null
+  announcedAt: Date | null   // when the group was told about it (null = not yet)
 }
 export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
@@ -89,6 +92,11 @@ export type NewAiUsage = {
 /** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
+export type PushBudgetClaim = {
+  purpose: 'task_created'; lineTargetId: string; messageCount: number
+  lineUsed: number   // LINE's figure for this month
+  allowed: number    // most the month may reach with this push
+}
 /** A set-up group (attached to a Project, bot still in it) with the weekly summary on,
  *  and its chosen slot: ISO weekday 1..7, Bangkok time 'HH:MM:SS', last sent Bangkok date. */
 export type WeeklySummaryGroup = {
@@ -152,6 +160,18 @@ export interface StorePort {
   confirmCandidate(t: NewTask, decidedAt: Date): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }>
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
+  /** The bot's push claim: marks live, unannounced Tasks announced (announced_at null
+   *  -> at) and returns the ids it marked, so each Task is announced at most once. */
+  claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]>
+  /** Clears announced_at again after the bot's own push failed (server only). */
+  releaseTaskAnnouncements(taskIds: string[]): Promise<void>
+  /** rpc claim_push_budget: serialized; counts recent push_log rows on top of
+   *  lineUsed and inserts this push's row when the total stays within `allowed`.
+   *  null = no budget, nothing inserted. */
+  claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }>
+  /** Deletes a claimed push_log row after the push failed. */
+  releasePushBudget(pushLogId: string): Promise<void>
+  listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]>
   // #5 / #6 usage
   /** Serialized per Owner: sums the Owner's Bangkok month (open claims included) and, when it is
    *  below the cap in tokens and dollars, inserts an open claim row holding the estimate `u`.

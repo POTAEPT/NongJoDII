@@ -15,6 +15,7 @@ import type {
   NewTask,
   NewProgressPrompt,
   NewWebhookEvent,
+  PushBudgetClaim,
   NewWeeklyInsight,
   MessageRef,
   ProgressPromptRow,
@@ -49,6 +50,7 @@ export type CandidateRecord = CandidateRow & {
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
   lastEditedByLineUserId: string | null; lastActivityAt: Date | null; doneAt: Date | null
 }
+export type PushLogRecord = { id: string; purpose: string; lineTargetId: string; messageCount: number; sentAt: Date }
 /** task_prompts, kind mark_done only (the kind #7 writes). */
 export type ProgressPromptRecord = ProgressPromptRow
 export type AiUsageRecord = NewAiUsage & { id: string; settledAt: Date | null } // settledAt null = open claim
@@ -76,6 +78,7 @@ export type FakeTables = {
   summaries: SummaryRecord[]
   task_candidates: CandidateRecord[]
   tasks: TaskRecord[]
+  push_log: PushLogRecord[]
   task_prompts: ProgressPromptRecord[]
   ai_usage: AiUsageRecord[]
   fair_use_notices: FairUseNoticeRecord[]
@@ -104,6 +107,7 @@ export class FakeStore implements StorePort {
     summaries: [],
     task_candidates: [],
     tasks: [],
+    push_log: [],
     task_prompts: [],
     ai_usage: [],
     fair_use_notices: [],
@@ -325,7 +329,7 @@ export class FakeStore implements StorePort {
     if (!taskId) {
       taskId = randomUUID()
       this.tables.tasks.push({
-        ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
+        ...t, id: taskId, deletedAt: null, announcedAt: null, lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       })
     }
     if (c.state === 'proposed') {
@@ -347,7 +351,7 @@ export class FakeStore implements StorePort {
     return {
       id: t.id, groupId: t.groupId, lineGroupId: this.groupOf(t.groupId).lineGroupId, candidateId: t.candidateId,
       title: t.title, details: t.details, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
-      createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt,
+      createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt, announcedAt: t.announcedAt,
     }
   }
 
@@ -355,6 +359,46 @@ export class FakeStore implements StorePort {
     this.fault('getTask')
     const t = this.tables.tasks.find((row) => row.id === taskId)
     return t ? this.toTaskRow(t) : null
+  }
+
+  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
+    this.fault('claimTaskAnnouncements')
+    const rows = this.tables.tasks.filter((t) => taskIds.includes(t.id) && !t.announcedAt && t.deletedAt === null)
+    for (const t of rows) t.announcedAt = at
+    return rows.map((t) => t.id)
+  }
+
+  async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
+    this.fault('releaseTaskAnnouncements')
+    for (const t of this.tables.tasks) if (taskIds.includes(t.id)) t.announcedAt = null
+  }
+
+  /** Clock for push_log rows (the database uses now()); tests may move it. */
+  pushClock: () => Date = () => new Date()
+
+  // Mirrors claim_push_budget: rows of the last 10 minutes count on top of lineUsed.
+  async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {
+    this.fault('claimPushBudget')
+    const now = this.pushClock()
+    const recent = this.tables.push_log
+      .filter((p) => p.sentAt.getTime() > now.getTime() - 10 * 60_000)
+      .reduce((sum, p) => sum + p.messageCount, 0)
+    if (c.lineUsed + recent + c.messageCount > c.allowed) return { pushLogId: null }
+    const id = randomUUID()
+    this.tables.push_log.push({ id, purpose: c.purpose, lineTargetId: c.lineTargetId, messageCount: c.messageCount, sentAt: now })
+    return { pushLogId: id }
+  }
+
+  async releasePushBudget(pushLogId: string): Promise<void> {
+    this.fault('releasePushBudget')
+    this.tables.push_log = this.tables.push_log.filter((p) => p.id !== pushLogId)
+  }
+
+  async listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]> {
+    this.fault('listTasksByCandidates')
+    return this.tables.tasks
+      .filter((t) => t.candidateId !== null && candidateIds.includes(t.candidateId))
+      .map((t) => this.toTaskRow(t))
   }
 
   async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {
@@ -650,7 +694,7 @@ export class FakeStore implements StorePort {
     fk(this.hasGroup(partial.groupId), 'tasks.group_id')
     const row: TaskRecord = {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
-      assigneeLineUserId: null, dueAt: null, deletedAt: null,
+      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null,
       lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,
     }

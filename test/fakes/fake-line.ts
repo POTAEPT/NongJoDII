@@ -13,6 +13,9 @@ export class FakeLine implements LinePort {
   profiles = new Map<string, string>()
   /** ID token -> verified identity. A missing token answers null (LINE rejects it). */
   idTokens = new Map<string, { lineUserId: string; displayName: string | null }>()
+  /** Push budget getMessageQuota answers with; limit null = no limit. */
+  quota: { limit: number | null; used: number } = { limit: 300, used: 0 }
+  failQuota = false
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
   /** Makes push reject, as the real adapter does on a LINE 5xx or 429. */
@@ -28,9 +31,21 @@ export class FakeLine implements LinePort {
     if (this.failReply) throw new AdapterError('line reply 500')
   }
 
-  async push(to: string, messages: LineMessage[]): Promise<void> {
+  /** Retry keys LINE has accepted: a repeat is a no-op success (LINE answers 409). */
+  acceptedRetryKeys = new Set<string>()
+  /** Pushes LINE actually delivered (a repeat of an accepted retry key is not one). */
+  delivered: { to: string; messages: LineMessage[]; retryKey?: string }[] = []
+  /** LINE accepts and delivers the push, then the answer is lost (a timeout). */
+  timeoutAfterAccept = false
+
+  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
     this.pushes.push({ to, messages })
     if (this.failPush) throw new AdapterError('line push 500')
+    const key = opts?.retryKey
+    if (key !== undefined && this.acceptedRetryKeys.has(key)) return
+    if (key !== undefined) this.acceptedRetryKeys.add(key)
+    this.delivered.push({ to, messages, retryKey: key })
+    if (this.timeoutAfterAccept) throw new AdapterError('line timeout')
   }
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {
@@ -42,6 +57,11 @@ export class FakeLine implements LinePort {
     if (this.failProfile) throw new AdapterError('line profile 500')
     const displayName = this.profiles.get(`${lineGroupId}:${lineUserId}`)
     return displayName === undefined ? null : { displayName }
+  }
+
+  async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
+    if (this.failQuota) throw new AdapterError('line quota 500')
+    return { ...this.quota }
   }
 
   async verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null> {

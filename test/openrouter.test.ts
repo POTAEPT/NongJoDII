@@ -84,4 +84,19 @@ describe('OpenRouterClient.complete', () => {
     expect(err).toBeInstanceOf(AdapterError)
     expect(err.message).toBe('openrouter timeout')
   })
+
+  it('uses a shorter per-request timeoutMs, but never a longer one than its own', async () => {
+    const hang = ((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal
+        signal.addEventListener('abort', () => reject(signal.reason))
+      })) as unknown as typeof fetch
+    const short = new OpenRouterClient({ apiKey: 'k', fetchImpl: hang, timeoutMs: 60_000 })
+    const err = await short.complete({ ...REQ, timeoutMs: 10 }).catch((e) => e)
+    expect(err.message).toBe('openrouter timeout')
+
+    const capped = new OpenRouterClient({ apiKey: 'k', fetchImpl: hang, timeoutMs: 10 })
+    const err2 = await capped.complete({ ...REQ, timeoutMs: 60_000 }).catch((e) => e)
+    expect(err2.message).toBe('openrouter timeout')
+  })
 })

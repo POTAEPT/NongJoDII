@@ -15,7 +15,9 @@ export interface LinePort {
 }
 
 // ---- OpenRouter ----
-export type LlmRequest = { model: string; system: string; user: string; maxTokens: number }
+/** timeoutMs (optional) shortens the adapter's own timeout for this call, so a caller
+ *  that makes several calls can keep them all inside the route's time budget. */
+export type LlmRequest = { model: string; system: string; user: string; maxTokens: number; timeoutMs?: number }
 export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: number | null }
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }
@@ -34,6 +36,7 @@ export type GroupRow = {
   id: string; lineGroupId: string; projectId: string | null; name: string | null
   nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
   featureSummarize: boolean; featureDraftTasks: boolean; workDescription: string | null
+  featureTrackRemind: boolean   // setup form: progress tracking, reminders, gap flags (#7, #8)
 }
 export type NewWebhookEvent = {
   webhookEventId: string; eventType: string; lineGroupId: string | null
@@ -81,7 +84,7 @@ export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
   dueAt: Date | null; lastEditedByLineUserId: string; lastActivityAt: Date
 }
-export type AiPurpose = 'summary'
+export type AiPurpose = 'summary' | 'progress_decision'
 export type NewAiUsage = {
   ownerLineUserId: string; projectId: string | null; groupId: string | null; purpose: AiPurpose
   model: string; inputTokens: number; outputTokens: number; costUsd: number; createdAt: Date
@@ -94,6 +97,26 @@ export type PushBudgetClaim = {
   lineUsed: number   // LINE's figure for this month
   allowed: number    // most the month may reach with this push
 }
+// #7 Track progress: a mark_done card (task_prompts row) asks whether a Task moved
+// to In Process or Done. Only a person's Yes moves the Task.
+export type ProgressTarget = 'in_process' | 'done'
+export type ProgressAnswer = 'yes' | 'no'
+export type NewProgressPrompt = {
+  groupId: string; taskId: string; targetStatus: ProgressTarget
+  subjectLineUserId: string | null   // sender of the progress line; may answer besides the assignee
+  triggerMessageId: string | null    // messages.id
+  askedAt: Date
+}
+export type ProgressPromptRow = NewProgressPrompt & {
+  id: string; answer: ProgressAnswer | null; answeredByLineUserId: string | null; answeredAt: Date | null
+}
+export type MessageRef = { id: string; groupId: string; senderLineUserId: string | null; sentAt: Date }
+/** A person's Yes on a card: the answer and the Task move are one transaction. */
+export type ProgressYes = {
+  promptId: string; taskId: string; fromStatus: TaskStatus; toStatus: ProgressTarget
+  byLineUserId: string; assignTo: string | null; at: Date
+}
+export type ProgressYesOutcome = 'updated' | 'already_answered' | 'task_changed'
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -150,6 +173,23 @@ export interface StorePort {
    *  PostgREST max_rows limit (1000, supabase/config.toml) can never truncate the sum. */
   sumOwnerMonthUsage(ownerLineUserId: string, monthStartBkk: string): Promise<{ tokens: number; costMicroUsd: number }> // monthStartBkk 'YYYY-MM-01'; integer micro-dollars
   claimFairUseNotice(n: { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }): Promise<{ inserted: boolean }> // ON CONFLICT (PK) DO NOTHING
+  // #7 Track progress
+  listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
+  getMessageRef(messageId: string): Promise<MessageRef | null>
+  findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null>           // kind mark_done, answer null
+  /** Insert a mark_done card. prompt null when the Task already has an open one
+   *  (unique index task_prompts_one_open_mark_done). */
+  createProgressPrompt(p: NewProgressPrompt): Promise<{ prompt: ProgressPromptRow | null }>
+  getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null>
+  /** No: only while the card is open (answer is null); the first answer wins. */
+  answerProgressPrompt(promptId: string, answer: 'no', byLineUserId: string, at: Date): Promise<{ updated: boolean }>
+  /** Yes, in one transaction (rpc answer_progress_yes): locks the card; if it is open and the
+   *  live Task is still in fromStatus, moves the Task (done sets done_at; assignTo, when set,
+   *  becomes the assignee; bumps last_activity_at and last_edited_by) and records the answer.
+   *  task_changed leaves the card open and the Task untouched. */
+  confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }>
+  /** Deletes a card only while it is unanswered: its reply never reached the group, or it went stale. */
+  withdrawProgressPrompt(promptId: string): Promise<void>
   // #12 Google
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>

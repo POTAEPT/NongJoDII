@@ -7,19 +7,25 @@ import type {
   GroupRow,
   Member,
   Membership,
+  MessageRef,
   NewAiUsage,
   NewCandidate,
   NewGoogleAccount,
   NewMessage,
+  NewProgressPrompt,
   NewSummary,
   NewTask,
   NewWebhookEvent,
   PushBudgetClaim,
+  ProgressAnswer,
+  ProgressPromptRow,
   StorePort,
   StoredMessage,
   SummaryRow,
   TaskPatch,
   TaskRow,
+  ProgressYes,
+  ProgressYesOutcome,
 } from '../ports'
 import {
   type DbCandidate,
@@ -43,11 +49,27 @@ import {
 // Errors throw AdapterError with the Postgres/PostgREST code only (messages may echo data).
 
 const GROUP_COLS =
-  'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description'
+  'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind'
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
 const TASK_COLS =
   'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, announced_at, groups(line_group_id)'
+const PROMPT_COLS =
+  'id, group_id, task_id, target_status, subject_line_user_id, trigger_message_id, asked_at, answer, answered_by_line_user_id, answered_at'
+
+type DbPrompt = {
+  id: string; group_id: string; task_id: string; target_status: 'in_process' | 'done'
+  subject_line_user_id: string | null; trigger_message_id: string | null; asked_at: string
+  answer: ProgressAnswer | null; answered_by_line_user_id: string | null; answered_at: string | null
+}
+
+function toPromptRow(r: DbPrompt): ProgressPromptRow {
+  return {
+    id: r.id, groupId: r.group_id, taskId: r.task_id, targetStatus: r.target_status,
+    subjectLineUserId: r.subject_line_user_id, triggerMessageId: r.trigger_message_id, askedAt: toDate(r.asked_at),
+    answer: r.answer, answeredByLineUserId: r.answered_by_line_user_id, answeredAt: toDate(r.answered_at),
+  }
+}
 
 type PgError = { code: string } | null
 
@@ -343,6 +365,106 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('updateTask', error)
     return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  // ---- #7 Track progress ----
+  async listOpenTasks(groupId: string): Promise<TaskRow[]> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .select(TASK_COLS)
+      .eq('group_id', groupId)
+      .is('deleted_at', null)
+      .neq('status', 'done')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+    check('listOpenTasks', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
+  }
+
+  async getMessageRef(messageId: string): Promise<MessageRef | null> {
+    const { data, error } = await this.db
+      .from('messages')
+      .select('id, group_id, sender_line_user_id, sent_at')
+      .eq('id', messageId)
+      .maybeSingle()
+    check('getMessageRef', error)
+    const row = data as { id: string; group_id: string; sender_line_user_id: string | null; sent_at: string } | null
+    return row ? { id: row.id, groupId: row.group_id, senderLineUserId: row.sender_line_user_id, sentAt: toDate(row.sent_at) } : null
+  }
+
+  async findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .select(PROMPT_COLS)
+      .eq('task_id', taskId)
+      .eq('kind', 'mark_done')
+      .is('answer', null)
+      .maybeSingle()
+    check('findOpenProgressPrompt', error)
+    return data ? toPromptRow(data as DbPrompt) : null
+  }
+
+  async createProgressPrompt(p: NewProgressPrompt): Promise<{ prompt: ProgressPromptRow | null }> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .insert({
+        group_id: p.groupId, task_id: p.taskId, kind: 'mark_done', target_status: p.targetStatus,
+        subject_line_user_id: p.subjectLineUserId, trigger_message_id: p.triggerMessageId,
+        asked_at: p.askedAt.toISOString(),
+      })
+      .select(PROMPT_COLS)
+      .single()
+    // 23505 = unique_violation on task_prompts_one_open_mark_done: an open card already exists.
+    if (error?.code === '23505') return { prompt: null }
+    check('createProgressPrompt', error)
+    return { prompt: toPromptRow(data as DbPrompt) }
+  }
+
+  async getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .select(PROMPT_COLS)
+      .eq('id', promptId)
+      .eq('kind', 'mark_done')
+      .maybeSingle()
+    check('getProgressPrompt', error)
+    return data ? toPromptRow(data as DbPrompt) : null
+  }
+
+  async answerProgressPrompt(
+    promptId: string, answer: 'no', byLineUserId: string, at: Date,
+  ): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .update({ answer, answered_by_line_user_id: byLineUserId, answered_at: at.toISOString() })
+      .eq('id', promptId)
+      .eq('kind', 'mark_done')
+      .is('answer', null)
+      .select('id')
+    check('answerProgressPrompt', error)
+    return { updated: (data ?? []).length === 1 }
+  }
+
+  async confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }> {
+    const { data, error } = await this.db.rpc('answer_progress_yes', {
+      p_prompt_id: y.promptId, p_task_id: y.taskId, p_from_status: y.fromStatus, p_to_status: y.toStatus,
+      p_by: y.byLineUserId, p_assign_to: y.assignTo, p_at: y.at.toISOString(),
+    })
+    check('confirmProgressYes', error)
+    if (data !== 'updated' && data !== 'already_answered' && data !== 'task_changed') {
+      throw new Error('confirmProgressYes: unexpected result from answer_progress_yes')
+    }
+    return { outcome: data }
+  }
+
+  async withdrawProgressPrompt(promptId: string): Promise<void> {
+    const { error } = await this.db
+      .from('task_prompts')
+      .delete()
+      .eq('id', promptId)
+      .eq('kind', 'mark_done')
+      .is('answer', null)
+    check('withdrawProgressPrompt', error)
   }
 
   // ---- #5 / #6 usage ----

@@ -59,15 +59,6 @@ export class LineHttpClient implements LinePort {
     return { displayName: body.displayName }
   }
 
-  async push(to: string, messages: LineMessage[]): Promise<void> {
-    const res = await this.fetchImpl(`${API}/v2/bot/message/push`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, messages }),
-    })
-    if (!res.ok) throw new AdapterError(`line push ${res.status}`)
-  }
-
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
     const headers = { Authorization: `Bearer ${this.token}` }
     const [quota, usage] = await Promise.all([

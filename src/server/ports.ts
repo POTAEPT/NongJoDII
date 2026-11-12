@@ -10,8 +10,6 @@ export interface LinePort {
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
   /** null when LINE rejects the ID token. */
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
-  /** Push to a group. LINE counts one message per person in the group. */
-  push(to: string, messages: LineMessage[]): Promise<void>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
   getMessageQuota(): Promise<{ limit: number | null; used: number }>
 }

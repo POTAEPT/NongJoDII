@@ -346,13 +346,25 @@ describe('Tasks created feedback', () => {
     expect((await t.submit([t.confirm(t.c2)])).body).toMatchObject({ feedback: null })
   })
 
-  it('17e. Tasks the page posted itself (mode self) are marked without a push', async () => {
+  it('17e. mode claim hands one page the text and Tasks to post; a second page gets none', async () => {
     const t = await setup()
     const { feedback } = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
-    expect((await t.notify(feedback!.taskIds, 'tok-pim', 'self')).body).toEqual({ posted: true })
-    expect(t.line.pushes).toHaveLength(0)
+    const first = (await t.notify(feedback!.taskIds, 'tok-pim', 'claim')).body
+    expect(first).toEqual({ claimed: true, text: feedback!.text, taskIds: feedback!.taskIds })
+    // A second review page of the same member, at the same time.
+    expect((await t.notify(feedback!.taskIds, 'tok-pim', 'claim')).body).toEqual({ posted: false, reason: 'already_announced' })
     expect((await t.notify(feedback!.taskIds)).body).toEqual({ posted: false, reason: 'already_announced' })
+    expect(t.line.pushes).toHaveLength(0)
     expect((await t.notify(feedback!.taskIds, 'tok-pim', 'loud')).status).toBe(400)
+  })
+
+  it('17h. a failed post releases the claim and the push takes over', async () => {
+    const t = await setup()
+    const { feedback } = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
+    await t.notify(feedback!.taskIds, 'tok-pim', 'claim')
+    expect((await t.notify(feedback!.taskIds, 'tok-pim', 'release')).body).toEqual({ posted: false, reason: 'released' })
+    expect((await t.notify(feedback!.taskIds)).body).toEqual({ posted: true })
+    expect(t.line.pushes).toHaveLength(1)
   })
 
   it('17c. a failed name lookup still returns 200 with the saved Tasks', async () => {

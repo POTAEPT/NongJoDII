@@ -11,9 +11,11 @@ const MAX_TASKS = 10
  *  Owner and member cards): a "Tasks created" push is skipped inside it. Agent choice. */
 const QUOTA_RESERVE = 0.1
 
-/** POST /api/review/notify. Two modes, both claiming each Task once (announced_at):
- *  - 'self': the LIFF page already posted the message as the member (liff.sendMessages);
- *    this only marks the Tasks announced, so a later submit does not offer them again.
+/** POST /api/review/notify. Each Task is announced once (claimed via announced_at):
+ *  - 'claim': the LIFF page is about to post the message as the member
+ *    (liff.sendMessages). Claims first and returns the text for the claimed Tasks
+ *    only, so two open pages never both post the same Tasks.
+ *  - 'release': that post failed; frees the page's claim so the push can take over.
  *  - 'push' (default): the bot pushes the message. It never spends the quota reserve,
  *    and a retry of the same Tasks reuses one LINE retry key, so LINE sends it once. */
 export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult> {
@@ -22,7 +24,7 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
   const { summary, requester } = gate
 
   const mode = field(body, 'mode') ?? 'push'
-  if (mode !== 'push' && mode !== 'self') return badRequest('mode')
+  if (mode !== 'push' && mode !== 'claim' && mode !== 'release') return badRequest('mode')
   const taskIds = field(body, 'taskIds')
   if (
     !Array.isArray(taskIds) || taskIds.length === 0 || taskIds.length > MAX_TASKS ||
@@ -43,11 +45,23 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
     if (t.deletedAt === null && t.createdByLineUserId === requester) tasks.push(t)
   }
   if (tasks.length === 0) return ok({ posted: false, reason: 'nothing_to_announce' })
+  if (mode === 'release') {
+    await deps.store.releaseTaskAnnouncements(tasks.map((t) => t.id))
+    return ok({ posted: false, reason: 'released' })
+  }
 
   const claimed = new Set(await deps.store.claimTaskAnnouncements(tasks.map((t) => t.id), deps.now()))
   const toAnnounce = tasks.filter((t) => claimed.has(t.id))
   if (toAnnounce.length === 0) return ok({ posted: false, reason: 'already_announced' })
-  if (mode === 'self') return ok({ posted: true })
+  if (mode === 'claim') {
+    let names = new Map<string, string | null>()
+    try {
+      names = new Map((await deps.store.listLiveMembers(summary.groupId)).map((m) => [m.lineUserId, m.displayName]))
+    } catch (err) {
+      logError('task_feedback_names_failed', { summaryId: summary.id }, err)
+    }
+    return ok({ claimed: true, text: feedbackText(toAnnounce, names), taskIds: toAnnounce.map((t) => t.id) })
+  }
   const releaseTasks = () => deps.store.releaseTaskAnnouncements(toAnnounce.map((t) => t.id))
 
   let pushLogId: string | null = null
@@ -74,11 +88,7 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
         lineUsed: 0, allowed: Number.MAX_SAFE_INTEGER,
       }))
     }
-    const nameOf = new Map(members.map((m) => [m.lineUserId, m.displayName]))
-    const text = buildTaskFeedback(toAnnounce.map((t) => ({
-      title: t.title, assigned: t.assigneeLineUserId !== null,
-      assigneeName: t.assigneeLineUserId ? (nameOf.get(t.assigneeLineUserId) ?? null) : null, dueAt: t.dueAt,
-    })))
+    const text = feedbackText(toAnnounce, new Map(members.map((m) => [m.lineUserId, m.displayName])))
     await deps.line.push(summary.lineGroupId, [{ type: 'text', text }], { retryKey: retryKeyFor(toAnnounce) })
     log('task_feedback_pushed', { summaryId: summary.id, tasks: toAnnounce.length })
     return ok({ posted: true })
@@ -101,6 +111,13 @@ export function retryKeyFor(tasks: { id: string }[]): string {
   const hex = createHash('sha256').update(tasks.map((t) => t.id).sort().join(',')).digest('hex')
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
+function feedbackText(tasks: TaskRow[], names: Map<string, string | null>): string {
+  return buildTaskFeedback(tasks.map((t) => ({
+    title: t.title, assigned: t.assigneeLineUserId !== null,
+    assigneeName: t.assigneeLineUserId ? (names.get(t.assigneeLineUserId) ?? null) : null, dueAt: t.dueAt,
+  })))
 }
 
 function ok(result: NotifyResult): ApiResult {

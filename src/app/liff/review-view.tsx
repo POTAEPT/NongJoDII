@@ -54,25 +54,39 @@ async function announce(
   liff: LiffViewProps['liff'], idToken: string, summaryId: string,
   feedback: { text: string | null; taskIds: string[] }, allowSelf: boolean,
 ): Promise<Exclude<Announce, 'idle' | 'working'>> {
-  const { text, taskIds } = feedback
+  const { taskIds } = feedback
   if (taskIds.length === 0) return 'failed'
   if (
-    allowSelf && text !== null && liff.isInClient() && liff.getContext()?.type === 'group' && liff.isApiAvailable('sendMessages') &&
+    allowSelf && feedback.text !== null && liff.isInClient() && liff.getContext()?.type === 'group' &&
+    liff.isApiAvailable('sendMessages') &&
     window.confirm('แจ้งงานที่สร้างในแชทกลุ่มนี้? (ต้องเป็นกลุ่มเดียวกับที่สรุปแชท) กด "ยกเลิก" ให้น้องจดดีแจ้งแทน')
   ) {
+    // Claim first and post only what this page claimed, so a second open page
+    // never posts the same Tasks.
+    let claim: NotifyResult | null = null
     try {
-      await liff.sendMessages([{ type: 'text', text }])
-      // Mark them announced, so a later submit does not offer them again.
-      await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'self' }).catch(() => undefined)
-      return 'posted'
+      const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'claim' })
+      if (status === 200) claim = json as NotifyResult
     } catch {
-      // Not granted: fall back to the bot's push.
+      claim = null
+    }
+    if (claim && !('claimed' in claim)) return 'posted' // nothing left to announce
+    if (claim && 'claimed' in claim) {
+      try {
+        await liff.sendMessages([{ type: 'text', text: claim.text }])
+        return 'posted'
+      } catch {
+        // Not granted: free this page's claim, then the bot pushes.
+        await post('/api/review/notify', { idToken, summaryId, taskIds: claim.taskIds, mode: 'release' })
+          .catch(() => undefined)
+      }
     }
   }
   try {
     const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'push' })
     if (status !== 200) return 'failed'
     const n = json as NotifyResult
+    if ('claimed' in n) return 'failed'
     return n.posted || n.reason !== 'quota' ? 'posted' : 'quota'
   } catch {
     return 'failed'

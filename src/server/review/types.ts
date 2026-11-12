@@ -26,4 +26,7 @@ export type SubmitResult = {
   feedbackFailed: boolean
 }
 
-export type NotifyResult = { posted: true } | { posted: false; reason: 'already_announced' | 'nothing_to_announce' | 'quota' }
+export type NotifyResult =
+  | { posted: true }
+  | { posted: false; reason: 'already_announced' | 'nothing_to_announce' | 'quota' | 'released' }
+  | { claimed: true; text: string; taskIds: string[] }   // mode 'claim': post exactly this

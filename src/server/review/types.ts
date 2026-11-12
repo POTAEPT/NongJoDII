@@ -21,6 +21,9 @@ export type SubmitResult = {
   /** The "Tasks created" message for this requester's Tasks from this Summary that the
    *  group has not been told about yet; null when there are none. */
   feedback: { text: string; taskIds: string[] } | null
+  /** true when the lookup for that message failed: the page offers a retry that asks
+   *  the server to announce the saved Tasks (their IDs are in `results`). */
+  feedbackFailed: boolean
 }
 
 export type NotifyResult = { posted: true } | { posted: false; reason: 'already_announced' | 'quota' }

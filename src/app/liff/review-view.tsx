@@ -52,11 +52,12 @@ const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
  *  confirms the chat first; the bot's push always goes to the right group. */
 async function announce(
   liff: LiffViewProps['liff'], idToken: string, summaryId: string,
-  feedback: NonNullable<SubmitResult['feedback']>, allowSelf: boolean,
+  feedback: { text: string | null; taskIds: string[] }, allowSelf: boolean,
 ): Promise<Exclude<Announce, 'idle' | 'working'>> {
   const { text, taskIds } = feedback
+  if (taskIds.length === 0) return 'failed'
   if (
-    allowSelf && liff.isInClient() && liff.getContext()?.type === 'group' && liff.isApiAvailable('sendMessages') &&
+    allowSelf && text !== null && liff.isInClient() && liff.getContext()?.type === 'group' && liff.isApiAvailable('sendMessages') &&
     window.confirm('แจ้งงานที่สร้างในแชทกลุ่มนี้? (ต้องเป็นกลุ่มเดียวกับที่สรุปแชท) กด "ยกเลิก" ให้น้องจดดีแจ้งแทน')
   ) {
     try {
@@ -132,7 +133,8 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
           const result = json as SubmitResult
           setDone(result)
           const feedback = result.feedback
-          if (feedback && id) {
+          if (result.feedbackFailed) setAnnounced('failed')
+          else if (feedback && id) {
             setAnnounced('working')
             void announce(liff, idToken, id, feedback, true).then(setAnnounced)
           }
@@ -191,16 +193,17 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
         )}
         <p className="mt-3">ไม่สร้าง {declined} งาน</p>
         {announced !== 'idle' && <p className="mt-2 text-sm opacity-80">{ANNOUNCE_COPY[announced]}</p>}
-        {announced === 'failed' && done.feedback && id && (
+        {announced === 'failed' && id && (
           <button
             type="button"
             className="mt-2 rounded border px-4 py-2"
             onClick={() => {
-              const feedback = done.feedback
-              if (!feedback) return
+              // Only the notification is retried; the Tasks are already saved. The
+              // server rebuilds the message, so this also works when submit could not.
+              const taskIds = done.feedback?.taskIds ??
+                done.results.flatMap((r) => (r.outcome === 'created' && r.taskId ? [r.taskId] : []))
               setAnnounced('working')
-              // Only the notification is retried; the Tasks are already saved.
-              void announce(liff, idToken, id, feedback, false).then(setAnnounced)
+              void announce(liff, idToken, id, { text: null, taskIds }, false).then(setAnnounced)
             }}
           >
             ลองแจ้งในกลุ่มอีกครั้ง

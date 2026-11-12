@@ -363,6 +363,16 @@ describe('Tasks created feedback', () => {
     expect((res.body as SubmitResult).feedback?.text).toContain('ผู้รับ: สมาชิก')
   })
 
+  it('17f. a failed lookup after the save reports feedbackFailed, and notify can still announce', async () => {
+    const t = await setup()
+    t.store.failNext('listTasksByCandidates')
+    const res = await t.submit([t.confirm(t.c1)])
+    expect(res.status).toBe(200)
+    const body = res.body as SubmitResult
+    expect(body).toMatchObject({ feedback: null, feedbackFailed: true })
+    expect((await t.notify(createdIds(body))).body).toEqual({ posted: true })
+  })
+
   it('18. notify pushes once to the group and logs one message per live Member', async () => {
     const t = await setup()
     const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)

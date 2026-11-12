@@ -71,22 +71,23 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
     created: results.filter((r) => r.outcome === 'created').length,
     declined: results.filter((r) => r.outcome === 'declined').length,
   })
-  const feedback = await pendingFeedback(deps, summary.groupId, summary.id, [...candidates.keys()], requester)
-  const result: SubmitResult = { results, feedback }
+  const { feedback, failed: feedbackFailed } =
+    await pendingFeedback(deps, summary.groupId, summary.id, [...candidates.keys()], requester)
+  const result: SubmitResult = { results, feedback, feedbackFailed }
   return { status: 200, body: result }
 }
 
 /** The "Tasks created" message for every Task this requester created from this
  *  Summary that the group has not been told about yet, so a retry after a lost
- *  response still announces them. The Tasks are saved by now: a failed lookup
- *  gives no message instead of an error. */
+ *  response still announces them. The Tasks are saved by now: a failed lookup is
+ *  reported as `failed` (not an error status), and the page offers a retry. */
 async function pendingFeedback(
   deps: Deps, groupId: string, summaryId: string, candidateIds: string[], requester: string,
-): Promise<SubmitResult['feedback']> {
+): Promise<{ feedback: SubmitResult['feedback']; failed: boolean }> {
   try {
     const tasks = (await deps.store.listTasksByCandidates(candidateIds))
       .filter((t) => t.createdByLineUserId === requester && t.deletedAt === null && t.announcedAt === null)
-    if (tasks.length === 0) return null
+    if (tasks.length === 0) return { feedback: null, failed: false }
     const order = new Map(candidateIds.map((id, i) => [id, i]))
     tasks.sort((a, b) => (order.get(a.candidateId ?? '') ?? 0) - (order.get(b.candidateId ?? '') ?? 0))
     let names = new Map<string, string | null>()
@@ -99,9 +100,9 @@ async function pendingFeedback(
       title: t.title, assigned: t.assigneeLineUserId !== null, dueAt: t.dueAt,
       assigneeName: t.assigneeLineUserId ? (names.get(t.assigneeLineUserId) ?? null) : null,
     }))
-    return { text: buildTaskFeedback(created), taskIds: tasks.map((t) => t.id) }
+    return { feedback: { text: buildTaskFeedback(created), taskIds: tasks.map((t) => t.id) }, failed: false }
   } catch (err) {
     logError('review_feedback_failed', { summaryId }, err)
-    return null
+    return { feedback: null, failed: true }
   }
 }

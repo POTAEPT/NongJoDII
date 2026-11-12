@@ -50,40 +50,52 @@ const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
  *  LINE quota). sendMessages posts to whichever chat opened the page, and LIFF no
  *  longer exposes a group ID to check it against the Summary's group, so the member
  *  confirms the chat first; the bot's push always goes to the right group. */
+async function claimWithRetry(
+  idToken: string, summaryId: string, taskIds: string[], claimToken: string,
+): Promise<NotifyResult | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'claim', claimToken })
+      if (status === 200) return json as NotifyResult
+    } catch {
+      // Lost response: the same token gets the same reservation back.
+    }
+  }
+  return null
+}
+
 async function announce(
   liff: LiffViewProps['liff'], idToken: string, summaryId: string,
   feedback: { text: string | null; taskIds: string[] }, allowSelf: boolean,
 ): Promise<Exclude<Announce, 'idle' | 'working'>> {
   const { taskIds } = feedback
   if (taskIds.length === 0) return 'failed'
+  const claimToken = crypto.randomUUID()
   if (
     allowSelf && feedback.text !== null && liff.isInClient() && liff.getContext()?.type === 'group' &&
     liff.isApiAvailable('sendMessages') &&
     window.confirm('แจ้งงานที่สร้างในแชทกลุ่มนี้? (ต้องเป็นกลุ่มเดียวกับที่สรุปแชท) กด "ยกเลิก" ให้น้องจดดีแจ้งแทน')
   ) {
-    // Claim first and post only what this page claimed, so a second open page
-    // never posts the same Tasks.
-    let claim: NotifyResult | null = null
-    try {
-      const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'claim' })
-      if (status === 200) claim = json as NotifyResult
-    } catch {
-      claim = null
-    }
+    // Reserve first and post only what this page reserved, so a second open page
+    // never posts the same Tasks. The same token makes a retried claim safe.
+    const claim = await claimWithRetry(idToken, summaryId, taskIds, claimToken)
     if (claim && !('claimed' in claim)) return 'posted' // nothing left to announce
     if (claim && 'claimed' in claim) {
       try {
         await liff.sendMessages([{ type: 'text', text: claim.text }])
+        // Best effort: an unconfirmed reservation lapses after 2 minutes.
+        await post('/api/review/notify', { idToken, summaryId, taskIds: claim.taskIds, mode: 'confirm', claimToken })
+          .catch(() => undefined)
         return 'posted'
       } catch {
-        // Not granted: free this page's claim, then the bot pushes.
-        await post('/api/review/notify', { idToken, summaryId, taskIds: claim.taskIds, mode: 'release' })
-          .catch(() => undefined)
+        // Not granted: the push below takes over this page's reservation.
       }
     }
   }
   try {
-    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'push' })
+    // The token lets the push take over this page's own reservation, including one
+    // whose claim response never arrived.
+    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'push', claimToken })
     if (status !== 200) return 'failed'
     const n = json as NotifyResult
     if ('claimed' in n) return 'failed'

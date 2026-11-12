@@ -53,7 +53,7 @@ const GROUP_COLS =
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
 const TASK_COLS =
-  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, announced_at, groups(line_group_id)'
+  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, announced_at, announce_pending_at, groups(line_group_id)'
 const PROMPT_COLS =
   'id, group_id, task_id, target_status, subject_line_user_id, trigger_message_id, asked_at, answer, answered_by_line_user_id, answered_at'
 
@@ -312,17 +312,47 @@ export class SupabaseStore implements StorePort {
     return data ? toTaskRow(data as unknown as DbTask) : null
   }
 
-  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
+  async claimTaskAnnouncements(
+    taskIds: string[], at: Date, opts: { staleBefore: Date; takeOverToken: string | null },
+  ): Promise<string[]> {
     if (taskIds.length === 0) return []
+    const free = [`announce_pending_token.is.null`, `announce_pending_at.lt.${opts.staleBefore.toISOString()}`]
+    if (opts.takeOverToken) free.push(`announce_pending_token.eq.${opts.takeOverToken}`)
     const { data, error } = await this.db
       .from('tasks')
-      .update({ announced_at: at.toISOString() })
+      .update({ announced_at: at.toISOString(), announce_pending_token: null, announce_pending_at: null })
       .in('id', taskIds)
       .is('announced_at', null)
       .is('deleted_at', null)
+      .or(free.join(','))
       .select('id')
     check('claimTaskAnnouncements', error)
     return ((data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+
+  async reserveTaskAnnouncements(taskIds: string[], token: string, at: Date, staleBefore: Date): Promise<string[]> {
+    if (taskIds.length === 0) return []
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: token, announce_pending_at: at.toISOString() })
+      .in('id', taskIds)
+      .is('announced_at', null)
+      .is('deleted_at', null)
+      .or(`announce_pending_token.is.null,announce_pending_token.eq.${token},announce_pending_at.lt.${staleBefore.toISOString()}`)
+      .select('id')
+    check('reserveTaskAnnouncements', error)
+    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+
+  async confirmTaskAnnouncements(taskIds: string[], token: string, at: Date): Promise<void> {
+    if (taskIds.length === 0) return
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announced_at: at.toISOString(), announce_pending_token: null, announce_pending_at: null })
+      .in('id', taskIds)
+      .eq('announce_pending_token', token)
+      .is('announced_at', null)
+    check('confirmTaskAnnouncements', error)
   }
 
   async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {

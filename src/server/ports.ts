@@ -79,6 +79,7 @@ export type TaskRow = {
   details: string | null; status: TaskStatus; assigneeLineUserId: string | null
   createdByLineUserId: string; dueAt: Date | null; deletedAt: Date | null
   announcedAt: Date | null   // when the group was told about it (null = not yet)
+  announcePendingAt: Date | null   // a LIFF page reserved it to post itself (see announcements)
 }
 export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
@@ -148,10 +149,20 @@ export interface StorePort {
   confirmCandidate(t: NewTask, decidedAt: Date): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }>
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
-  /** Marks live Tasks as announced in the group (announced_at null -> at) and returns
-   *  the ids it marked, so each Task is announced at most once. */
-  claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]>
-  /** Clears announced_at again after the announcement failed. */
+  /** The bot's push claim: marks live, unannounced Tasks announced (announced_at null
+   *  -> at) and returns the ids it marked, so each Task is announced at most once.
+   *  A Task a page reserved is skipped unless the reservation is older than
+   *  staleBefore or carries takeOverToken (the same page handing over to the push). */
+  claimTaskAnnouncements(
+    taskIds: string[], at: Date, opts: { staleBefore: Date; takeOverToken: string | null },
+  ): Promise<string[]>
+  /** Reserves live, unannounced Tasks for a LIFF page's own post under `token`.
+   *  Tasks already reserved by the same token count again (a retried claim); a
+   *  reservation older than staleBefore may be taken over. Returns the reserved ids. */
+  reserveTaskAnnouncements(taskIds: string[], token: string, at: Date, staleBefore: Date): Promise<string[]>
+  /** The page posted: Tasks reserved by `token` become announced. Idempotent. */
+  confirmTaskAnnouncements(taskIds: string[], token: string, at: Date): Promise<void>
+  /** Clears announced_at again after the bot's own push failed (server only). */
   releaseTaskAnnouncements(taskIds: string[]): Promise<void>
   /** rpc claim_push_budget: serialized; counts recent push_log rows on top of
    *  lineUsed and inserts this push's row when the total stays within `allowed`.

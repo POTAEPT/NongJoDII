@@ -10,21 +10,31 @@ const MAX_TASKS = 10
 /** Share of the monthly LINE quota kept back for pushes that matter more (reminders,
  *  Owner and member cards): a "Tasks created" push is skipped inside it. Agent choice. */
 const QUOTA_RESERVE = 0.1
+/** A page's reservation older than this counts as abandoned (the page closed). */
+export const PENDING_ANNOUNCE_MS = 2 * 60_000
 
-/** POST /api/review/notify. Each Task is announced once (claimed via announced_at):
- *  - 'claim': the LIFF page is about to post the message as the member
- *    (liff.sendMessages). Claims first and returns the text for the claimed Tasks
- *    only, so two open pages never both post the same Tasks.
- *  - 'release': that post failed; frees the page's claim so the push can take over.
- *  - 'push' (default): the bot pushes the message. It never spends the quota reserve,
- *    and a retry of the same Tasks reuses one LINE retry key, so LINE sends it once. */
+/** POST /api/review/notify. Each Task is announced once; announced_at, once set by a
+ *  confirmed post or a push, is never cleared by a client.
+ *  - 'claim' + claimToken: the LIFF page reserves Tasks before posting the message as
+ *    the member (liff.sendMessages) and gets the text for the reserved Tasks only, so
+ *    two open pages never both post. The page makes the token: a claim whose response
+ *    was lost is retried with the same token and gets the same Tasks back.
+ *  - 'confirm' + claimToken: the post went out; the reserved Tasks become announced.
+ *  - 'push' (default), optional claimToken: the bot pushes. With the page's token it
+ *    takes over that page's reservation (its post failed or its claim response was
+ *    lost). It never spends the quota reserve, and a retry of the same Tasks reuses
+ *    one LINE retry key, so LINE sends it once. */
 export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult> {
   const gate = await openSummary(deps, body)
   if (!gate.ok) return gate.result
   const { summary, requester } = gate
 
   const mode = field(body, 'mode') ?? 'push'
-  if (mode !== 'push' && mode !== 'claim' && mode !== 'release') return badRequest('mode')
+  if (mode !== 'push' && mode !== 'claim' && mode !== 'confirm') return badRequest('mode')
+  const rawToken = field(body, 'claimToken')
+  const claimToken = typeof rawToken === 'string' && UUID.test(rawToken) ? rawToken : null
+  if (rawToken !== undefined && claimToken === null) return badRequest('claimToken')
+  if (mode !== 'push' && claimToken === null) return badRequest('claimToken')
   const taskIds = field(body, 'taskIds')
   if (
     !Array.isArray(taskIds) || taskIds.length === 0 || taskIds.length > MAX_TASKS ||
@@ -45,12 +55,16 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
     if (t.deletedAt === null && t.createdByLineUserId === requester) tasks.push(t)
   }
   if (tasks.length === 0) return ok({ posted: false, reason: 'nothing_to_announce' })
-  if (mode === 'release') {
-    await deps.store.releaseTaskAnnouncements(tasks.map((t) => t.id))
-    return ok({ posted: false, reason: 'released' })
+  const now = deps.now()
+  const staleBefore = new Date(now.getTime() - PENDING_ANNOUNCE_MS)
+  const ids = tasks.map((t) => t.id)
+  if (mode === 'confirm') {
+    await deps.store.confirmTaskAnnouncements(ids, claimToken as string, now)
+    return ok({ posted: true })
   }
-
-  const claimed = new Set(await deps.store.claimTaskAnnouncements(tasks.map((t) => t.id), deps.now()))
+  const claimed = new Set(mode === 'claim'
+    ? await deps.store.reserveTaskAnnouncements(ids, claimToken as string, now, staleBefore)
+    : await deps.store.claimTaskAnnouncements(ids, now, { staleBefore, takeOverToken: claimToken }))
   const toAnnounce = tasks.filter((t) => claimed.has(t.id))
   if (toAnnounce.length === 0) return ok({ posted: false, reason: 'already_announced' })
   if (mode === 'claim') {

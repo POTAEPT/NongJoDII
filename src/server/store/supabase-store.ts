@@ -291,8 +291,8 @@ export class SupabaseStore implements StorePort {
     return data ? toTaskRow(data as unknown as DbTask) : null
   }
 
-  async updateTask(taskId: string, patch: TaskPatch): Promise<void> {
-    const { error } = await this.db
+  async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
       .from('tasks')
       .update({
         title: patch.title, details: patch.details, assignee_line_user_id: patch.assigneeLineUserId,
@@ -300,7 +300,10 @@ export class SupabaseStore implements StorePort {
         last_activity_at: patch.lastActivityAt.toISOString(),
       })
       .eq('id', taskId)
+      .is('deleted_at', null)
+      .select('id')
     check('updateTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
   }
 
   // ---- #5 / #6 usage ----

@@ -15,9 +15,11 @@ export async function updateTaskFromLiff(deps: Deps, body: unknown): Promise<Api
   })
   if (!v.ok) return badRequest(v.field)
   const status = statusFor(v.fields.assigneeLineUserId, task.status)
-  await deps.store.updateTask(task.id, {
+  const { updated } = await deps.store.updateTask(task.id, {
     ...v.fields, status, lastEditedByLineUserId: requester, lastActivityAt: deps.now(),
   })
+  // Deleted between the gate and the write: nothing was changed.
+  if (!updated) return { status: 404, body: { error: 'not_found' } }
   log('task_edited', { taskId: task.id })
   const fresh = (await deps.store.getTask(task.id)) ?? task
   return { status: 200, body: await taskView(deps, fresh) }

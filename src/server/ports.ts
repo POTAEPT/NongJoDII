@@ -100,7 +100,7 @@ export interface StorePort {
   decideCandidate(candidateId: string, state: 'confirmed' | 'declined', decidedBy: string, decidedAt: Date): Promise<{ updated: boolean }> // only from 'proposed'
   createTask(t: NewTask): Promise<{ created: boolean; taskId: string }>              // ON CONFLICT (candidate_id) DO NOTHING; duplicate -> existing id, created false
   getTask(taskId: string): Promise<TaskRow | null>
-  updateTask(taskId: string, patch: TaskPatch): Promise<void>
+  updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
   // #5 / #6 usage
   insertAiUsage(u: NewAiUsage): Promise<void>
   /** Reads the owner_monthly_usage view (one row per Owner per Bangkok month), so the

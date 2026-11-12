@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { loadTask } from '@/server/tasks/load'
 import { updateTaskFromLiff } from '@/server/tasks/update'
 import type { TaskView } from '@/server/tasks/load'
@@ -70,6 +70,25 @@ describe('updateTaskFromLiff', () => {
     const d = setup({ deleted: true })
     expect((await d.edit()).status).toBe(404)
     expect((await loadTask(d.deps, { idToken: 'tok-bank', taskId: d.row.id })).status).toBe(404)
+  })
+
+  it('answers 404 and changes nothing when the task is deleted after the gate', async () => {
+    const s = setup()
+    const real = s.store.getTask.bind(s.store)
+    vi.spyOn(s.store, 'getTask').mockImplementationOnce(async (id) => {
+      const t = await real(id)
+      s.stored().deletedAt = new Date(TEST_NOW.getTime())
+      return t
+    })
+    expect(await s.edit()).toEqual({ status: 404, body: { error: 'not_found' } })
+    expect(s.stored().title).toBe('ทำสไลด์')
+  })
+
+  it('FakeStore.updateTask skips a soft-deleted task', async () => {
+    const d = setup({ deleted: true })
+    const patch = { title: 'x', details: null, assigneeLineUserId: null, status: 'not_assigned' as const, dueAt: null, lastEditedByLineUserId: 'Ubank', lastActivityAt: TEST_NOW }
+    expect(await d.store.updateTask(d.row.id, patch)).toEqual({ updated: false })
+    expect(d.stored().title).toBe('ทำสไลด์')
   })
 
   it('identity comes only from the verified token', async () => {

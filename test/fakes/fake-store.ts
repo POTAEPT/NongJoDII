@@ -314,13 +314,14 @@ export class FakeStore implements StorePort {
     return t ? this.toTaskRow(t) : null
   }
 
-  async updateTask(taskId: string, patch: TaskPatch): Promise<void> {
+  async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {
     this.fault('updateTask')
-    const t = this.tables.tasks.find((row) => row.id === taskId)
-    if (!t) return
+    const t = this.tables.tasks.find((row) => row.id === taskId && row.deletedAt === null)
+    if (!t) return { updated: false }
     fk(this.hasLineUser(patch.assigneeLineUserId), 'tasks.assignee_line_user_id')
     fk(this.hasLineUser(patch.lastEditedByLineUserId), 'tasks.last_edited_by_line_user_id')
     Object.assign(t, patch)
+    return { updated: true }
   }
 
   // ---- #5 / #6 usage ----

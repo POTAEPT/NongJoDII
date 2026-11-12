@@ -5,6 +5,8 @@ import { AdapterError } from '@/server/log'
 export class FakeLine implements LinePort {
   /** Every reply call, recorded before `failReply` is applied. */
   replies: { replyToken: string; messages: LineMessage[] }[] = []
+  /** Every push call, recorded before `failPush` is applied. */
+  pushes: { to: string; messages: LineMessage[] }[] = []
   profileCalls: { lineGroupId: string; lineUserId: string }[] = []
   verifyCalls: string[] = []
   /** Key `${lineGroupId}:${lineUserId}` -> LINE name. A missing key answers null (LINE 404). */
@@ -13,6 +15,8 @@ export class FakeLine implements LinePort {
   idTokens = new Map<string, { lineUserId: string; displayName: string | null }>()
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
+  /** Makes push reject, as the real adapter does on a LINE 5xx or 429. */
+  failPush = false
   /** Makes getGroupMemberProfile reject, as the real adapter does on a LINE 5xx/429. */
   failProfile = false
   /** When above 0, getGroupMemberProfile answers only after this many ms, then rejects
@@ -22,6 +26,11 @@ export class FakeLine implements LinePort {
   async reply(replyToken: string, messages: LineMessage[]): Promise<void> {
     this.replies.push({ replyToken, messages })
     if (this.failReply) throw new AdapterError('line reply 500')
+  }
+
+  async push(to: string, messages: LineMessage[]): Promise<void> {
+    this.pushes.push({ to, messages })
+    if (this.failPush) throw new AdapterError('line push 500')
   }
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {

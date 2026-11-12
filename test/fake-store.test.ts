@@ -5,7 +5,7 @@ import { FakeStore } from './fakes/fake-store'
 import { FakeLine } from './fakes/fake-line'
 import { FakeLlm } from './fakes/fake-llm'
 import { FakeGoogle } from './fakes/fake-google'
-import { TEST_KEY, TEST_LIFF_ID, TEST_SECRET, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
+import { TEST_KEY, TEST_LIFF_ID, TEST_SECRET, TEST_TICK_SECRET, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 const SENT_AT = new Date('2026-11-12T02:00:00Z')
 
@@ -333,7 +333,9 @@ describe('makeTestDeps', () => {
     expect(t.deps.google).toBe(t.google)
     expect(t.deps.store).toBe(t.store)
     expect(t.deps.now()).toEqual(new Date('2026-11-12T03:00:00Z'))
-    expect(t.deps.config).toEqual({ lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY })
+    expect(t.deps.config).toEqual({
+      lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET,
+    })
     t.setNow(new Date('2026-12-01T00:00:00Z'))
     expect(t.deps.now()).toEqual(new Date('2026-12-01T00:00:00Z'))
   })

@@ -3,6 +3,9 @@ import type { LineMessage } from './line/types'
 // ---- LINE (Messaging API + LINE Login verify) ----
 export interface LinePort {
   reply(replyToken: string, messages: LineMessage[]): Promise<void>
+  /** Push to a LINE group ID. Unlike a reply, a push counts against the monthly
+   *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes). */
+  push(to: string, messages: LineMessage[]): Promise<void>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
   /** null when LINE rejects the ID token. */
@@ -133,7 +136,7 @@ export interface StorePort {
 }
 
 // ---- Composition ----
-export type HandlerConfig = { lineChannelSecret: string; liffId: string; tokenEncryptionKey: Buffer }
+export type HandlerConfig = { lineChannelSecret: string; liffId: string; tokenEncryptionKey: Buffer; tickSecret: string }
 export type Deps = {
   line: LinePort; llm: LlmPort; google: GooglePort; store: StorePort
   now: () => Date; config: HandlerConfig

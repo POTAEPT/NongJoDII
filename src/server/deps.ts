@@ -35,6 +35,7 @@ export function getDeps(): Deps {
       lineChannelSecret: config.lineChannelSecret,
       liffId: config.liffId,
       tokenEncryptionKey: config.tokenEncryptionKey,
+      tickSecret: config.tickSecret,
     },
   }
   return cached

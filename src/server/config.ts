@@ -13,6 +13,7 @@ export type AppConfig = {
   googleClientId: string
   googleClientSecret: string
   tokenEncryptionKey: Buffer    // exactly 32 bytes
+  tickSecret: string            // same value as the Vault secret nongjodii_tick_secret
 }
 
 const NAMES = [
@@ -27,6 +28,7 @@ const NAMES = [
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'TOKEN_ENCRYPTION_KEY',
+  'TICK_SECRET',
 ] as const
 
 type Name = (typeof NAMES)[number]
@@ -51,5 +53,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     googleClientId: get('GOOGLE_CLIENT_ID'),
     googleClientSecret: get('GOOGLE_CLIENT_SECRET'),
     tokenEncryptionKey,
+    tickSecret: get('TICK_SECRET'),
   }
 }

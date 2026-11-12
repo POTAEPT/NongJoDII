@@ -40,6 +40,15 @@ export class LineHttpClient implements LinePort {
     if (!res.ok) throw new AdapterError(`line reply ${res.status}`)
   }
 
+  async push(to: string, messages: LineMessage[]): Promise<void> {
+    const res = await this.fetchImpl(`${API}/v2/bot/message/push`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, messages }),
+    })
+    if (!res.ok) throw new AdapterError(`line push ${res.status}`)
+  }
+
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {
     const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/member/${encodeURIComponent(lineUserId)}`
     const res = await this.fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } })

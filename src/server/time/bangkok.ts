@@ -52,3 +52,49 @@ export function bangkokTodayLabel(now: Date): string {
   const p = bangkokParts(now)
   return `${p.y}-${pad(p.m)}-${pad(p.d)}`
 }
+
+/** ISO weekday in Bangkok: 1 = Monday ... 7 = Sunday, the same numbering as
+ *  groups.weekly_summary_weekday. */
+export function bangkokIsoWeekday(now: Date): number {
+  const day = new Date(now.getTime() + BKK_OFFSET_MS).getUTCDay()
+  return day === 0 ? 7 : day
+}
+
+/** Monday of the Bangkok week holding `now`, as 'YYYY-MM-DD' (weekly_insights.week_start). */
+export function bangkokWeekStartLabel(now: Date): string {
+  return bangkokTodayLabel(new Date(now.getTime() - (bangkokIsoWeekday(now) - 1) * 86_400_000))
+}
+
+/** Minutes after midnight of a Postgres `time` value, 'HH:MM' or 'HH:MM:SS'. */
+export function parseTimeOfDay(time: string): number {
+  const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(time)
+  if (!match) throw new Error('time of day must be HH:MM or HH:MM:SS')
+  const hh = Number(match[1])
+  const mm = Number(match[2])
+  if (hh > 23 || mm > 59) throw new Error('time of day out of range')
+  return hh * 60 + mm
+}
+
+/** A group's daily slot: its chosen Bangkok time and the Bangkok date it was last sent
+ *  ('YYYY-MM-DD', groups.daily_reminder_last_sent_on), or null if never sent. */
+export type DailySlot = { time: string; lastSentOn: string | null }
+
+/** A group's weekly slot: its chosen ISO weekday and Bangkok time, and the Bangkok date it
+ *  was last sent (groups.weekly_summary_last_sent_on). */
+export type WeeklySlot = DailySlot & { weekday: number }
+
+/** Due on the first tick at or after the chosen time, once per Bangkok day. A time
+ *  changed later the same day does not send again, because the date already matches.
+ *  Being due is not a claim: the caller still claims the slot in the database before
+ *  sending, so two overlapping ticks cannot both send. */
+export function isDailyDue(slot: DailySlot, now: Date): boolean {
+  if (slot.lastSentOn !== null && slot.lastSentOn >= bangkokTodayLabel(now)) return false
+  const p = bangkokParts(now)
+  return p.hh * 60 + p.mm >= parseTimeOfDay(slot.time)
+}
+
+/** Due on the chosen weekday, on the first tick at or after the chosen time, once per
+ *  Bangkok day. A day whose ticks all fail is not caught up later in the week. */
+export function isWeeklyDue(slot: WeeklySlot, now: Date): boolean {
+  return bangkokIsoWeekday(now) === slot.weekday && isDailyDue(slot, now)
+}

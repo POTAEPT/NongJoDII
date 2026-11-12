@@ -1,6 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { AdapterError } from '../log'
 import type {
+  AiUsageActual,
+  AiUsageCap,
   CandidateRow,
   GroupRow,
   Member,
@@ -303,13 +305,29 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #5 / #6 usage ----
-  async insertAiUsage(u: NewAiUsage): Promise<void> {
-    const { error } = await this.db.from('ai_usage').insert({
-      owner_line_user_id: u.ownerLineUserId, project_id: u.projectId, group_id: u.groupId, purpose: u.purpose,
-      model: u.model, input_tokens: u.inputTokens, output_tokens: u.outputTokens, cost_usd: u.costUsd,
-      created_at: u.createdAt.toISOString(),
+  /** claim_ai_usage takes a per-Owner advisory lock, re-sums the month and inserts the open claim. */
+  async claimAiUsage(u: NewAiUsage, cap: AiUsageCap): Promise<{ claimId: string | null }> {
+    const { data, error } = await this.db.rpc('claim_ai_usage', {
+      p_owner_line_user_id: u.ownerLineUserId, p_project_id: u.projectId, p_group_id: u.groupId, p_purpose: u.purpose,
+      p_model: u.model, p_input_tokens: u.inputTokens, p_output_tokens: u.outputTokens, p_cost_usd: u.costUsd,
+      p_created_at: u.createdAt.toISOString(), p_cap_tokens: cap.capTokens, p_cap_cost_usd: cap.capCostUsd,
     })
-    check('insertAiUsage', error)
+    check('claimAiUsage', error)
+    return { claimId: typeof data === 'string' ? data : null }
+  }
+
+  async settleAiUsage(claimId: string, actual: AiUsageActual): Promise<void> {
+    const { data, error } = await this.db.rpc('settle_ai_usage', {
+      p_id: claimId, p_model: actual.model, p_input_tokens: actual.inputTokens,
+      p_output_tokens: actual.outputTokens, p_cost_usd: actual.costUsd,
+    })
+    check('settleAiUsage', error)
+    if (data !== true) throw new AdapterError('supabase settleAiUsage: claim not found')
+  }
+
+  async releaseAiUsage(claimId: string): Promise<void> {
+    const { error } = await this.db.rpc('release_ai_usage', { p_id: claimId })
+    check('releaseAiUsage', error)
   }
 
   /** One view row per Owner per Bangkok month; never sums rows in JS (max_rows would truncate). */

@@ -250,6 +250,20 @@ describe('Summary command', () => {
     expect(t.llm.requests[0]).toMatchObject({ model: TEXT_MODEL, maxTokens: 4000 })
   })
 
+  it('11b. a usage write that keeps failing still delivers the Summary and keeps the estimate as the charge', async () => {
+    const t = setup()
+    await seedChat(t)
+    t.respond(standardAnswer)
+    for (let i = 0; i < 5; i++) t.store.failNext('settleAiUsage')
+    await t.command()
+    expect(t.line.replies).toHaveLength(1)
+    expect(textOf(t.line.replies[0].messages)).toContain('สรุปแชทล่าสุด')
+    expect(t.store.tables.summaries).toHaveLength(1)
+    expect(t.store.tables.ai_usage).toHaveLength(1)
+    // The open estimate row stays: output counted at the full maxTokens, not the reported 300.
+    expect(t.store.tables.ai_usage[0]).toMatchObject({ ownerLineUserId: 'Uowner1', outputTokens: 4000, settledAt: null })
+  })
+
   it('12. without a confirmed Owner it explains and calls no AI', async () => {
     const t = setup()
     t.store.tables.groups[0].ownerConfirmedAt = null

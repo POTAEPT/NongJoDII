@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runMeteredAi } from '@/server/usage/meter'
+import { FairUseCapReachedError, runMeteredAi } from '@/server/usage/meter'
 import { priceTokens } from '@/server/usage/pricing'
 import { makeTestDeps, TEST_NOW } from './harness'
 
@@ -61,6 +61,46 @@ describe('runMeteredAi', () => {
     t.llm.fail(new Error('boom'))
     await expect(runMeteredAi(t.deps, t.ctx, REQ)).rejects.toThrow('boom')
     expect(t.store.tables.ai_usage).toHaveLength(0)
+  })
+
+  it('keeps the estimate when the claim cannot be released after an LLM error (over-counts, never under-counts)', async () => {
+    const t = await setup()
+    t.llm.fail(new Error('boom'))
+    t.store.failNext('releaseAiUsage')
+    await expect(runMeteredAi(t.deps, t.ctx, REQ)).rejects.toThrow('boom')
+    expect(t.store.tables.ai_usage).toHaveLength(1)
+    expect(t.store.tables.ai_usage[0]).toMatchObject({ inputTokens: 5, outputTokens: REQ.maxTokens, settledAt: null })
+  })
+
+  it('refuses at the Fair-use cap without calling the model or recording usage', async () => {
+    const t = await setup()
+    t.store.seedAiUsage({ costUsd: 0.5, createdAt: TEST_NOW })
+    await expect(runMeteredAi(t.deps, t.ctx, REQ)).rejects.toBeInstanceOf(FairUseCapReachedError)
+    expect(t.llm.requests).toHaveLength(0)
+    expect(t.store.tables.ai_usage).toHaveLength(1)
+  })
+
+  it('a usage write that fails once after a successful response is retried into one row with the real numbers', async () => {
+    const t = await setup()
+    t.llm.respond({ content: '{}', model: 'openai/gpt-oss-20b', usage: { inputTokens: 1000, outputTokens: 500, costUsd: null } })
+    t.store.failNext('settleAiUsage')
+    const result = await runMeteredAi(t.deps, t.ctx, REQ)
+    expect(result.content).toBe('{}')
+    expect(t.store.tables.ai_usage).toHaveLength(1)
+    expect(t.store.tables.ai_usage[0]).toMatchObject({ inputTokens: 1000, outputTokens: 500, costUsd: 0.000132 })
+    expect(t.store.tables.ai_usage[0].settledAt).not.toBeNull()
+  })
+
+  it('when the usage write keeps failing, the estimate stays recorded and the result is still returned', async () => {
+    const t = await setup()
+    t.llm.respond({ content: '{}', model: 'openai/gpt-oss-20b', usage: { inputTokens: 1000, outputTokens: 500, costUsd: null } })
+    for (let i = 0; i < 5; i++) t.store.failNext('settleAiUsage')
+    const result = await runMeteredAi(t.deps, t.ctx, REQ)
+    expect(result.content).toBe('{}')
+    expect(t.store.tables.ai_usage).toHaveLength(1)
+    expect(t.store.tables.ai_usage[0]).toMatchObject({
+      inputTokens: 5, outputTokens: REQ.maxTokens, costUsd: priceTokens(5, 700), settledAt: null,
+    })
   })
 })
 

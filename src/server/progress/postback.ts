@@ -37,10 +37,16 @@ export function encodeProgressAction(action: ProgressAction): string {
   return p.toString()
 }
 
-/** null for data that is not a progress postback, or is malformed. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** null for data that is not a progress postback, or is malformed. Every ID must be a
+ *  UUID: postback data comes from the client, and Postgres rejects a malformed uuid. */
 export function parseProgressAction(data: string): ProgressAction | null {
   const p = new URLSearchParams(data)
-  const get = (k: string) => p.get(k) || null
+  const get = (k: string) => {
+    const v = p.get(k)
+    return v && (k === 'v' || k === 's' || UUID.test(v)) ? v : null
+  }
   switch (p.get('a')) {
     case 'pg': {
       const promptId = get('p')

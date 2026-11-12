@@ -16,14 +16,14 @@ import type {
   NewProgressPrompt,
   NewWebhookEvent,
   MessageRef,
-  ProgressAnswer,
   ProgressPromptRow,
   StorePort,
   StoredMessage,
   SummaryRow,
   TaskPatch,
   TaskRow,
-  TaskStatusMove,
+  ProgressYes,
+  ProgressYesOutcome,
 } from '@/server/ports'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
@@ -389,7 +389,7 @@ export class FakeStore implements StorePort {
     return p ? { ...p } : null
   }
 
-  async answerProgressPrompt(promptId: string, answer: ProgressAnswer, byLineUserId: string, at: Date): Promise<{ updated: boolean }> {
+  async answerProgressPrompt(promptId: string, answer: 'no', byLineUserId: string, at: Date): Promise<{ updated: boolean }> {
     this.fault('answerProgressPrompt')
     const p = this.tables.task_prompts.find((row) => row.id === promptId && row.answer === null)
     if (!p) return { updated: false }
@@ -398,18 +398,29 @@ export class FakeStore implements StorePort {
     return { updated: true }
   }
 
-  async moveTaskStatus(m: TaskStatusMove): Promise<{ updated: boolean }> {
-    this.fault('moveTaskStatus')
-    const t = this.tables.tasks.find((row) => row.id === m.taskId && row.deletedAt === null && row.status === m.fromStatus)
-    if (!t) return { updated: false }
-    fk(this.hasLineUser(m.byLineUserId), 'tasks.last_edited_by_line_user_id')
-    fk(this.hasLineUser(m.assignTo), 'tasks.assignee_line_user_id')
-    t.status = m.toStatus
-    if (m.toStatus === 'done') t.doneAt = m.at
-    if (m.assignTo !== null) t.assigneeLineUserId = m.assignTo
-    t.lastEditedByLineUserId = m.byLineUserId
-    t.lastActivityAt = m.at
-    return { updated: true }
+  // Same rules as the answer_progress_yes function, applied as one step: every check
+  // runs before any write, so a throw changes nothing.
+  async confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }> {
+    this.fault('confirmProgressYes')
+    const p = this.tables.task_prompts.find((row) => row.id === y.promptId && row.taskId === y.taskId)
+    if (!p) return { outcome: 'task_changed' }
+    if (p.answer !== null) return { outcome: 'already_answered' }
+    const t = this.tables.tasks.find((row) => row.id === y.taskId && row.deletedAt === null && row.status === y.fromStatus)
+    if (!t) return { outcome: 'task_changed' }
+    fk(this.hasLineUser(y.byLineUserId), 'tasks.last_edited_by_line_user_id')
+    fk(this.hasLineUser(y.assignTo), 'tasks.assignee_line_user_id')
+    t.status = y.toStatus
+    if (y.toStatus === 'done') t.doneAt = y.at
+    if (y.assignTo !== null) t.assigneeLineUserId = y.assignTo
+    t.lastEditedByLineUserId = y.byLineUserId
+    t.lastActivityAt = y.at
+    Object.assign(p, { answer: 'yes', answeredByLineUserId: y.byLineUserId, answeredAt: y.at })
+    return { outcome: 'updated' }
+  }
+
+  async withdrawProgressPrompt(promptId: string): Promise<void> {
+    this.fault('withdrawProgressPrompt')
+    this.tables.task_prompts = this.tables.task_prompts.filter((row) => !(row.id === promptId && row.answer === null))
   }
 
   // ---- #5 / #6 usage ----

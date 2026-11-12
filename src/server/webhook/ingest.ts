@@ -63,16 +63,18 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   }
 
   if (source.type === 'group' && event.type === 'postback' && typeof event.postback?.data === 'string') {
+    // Prerequisite writes first (both idempotent), the ledger claim last: if a write
+    // fails, the event is not claimed yet, so LINE's redelivery still runs the press.
+    const userId = source.userId ?? null
+    // The presser is stored as a LINE user, so answered_by can point at them.
+    if (userId) await store.upsertLineUser({ lineUserId: userId, displayName: null })
+    const group = await store.ensureGroup(source.groupId)
     // The ledger row is the store-once gate: a redelivered press runs once.
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'postback', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
     })
     if (!inserted) return null
-    const userId = source.userId ?? null
-    // The presser is stored as a LINE user, so answered_by can point at them.
-    if (userId) await store.upsertLineUser({ lineUserId: userId, displayName: null })
-    const group = await store.ensureGroup(source.groupId)
     return {
       kind: 'group_postback', groupId: group.id, lineGroupId: source.groupId,
       userId, data: event.postback.data, replyToken: event.replyToken ?? null,

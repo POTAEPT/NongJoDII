@@ -1,4 +1,4 @@
-import { logError } from '../log'
+import { log, logError } from '../log'
 import type { Deps, Member, ProgressTarget, TaskRow, TaskStatus } from '../ports'
 import { FairUseCapReachedError, runMeteredAi, type MeterContext } from '../usage/meter'
 import { DECISION_MODEL, TEXT_MODEL } from '../usage/pricing'
@@ -19,6 +19,15 @@ export type DecideInput = {
 
 const MAX_TOKENS = 1000
 const MAX_CHOICES = 4
+
+/** Time budget for all model calls of one progress line. The webhook route has 60 s
+ *  (maxDuration): up to 3 s waiting for names, store calls, and the reply (LINE client
+ *  cut at 10 s) need the rest. Both calls share this deadline (#7 review, issue 1). */
+export const DECIDE_BUDGET_MS = 35_000
+/** One call never takes more than this, so the fallback model still gets a turn. */
+export const DECIDE_CALL_MAX_MS = 25_000
+/** Below this, a fallback call is not worth starting: the keyword picker answers instead. */
+export const DECIDE_CALL_MIN_MS = 5_000
 
 export const DECIDE_SYSTEM = `You read one LINE group chat message (often Thai) and decide whether it reports progress on one of the group's open tasks.
 Return ONLY a JSON object, no prose, in one of these forms:
@@ -92,13 +101,23 @@ export function parseDecision(raw: string, tasks: TaskRow[]): Exclude<Decision, 
 }
 
 /** Every call goes through runMeteredAi, so its tokens count against the Owner (#6). */
-export async function decide(deps: Deps, ctx: Omit<MeterContext, 'purpose'>, input: DecideInput): Promise<Decision> {
+export async function decide(
+  deps: Deps, ctx: Omit<MeterContext, 'purpose'>, input: DecideInput, clock: () => number = Date.now,
+): Promise<Decision> {
   const user = buildDecideUser(input)
+  // Wall clock (not deps.now(), which tests freeze): the deadline is about real elapsed time.
+  const deadline = clock() + DECIDE_BUDGET_MS
   for (const model of [DECISION_MODEL, TEXT_MODEL]) {
+    const timeoutMs = Math.min(DECIDE_CALL_MAX_MS, deadline - clock())
+    if (timeoutMs < DECIDE_CALL_MIN_MS) {
+      log('progress_model_skipped', { groupId: ctx.groupId, model, reason: 'deadline' })
+      break
+    }
     let content: string
     try {
       const res = await runMeteredAi(
-        deps, { ...ctx, purpose: 'progress_decision' }, { model, system: DECIDE_SYSTEM, user, maxTokens: MAX_TOKENS },
+        deps, { ...ctx, purpose: 'progress_decision' },
+        { model, system: DECIDE_SYSTEM, user, maxTokens: MAX_TOKENS, timeoutMs },
       )
       content = res.content
     } catch (err) {

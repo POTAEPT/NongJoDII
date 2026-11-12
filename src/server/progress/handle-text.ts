@@ -1,4 +1,4 @@
-import { log } from '../log'
+import { log, logError } from '../log'
 import type { Deps, Member, ProgressTarget, TaskRow } from '../ports'
 import { pickerCard, progressCard } from './card'
 import { canMove, decide, type Decision } from './decide'
@@ -22,6 +22,8 @@ export type ProgressTextResult = 'skipped' | 'ignored' | 'asked' | 'picker' | 'a
 /** Bot commands ("NongJoDII summarize", "NongJoDII done", ...) belong to other features. */
 const COMMAND = /^\s*@?nongjodii\b/i
 const MAX_PICKER_TASKS = 4
+/** An unanswered card older than this no longer blocks a new one for the same Task. */
+export const PROMPT_STALE_MS = 24 * 3600_000
 
 export function displayName(members: Member[], lineUserId: string | null): string {
   return members.find((m) => m.lineUserId === lineUserId)?.displayName ?? 'สมาชิก'
@@ -64,15 +66,32 @@ export async function handleProgressText(deps: Deps, job: ProgressTextJob): Prom
     case 'match': {
       const task = tasks.find((t) => t.id === decision.taskId)
       if (!task) return 'ignored'
-      if (await store.findOpenProgressPrompt(task.id)) return 'already_open'
+      const open = await store.findOpenProgressPrompt(task.id)
+      if (open) {
+        // An open card blocks new ones for this Task. One nobody answered for a day is
+        // withdrawn, so a card lost on the way (or ignored) cannot block the Task forever.
+        if (deps.now().getTime() - open.askedAt.getTime() < PROMPT_STALE_MS) return 'already_open'
+        await store.withdrawProgressPrompt(open.id)
+        log('progress_card_expired', { groupId, taskId: task.id, promptId: open.id })
+      }
       const { prompt } = await store.createProgressPrompt({
         groupId, taskId: task.id, targetStatus: decision.status,
         subjectLineUserId: job.senderLineUserId, triggerMessageId: job.storedMessageId, askedAt: deps.now(),
       })
       if (!prompt) return 'already_open'
-      await line.reply(replyToken, [
-        progressCard({ prompt, task, senderName: displayName(members, job.senderLineUserId), sentAt: job.sentAt }),
-      ])
+      try {
+        await line.reply(replyToken, [
+          progressCard({ prompt, task, senderName: displayName(members, job.senderLineUserId), sentAt: job.sentAt }),
+        ])
+      } catch (err) {
+        // The group never got the buttons: withdraw the card so the next update can ask again.
+        try {
+          await store.withdrawProgressPrompt(prompt.id)
+        } catch (withdrawErr) {
+          logError('progress_withdraw_failed', { groupId, promptId: prompt.id }, withdrawErr)
+        }
+        throw err
+      }
       log('progress_asked', { groupId, taskId: task.id, promptId: prompt.id, target: decision.status })
       return 'asked'
     }

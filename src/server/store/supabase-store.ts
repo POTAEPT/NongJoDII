@@ -23,7 +23,8 @@ import type {
   SummaryRow,
   TaskPatch,
   TaskRow,
-  TaskStatusMove,
+  ProgressYes,
+  ProgressYesOutcome,
 } from '../ports'
 import {
   type DbCandidate,
@@ -390,7 +391,7 @@ export class SupabaseStore implements StorePort {
   }
 
   async answerProgressPrompt(
-    promptId: string, answer: ProgressAnswer, byLineUserId: string, at: Date,
+    promptId: string, answer: 'no', byLineUserId: string, at: Date,
   ): Promise<{ updated: boolean }> {
     const { data, error } = await this.db
       .from('task_prompts')
@@ -403,21 +404,26 @@ export class SupabaseStore implements StorePort {
     return { updated: (data ?? []).length === 1 }
   }
 
-  async moveTaskStatus(m: TaskStatusMove): Promise<{ updated: boolean }> {
-    const patch: Record<string, string> = {
-      status: m.toStatus, last_edited_by_line_user_id: m.byLineUserId, last_activity_at: m.at.toISOString(),
+  async confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }> {
+    const { data, error } = await this.db.rpc('answer_progress_yes', {
+      p_prompt_id: y.promptId, p_task_id: y.taskId, p_from_status: y.fromStatus, p_to_status: y.toStatus,
+      p_by: y.byLineUserId, p_assign_to: y.assignTo, p_at: y.at.toISOString(),
+    })
+    check('confirmProgressYes', error)
+    if (data !== 'updated' && data !== 'already_answered' && data !== 'task_changed') {
+      throw new Error('confirmProgressYes: unexpected result from answer_progress_yes')
     }
-    if (m.toStatus === 'done') patch.done_at = m.at.toISOString()
-    if (m.assignTo !== null) patch.assignee_line_user_id = m.assignTo
-    const { data, error } = await this.db
-      .from('tasks')
-      .update(patch)
-      .eq('id', m.taskId)
-      .eq('status', m.fromStatus)
-      .is('deleted_at', null)
-      .select('id')
-    check('moveTaskStatus', error)
-    return { updated: (data ?? []).length === 1 }
+    return { outcome: data }
+  }
+
+  async withdrawProgressPrompt(promptId: string): Promise<void> {
+    const { error } = await this.db
+      .from('task_prompts')
+      .delete()
+      .eq('id', promptId)
+      .eq('kind', 'mark_done')
+      .is('answer', null)
+    check('withdrawProgressPrompt', error)
   }
 
   // ---- #5 / #6 usage ----

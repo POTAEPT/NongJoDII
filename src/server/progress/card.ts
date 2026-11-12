@@ -140,7 +140,6 @@ export function resultCard(p: {
 }
 
 export const PROGRESS_REPLY = {
-  noUserId: 'กดยืนยันได้จากแอป LINE บนมือถือเท่านั้น น้องจดดียังไม่ได้เปลี่ยนสถานะงาน',
   notAllowed: (names: string[]) => `เฉพาะ ${names.join(' หรือ ')} ที่ยืนยันงานนี้ได้`,
   alreadyAnswered: 'การ์ดนี้มีคนตอบไปแล้ว',
   taskGone: 'งานนี้ถูกลบหรือเปลี่ยนไปแล้ว น้องจดดีไม่ได้เปลี่ยนอะไร',
@@ -148,6 +147,8 @@ export const PROGRESS_REPLY = {
   notUpdate: 'โอเค ไม่ใช่การอัปเดตงาน',
   noOtherTask: 'ไม่มีงานอื่นที่ยังไม่เสร็จในกลุ่มนี้',
   openCardExists: 'มีการ์ดถามงานนี้อยู่แล้ว กดตอบที่การ์ดนั้นได้เลย',
+  cardExpired: 'การ์ดนี้หมดอายุแล้ว พิมพ์อัปเดตงานอีกครั้งได้เลย',
+  needsLogin: 'LINE ไม่ได้บอกน้องจดดีว่าใครกด กดปุ่มด้านล่างเพื่อยืนยันตัวตนแล้วน้องจดดีจะบันทึกคำตอบให้',
 } as const
 
 export function textMessage(t: string): LineMessage {

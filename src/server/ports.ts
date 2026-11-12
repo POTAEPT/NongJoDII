@@ -10,7 +10,9 @@ export interface LinePort {
 }
 
 // ---- OpenRouter ----
-export type LlmRequest = { model: string; system: string; user: string; maxTokens: number }
+/** timeoutMs (optional) shortens the adapter's own timeout for this call, so a caller
+ *  that makes several calls can keep them all inside the route's time budget. */
+export type LlmRequest = { model: string; system: string; user: string; maxTokens: number; timeoutMs?: number }
 export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: number | null }
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }
@@ -98,10 +100,12 @@ export type ProgressPromptRow = NewProgressPrompt & {
   id: string; answer: ProgressAnswer | null; answeredByLineUserId: string | null; answeredAt: Date | null
 }
 export type MessageRef = { id: string; groupId: string; senderLineUserId: string | null; sentAt: Date }
-export type TaskStatusMove = {
-  taskId: string; fromStatus: TaskStatus; toStatus: ProgressTarget
+/** A person's Yes on a card: the answer and the Task move are one transaction. */
+export type ProgressYes = {
+  promptId: string; taskId: string; fromStatus: TaskStatus; toStatus: ProgressTarget
   byLineUserId: string; assignTo: string | null; at: Date
 }
+export type ProgressYesOutcome = 'updated' | 'already_answered' | 'task_changed'
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -154,11 +158,15 @@ export interface StorePort {
    *  (unique index task_prompts_one_open_mark_done). */
   createProgressPrompt(p: NewProgressPrompt): Promise<{ prompt: ProgressPromptRow | null }>
   getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null>
-  /** Only while the card is open (answer is null): the first answer wins. */
-  answerProgressPrompt(promptId: string, answer: ProgressAnswer, byLineUserId: string, at: Date): Promise<{ updated: boolean }>
-  /** Only a live Task still in fromStatus. Done sets done_at; assignTo (when set) becomes the
-   *  assignee; bumps last_activity_at and last_edited_by. */
-  moveTaskStatus(m: TaskStatusMove): Promise<{ updated: boolean }>
+  /** No: only while the card is open (answer is null); the first answer wins. */
+  answerProgressPrompt(promptId: string, answer: 'no', byLineUserId: string, at: Date): Promise<{ updated: boolean }>
+  /** Yes, in one transaction (rpc answer_progress_yes): locks the card; if it is open and the
+   *  live Task is still in fromStatus, moves the Task (done sets done_at; assignTo, when set,
+   *  becomes the assignee; bumps last_activity_at and last_edited_by) and records the answer.
+   *  task_changed leaves the card open and the Task untouched. */
+  confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }>
+  /** Deletes a card only while it is unanswered: its reply never reached the group, or it went stale. */
+  withdrawProgressPrompt(promptId: string): Promise<void>
   // #12 Google
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>

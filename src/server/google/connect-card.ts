@@ -1,4 +1,5 @@
 import { liffUrl } from '@/server/liff-links'
+import { logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
 
 export async function sendConnectDriveCard(
@@ -6,7 +7,14 @@ export async function sendConnectDriveCard(
   job: { lineUserId: string; replyToken: string | null },
 ): Promise<void> {
   if (!job.replyToken) return
-  const account = await deps.store.findGoogleAccountByLineUser(job.lineUserId)
+  // If the lookup fails, fall back to the default "not connected" card: the user can still connect, and a
+  // redundant card is harmless, whereas silence leaves them stuck.
+  let account: Awaited<ReturnType<Deps['store']['findGoogleAccountByLineUser']>> = null
+  try {
+    account = await deps.store.findGoogleAccountByLineUser(job.lineUserId)
+  } catch (err) {
+    logError('connect_card_lookup_failed', {}, err)
+  }
   if (account?.tokenStatus === 'valid') {
     await deps.line.reply(job.replyToken, [
       { type: 'text', text: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ' },

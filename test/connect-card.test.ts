@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { liffUrl } from '@/server/liff-links'
 import type { LineMessage } from '@/server/line/types'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -40,6 +40,16 @@ describe('connect card', () => {
     await send(ev.userText({ userId: OWNER, text: 'สวัสดี' }))
     expect(line.replies).toHaveLength(1)
     expect(line.replies[0].messages[0].type).toBe('template')
+  })
+
+  it('2b. a failing account lookup still sends the card', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { send, line, store } = setup()
+    store.failNext('findGoogleAccountByLineUser')
+    await send(ev.follow({ userId: OWNER, eventId: 'f2b' }))
+    expect(line.replies).toHaveLength(1)
+    expect(line.replies[0].messages[0].type).toBe('template')
+    vi.restoreAllMocks()
   })
 
   it('3. a connected Owner gets the already-connected text', async () => {

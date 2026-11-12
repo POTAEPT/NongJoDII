@@ -41,4 +41,21 @@ describe('Webhook resilience', () => {
     expect(t.line.replies).toHaveLength(1)
     expect(replyText(t.line.replies[0].messages[0])).toContain('สรุป')
   })
+
+  it('a store failure at createSummary replies with the failure notice', async () => {
+    const t = await setup()
+    t.store.failNext('createSummary')
+    await t.send('NongJoDII summarize')
+    expect(t.line.replies).toHaveLength(1)
+    expect(replyText(t.line.replies[0].messages[0])).toContain('ไม่สำเร็จ')
+  })
+
+  it('a store failure in the fair-use pre-check replies with the failure notice', async () => {
+    const t = await setup()
+    t.store.failNext('sumOwnerMonthUsage')
+    await t.send('NongJoDII summarize')
+    expect(t.line.replies).toHaveLength(1)
+    expect(replyText(t.line.replies[0].messages[0])).toContain('ไม่สำเร็จ')
+    expect(t.llm.requests).toHaveLength(0)
+  })
 })

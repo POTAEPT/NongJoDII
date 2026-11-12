@@ -26,6 +26,19 @@ const REPLY_FAILED = 'ขอโทษนะ ตอนนี้สรุปแช
 export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<void> {
   const { replyToken, groupId } = job
   if (!replyToken) return
+  // Reply token is single-use: once any reply was attempted, the failure notice must not try again.
+  const sent = { value: false }
+  try {
+    await summarize(deps, job, replyToken, sent)
+  } catch (err) {
+    // A store failure outside the AI step (group, usage, messages, members, createSummary) must still answer the group.
+    logError('summary_failed', { groupId }, err)
+    if (!sent.value) await replyText(deps, replyToken, groupId, REPLY_FAILED, sent)
+  }
+}
+
+async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: { value: boolean }): Promise<void> {
+  const { groupId } = job
   const { store } = deps
 
   const group = await store.getGroupById(groupId)
@@ -33,22 +46,22 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
     log('summary_group_missing', { groupId })
     return
   }
-  if (!group.featureSummarize) return replyText(deps, replyToken, groupId, REPLY_FEATURE_OFF)
+  if (!group.featureSummarize) return replyText(deps, replyToken, groupId, REPLY_FEATURE_OFF, sent)
   // Owner-backed features run only with a confirmed Owner.
   if (!group.ownerConfirmedAt || !group.nominatedOwnerLineUserId) {
-    return replyText(deps, replyToken, groupId, REPLY_NO_OWNER)
+    return replyText(deps, replyToken, groupId, REPLY_NO_OWNER, sent)
   }
   const ownerLineUserId = group.nominatedOwnerLineUserId
 
   // Fair-use cap: a capped Owner gets the cap message only (no AI call, no usage, no Summary).
   const before = await getFairUseStatus(store, ownerLineUserId, deps.now())
-  if (before.level === 'capped') return reply(deps, replyToken, groupId, [capMessage(before)])
+  if (before.level === 'capped') return reply(deps, replyToken, groupId, [capMessage(before)], sent)
 
   // The command message itself is already stored and takes one slot (M1).
   const messages = (await store.listRecentTextMessages(groupId, SUMMARY_MESSAGE_LIMIT + 1))
     .filter((m) => parseGroupCommand(m.text) === null)
     .slice(-SUMMARY_MESSAGE_LIMIT)
-  if (messages.length === 0) return replyText(deps, replyToken, groupId, REPLY_NO_MESSAGES)
+  if (messages.length === 0) return replyText(deps, replyToken, groupId, REPLY_NO_MESSAGES, sent)
 
   const members = await store.listLiveMembers(groupId)
   const prompt = buildSummaryPrompt({ now: deps.now(), workDescription: group.workDescription, members, messages })
@@ -64,7 +77,7 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
   } catch (err) {
     // Any error: AdapterError, a raw TimeoutError/SyntaxError from the client, or ModelOutputError.
     logError('summary_ai_failed', { groupId }, err)
-    return replyText(deps, replyToken, groupId, REPLY_FAILED)
+    return replyText(deps, replyToken, groupId, REPLY_FAILED, sent)
   }
 
   // H1: the model writes {mN}; code swaps in LINE names, so a nickname never reaches a screen.
@@ -136,15 +149,18 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
   } catch (err) {
     logError('summary_fair_use_notice_failed', { groupId }, err)
   }
-  await reply(deps, replyToken, groupId, replyMessages)
+  await reply(deps, replyToken, groupId, replyMessages, sent)
 }
 
-function replyText(deps: Deps, replyToken: string, groupId: string, text: string): Promise<void> {
-  return reply(deps, replyToken, groupId, [{ type: 'text', text }])
+function replyText(deps: Deps, replyToken: string, groupId: string, text: string, sent: { value: boolean }): Promise<void> {
+  return reply(deps, replyToken, groupId, [{ type: 'text', text }], sent)
 }
 
 /** A reply failure is logged, not retried (the reply token is single-use). */
-async function reply(deps: Deps, replyToken: string, groupId: string, messages: LineMessage[]): Promise<void> {
+async function reply(
+  deps: Deps, replyToken: string, groupId: string, messages: LineMessage[], sent: { value: boolean },
+): Promise<void> {
+  sent.value = true
   try {
     await deps.line.reply(replyToken, messages)
   } catch (err) {

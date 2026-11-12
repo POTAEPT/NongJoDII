@@ -9,72 +9,95 @@ function setup(jobs: TickJob[] = []) {
   return { ...h, send }
 }
 
-/** A job that records the instant it was given. */
-function recorder(name: string, seen: Array<{ name: string; now: Date }>): TickJob {
-  return { name, run: async (_deps, now) => { seen.push({ name, now }) } }
+/** A job that pushes one text to a group, naming itself and the instant it was given.
+ *  Tests read what the tick did from the pushes the fake LINE received. */
+function pusher(name: string, groupId = 'Cgroup1'): TickJob {
+  return {
+    name,
+    run: async (deps, now) => {
+      await deps.line.push(groupId, [{ type: 'text', text: `${name} ${now.toISOString()}` }])
+    },
+  }
 }
+
+const pushedTexts = (pushes: { messages: { type: string; text?: string }[] }[]) =>
+  pushes.map((p) => (p.messages[0].type === 'text' ? p.messages[0].text : ''))
 
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
 describe('tick route', () => {
-  it('rejects a wrong secret and runs nothing', async () => {
-    const seen: Array<{ name: string; now: Date }> = []
-    const { send, deferred } = setup([recorder('a', seen)])
+  it('rejects a wrong secret and sends nothing', async () => {
+    const { send, deferred, runDeferred, line } = setup([pusher('a')])
     const res = await send({ secret: 'wrong' })
     expect(res.status).toBe(401)
     expect(deferred).toHaveLength(0)
+    await runDeferred()
+    expect(line.pushes).toHaveLength(0)
   })
 
-  it('rejects a missing secret header and runs nothing', async () => {
-    const { send, deferred } = setup()
+  it('rejects a missing or empty secret header and sends nothing', async () => {
+    const { send, deferred, runDeferred, line } = setup([pusher('a')])
     expect((await send({ secret: null })).status).toBe(401)
     expect((await send({ secret: '' })).status).toBe(401)
     expect(deferred).toHaveLength(0)
+    await runDeferred()
+    expect(line.pushes).toHaveLength(0)
   })
 
-  it('answers 200 before any job runs, then runs the jobs after the response', async () => {
-    const seen: Array<{ name: string; now: Date }> = []
-    const { send, deferred, runDeferred } = setup([recorder('a', seen)])
+  it('answers 200 before anything is pushed, then pushes after the response', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const { send, runDeferred, line } = setup([pusher('a')])
     const res = await send()
     expect(res.status).toBe(200)
-    expect(seen).toHaveLength(0)
-    expect(deferred).toHaveLength(1)
+    expect(line.pushes).toHaveLength(0)
     await runDeferred()
-    expect(seen.map((s) => s.name)).toEqual(['a'])
+    expect(line.pushes).toHaveLength(1)
+    expect(line.pushes[0].to).toBe('Cgroup1')
   })
 
-  it('runs every job in order with the same instant', async () => {
-    const seen: Array<{ name: string; now: Date }> = []
-    const { send, runDeferred, setNow } = setup([recorder('a', seen), recorder('b', seen)])
+  it('runs every job in order, all with the same instant', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const { send, runDeferred, setNow, line } = setup([pusher('a'), pusher('b', 'Cgroup2')])
     setNow(new Date('2026-11-16T02:00:00Z'))
     await send()
     await runDeferred()
-    expect(seen.map((s) => s.name)).toEqual(['a', 'b'])
-    expect(seen[0].now.toISOString()).toBe('2026-11-16T02:00:00.000Z')
-    expect(seen[1].now.toISOString()).toBe('2026-11-16T02:00:00.000Z')
+    expect(line.pushes.map((p) => p.to)).toEqual(['Cgroup1', 'Cgroup2'])
+    expect(pushedTexts(line.pushes)).toEqual(['a 2026-11-16T02:00:00.000Z', 'b 2026-11-16T02:00:00.000Z'])
   })
 
   it('keeps going when one job fails, and logs only the job name', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'info').mockImplementation(() => {})
-    const seen: Array<{ name: string; now: Date }> = []
     const failing: TickJob = { name: 'broken', run: async () => { throw new Error('secret detail from chat') } }
-    const { send, runDeferred } = setup([failing, recorder('after', seen)])
+    const { send, runDeferred, line } = setup([failing, pusher('after')])
     await send()
     await runDeferred()
-    expect(seen.map((s) => s.name)).toEqual(['after'])
+    expect(pushedTexts(line.pushes)).toEqual([expect.stringMatching(/^after /)])
     expect(errors).toHaveBeenCalledTimes(1)
-    const line = String(errors.mock.calls[0][0])
-    expect(JSON.parse(line)).toMatchObject({ event: 'tick_job_failed', job: 'broken', error: 'Error' })
-    expect(line).not.toContain('secret detail')
+    const logged = String(errors.mock.calls[0][0])
+    expect(JSON.parse(logged)).toMatchObject({ event: 'tick_job_failed', job: 'broken', error: 'Error' })
+    expect(logged).not.toContain('secret detail')
   })
 
-  it('runs with no jobs registered', async () => {
+  it('keeps going when a push fails inside a job', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'info').mockImplementation(() => {})
-    const { send, runDeferred } = setup([])
+    const { send, runDeferred, line } = setup([pusher('first'), pusher('second', 'Cgroup2')])
+    line.failPush = true
+    await send()
+    await runDeferred()
+    // Both pushes were attempted; the first failure did not stop the second job.
+    expect(line.pushes.map((p) => p.to)).toEqual(['Cgroup1', 'Cgroup2'])
+  })
+
+  it('answers 200 and sends nothing when no jobs are registered', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const { send, runDeferred, line, store } = setup([])
     expect((await send()).status).toBe(200)
-    await expect(runDeferred()).resolves.toBeUndefined()
+    await runDeferred()
+    expect(line.pushes).toHaveLength(0)
+    expect(store.tables.messages).toHaveLength(0)
   })
 })

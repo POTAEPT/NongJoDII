@@ -59,6 +59,13 @@ describe('OpenRouterClient.complete', () => {
     expect(b.usage).toEqual({ inputTokens: 1, outputTokens: 2, costUsd: null })
   })
 
+  it('treats usage with missing or non-finite token counts as no usage', async () => {
+    for (const usage of [{ cost: 0.1 }, { prompt_tokens: 5 }, { prompt_tokens: 'x', completion_tokens: 2 }, { prompt_tokens: null, completion_tokens: 2 }]) {
+      const r = await stubFetch(200, { choices: [{ message: { content: 'x' } }], usage }).client.complete(REQ)
+      expect(r.usage).toBeNull()
+    }
+  })
+
   it('throws AdapterError with the status on a non-2xx answer', async () => {
     const { client } = stubFetch(429, { error: { message: 'secret chat text' } })
     const err = await client.complete(REQ).catch((e) => e)

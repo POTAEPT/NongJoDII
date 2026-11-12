@@ -6,7 +6,7 @@ const URL = 'https://openrouter.ai/api/v1/chat/completions'
 type ChatCompletion = {
   model?: string
   choices?: Array<{ message?: { content?: string | null } }>
-  usage?: { prompt_tokens: number; completion_tokens: number; cost?: unknown }
+  usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown }
 }
 
 /** OpenRouter chat completions. Errors carry the HTTP status only, never the response body. */
@@ -51,10 +51,11 @@ export class OpenRouterClient implements LlmPort {
     return {
       content: json.choices?.[0]?.message?.content ?? '',
       model: json.model ?? req.model,
-      usage: usage
+      // Missing or non-finite token counts mean no usable usage: the caller falls back to its conservative estimate.
+      usage: usage && Number.isFinite(usage.prompt_tokens) && Number.isFinite(usage.completion_tokens)
         ? {
-            inputTokens: usage.prompt_tokens,
-            outputTokens: usage.completion_tokens,
+            inputTokens: usage.prompt_tokens as number,
+            outputTokens: usage.completion_tokens as number,
             costUsd: typeof usage.cost === 'number' ? usage.cost : null,
           }
         : null,

@@ -14,11 +14,15 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  NewWeeklyInsight,
   StorePort,
   StoredMessage,
   SummaryRow,
+  TaskCounts,
   TaskPatch,
   TaskRow,
+  UnownedTask,
+  WeeklySummaryGroup,
 } from '@/server/ports'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
@@ -47,6 +51,15 @@ export type GoogleAccountRecord = {
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
 }
 
+/** The groups columns the weekly insight reads (left_at, feature_weekly_summary and the
+ *  weekly slot), kept beside `groups` so GroupRow stays as the app reads it. A group with
+ *  no row here has the schema defaults: bot in, feature on, Monday 09:00, never sent. */
+export type GroupScheduleRecord = {
+  groupId: string; leftAt: Date | null; featureWeeklySummary: boolean
+  weeklySummaryWeekday: number; weeklySummaryTime: string; weeklySummaryLastSentOn: string | null
+}
+export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
+
 export type FakeTables = {
   line_users: LineUserRecord[]
   groups: GroupRow[]
@@ -59,6 +72,8 @@ export type FakeTables = {
   ai_usage: AiUsageRecord[]
   fair_use_notices: FairUseNoticeRecord[]
   google_accounts: GoogleAccountRecord[]
+  group_schedules: GroupScheduleRecord[]
+  weekly_insights: WeeklyInsightRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -84,6 +99,8 @@ export class FakeStore implements StorePort {
     ai_usage: [],
     fair_use_notices: [],
     google_accounts: [],
+    group_schedules: [],
+    weekly_insights: [],
   }
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
@@ -416,7 +433,88 @@ export class FakeStore implements StorePort {
     return rows[0] ? { id: rows[0].id, tokenStatus: rows[0].tokenStatus } : null
   }
 
+  // ---- #20 weekly insight ----
+  /** The schedule row of a group, created with the schema defaults on first use. */
+  private scheduleOf(groupId: string): GroupScheduleRecord {
+    let row = this.tables.group_schedules.find((s) => s.groupId === groupId)
+    if (!row) {
+      fk(this.hasGroup(groupId), 'groups.id')
+      row = {
+        groupId, leftAt: null, featureWeeklySummary: true,
+        weeklySummaryWeekday: 1, weeklySummaryTime: '09:00:00', weeklySummaryLastSentOn: null,
+      }
+      this.tables.group_schedules.push(row)
+    }
+    return row
+  }
+
+  private liveTasksOf(groupId: string): TaskRecord[] {
+    return this.tables.tasks.filter((t) => t.groupId === groupId && t.deletedAt === null)
+  }
+
+  async listWeeklySummaryGroups(): Promise<WeeklySummaryGroup[]> {
+    this.fault('listWeeklySummaryGroups')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null)
+      .map((g) => ({ g, s: this.scheduleOf(g.id) }))
+      .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary)
+      .sort((a, b) => a.g.id.localeCompare(b.g.id))
+      .map(({ g, s }) => ({
+        groupId: g.id, lineGroupId: g.lineGroupId, weekday: s.weeklySummaryWeekday,
+        time: s.weeklySummaryTime, lastSentOn: s.weeklySummaryLastSentOn,
+      }))
+  }
+
+  async claimWeeklySummary(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+    this.fault('claimWeeklySummary')
+    if (!this.hasGroup(groupId)) return { claimed: false }
+    const s = this.scheduleOf(groupId)
+    if (s.weeklySummaryLastSentOn !== null && s.weeklySummaryLastSentOn >= todayBkk) return { claimed: false }
+    s.weeklySummaryLastSentOn = todayBkk
+    return { claimed: true }
+  }
+
+  async releaseWeeklySummary(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+    this.fault('releaseWeeklySummary')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.weeklySummaryLastSentOn === todayBkk) s.weeklySummaryLastSentOn = previous
+  }
+
+  async countTasksByStatus(groupId: string): Promise<TaskCounts> {
+    this.fault('countTasksByStatus')
+    const live = this.liveTasksOf(groupId)
+    return {
+      done: live.filter((t) => t.status === 'done').length,
+      inProcess: live.filter((t) => t.status === 'in_process').length,
+      awaitingOwner: live.filter((t) => t.status === 'not_assigned').length,
+    }
+  }
+
+  /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */
+  async listUnownedTasks(groupId: string, limit: number): Promise<UnownedTask[]> {
+    this.fault('listUnownedTasks')
+    return this.liveTasksOf(groupId)
+      .filter((t) => t.status === 'not_assigned')
+      .slice(0, limit)
+      .map((t) => ({ id: t.id, title: t.title, dueAt: t.dueAt }))
+  }
+
+  async saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }> {
+    this.fault('saveWeeklyInsight')
+    if (this.tables.weekly_insights.some((w) => w.groupId === i.groupId && w.weekStart === i.weekStart)) {
+      return { inserted: false }
+    }
+    fk(this.hasGroup(i.groupId), 'weekly_insights.group_id')
+    this.tables.weekly_insights.push({ ...i, counts: { ...i.counts }, id: randomUUID(), postedAt: null })
+    return { inserted: true }
+  }
+
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
+  /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
+  seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {
+    Object.assign(this.scheduleOf(groupId), partial)
+  }
+
   seedGroup(partial: Partial<GroupRow> = {}): GroupRow {
     const row: GroupRow = {
       id: randomUUID(), lineGroupId: 'Cgroup1', projectId: null, name: null,

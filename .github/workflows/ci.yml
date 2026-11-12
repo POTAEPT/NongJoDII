@@ -1,0 +1,67 @@
+name: CI
+
+# รันเมื่อมี PR หรือ push เข้า main และ development
+# (งานประจำวันเข้า development ส่วน main รับเฉพาะของที่พร้อมแล้ว)
+on:
+  pull_request:
+    branches: [main, development]
+  push:
+    branches: [main, development]
+
+# ถ้า push ใหม่เข้า PR เดิม ให้ยกเลิกรอบเก่าที่ยังรันอยู่ ประหยัดเวลาและนาทีของ Actions
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# ให้สิทธิ์แค่อ่านโค้ด ไม่ต้องเขียนอะไรกลับไปที่ repo
+permissions:
+  contents: read
+
+jobs:
+  # ชื่อ job "ci" คือชื่อ required status check ที่จะใส่ใน ruleset ของ main
+  # ห้ามใส่ path filter: ถ้า job ถูกข้าม check จะไม่ขึ้น แล้ว PR จะค้างรอตลอดไป
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_TELEMETRY_DISABLED: 1 # ปิดการส่งสถิติการใช้งานของ Next.js
+      TZ: UTC # ให้เครื่อง CI ใช้เขตเวลาเดียวกับ server จริง
+    steps:
+      # 1. ดึงโค้ดของ PR ลงมา
+      - uses: actions/checkout@v5
+
+      # 2. ติดตั้ง Node ตามเวอร์ชันใน .nvmrc (24) และ cache โฟลเดอร์ของ npm
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # 3. เก็บ cache ของ Next.js ไว้ใช้รอบหน้า ให้ build เร็วขึ้น
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**') }}
+          restore-keys: |
+            next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+
+      # 4. ติดตั้ง dependency ตาม package-lock.json แบบตรงตัว (ถ้า lock ไม่ตรงกับ package.json จะล้ม)
+      - run: npm ci
+
+      # 5. ตรวจรูปแบบโค้ดและข้อผิดพลาดที่พบบ่อยด้วย ESLint
+      - name: Lint
+        run: npm run lint
+
+      # 6. สร้าง type ของ route (next typegen) แล้วตรวจ type ทั้งโปรเจกต์ด้วย tsc
+      - name: Typecheck
+        run: npm run typecheck
+
+      # 7. รัน test ทั้งหมดด้วย Vitest (ใช้ fake แทน LINE, OpenRouter, Drive, Supabase)
+      - name: Test
+        run: npm test
+
+      # 8. build แบบ production ให้แน่ใจว่า deploy ได้จริง
+      #    ไม่ต้องใช้ secret: โค้ดฝั่ง server ต้องอ่าน env ตอนรับ request ไม่ใช่ตอน build
+      - name: Build
+        run: npm run build

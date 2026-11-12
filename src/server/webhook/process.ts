@@ -19,10 +19,15 @@ async function processJob(deps: Deps, job: Job): Promise<void> {
   if (job.kind === 'group_message') {
     const { senderLineUserId, lineGroupId, groupId, replyToken } = job
     if (senderLineUserId) {
-      const user = await deps.store.findLineUser(senderLineUserId)
-      if (!user?.displayName) {
-        const profile = await deps.line.getGroupMemberProfile(lineGroupId, senderLineUserId)
-        if (profile) await deps.store.upsertLineUser({ lineUserId: senderLineUserId, displayName: profile.displayName })
+      // Best effort: a LINE 5xx/429 here must not stop the command below from running.
+      try {
+        const user = await deps.store.findLineUser(senderLineUserId)
+        if (!user?.displayName) {
+          const profile = await deps.line.getGroupMemberProfile(lineGroupId, senderLineUserId)
+          if (profile) await deps.store.upsertLineUser({ lineUserId: senderLineUserId, displayName: profile.displayName })
+        }
+      } catch (err) {
+        logError('line_name_refresh_failed', { lineGroupId }, err)
       }
     }
     if (parseGroupCommand(job.text) === 'summarize') {

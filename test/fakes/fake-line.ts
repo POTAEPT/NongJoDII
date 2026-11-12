@@ -13,6 +13,8 @@ export class FakeLine implements LinePort {
   idTokens = new Map<string, { lineUserId: string; displayName: string | null }>()
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
+  /** Makes getGroupMemberProfile reject, as the real adapter does on a LINE 5xx/429. */
+  failProfile = false
 
   async reply(replyToken: string, messages: LineMessage[]): Promise<void> {
     this.replies.push({ replyToken, messages })
@@ -21,6 +23,7 @@ export class FakeLine implements LinePort {
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {
     this.profileCalls.push({ lineGroupId, lineUserId })
+    if (this.failProfile) throw new AdapterError('line profile 500')
     const displayName = this.profiles.get(`${lineGroupId}:${lineUserId}`)
     return displayName === undefined ? null : { displayName }
   }

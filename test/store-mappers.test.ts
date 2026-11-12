@@ -65,11 +65,11 @@ describe('toTaskRow', () => {
     expect(toTaskRow({
       id: 't1', group_id: 'g1', candidate_id: 'c1', title: 'T', details: null, status: 'in_process',
       assignee_line_user_id: 'U2', created_by_line_user_id: 'U1', due_at: '2026-11-20T10:00:00+00:00',
-      deleted_at: null, groups: { line_group_id: 'C1' },
+      deleted_at: null, announced_at: '2026-11-12T10:00:00+00:00', groups: { line_group_id: 'C1' },
     })).toEqual({
       id: 't1', groupId: 'g1', lineGroupId: 'C1', candidateId: 'c1', title: 'T', details: null,
       status: 'in_process', assigneeLineUserId: 'U2', createdByLineUserId: 'U1',
-      dueAt: new Date('2026-11-20T10:00:00Z'), deletedAt: null,
+      dueAt: new Date('2026-11-20T10:00:00Z'), deletedAt: null, announcedAt: new Date('2026-11-12T10:00:00Z'),
     })
   })
 })

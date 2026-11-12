@@ -1,6 +1,7 @@
-import { log } from '../log'
+import { log, logError } from '../log'
 import type { ApiResult, Deps } from '../ports'
 import { statusFor, type TaskFields, validateTaskFields } from '../tasks/fields'
+import { buildTaskFeedback, type CreatedTask } from './feedback'
 import { badRequest, field, openSummary } from './load'
 import type { SubmitResult } from './types'
 
@@ -70,6 +71,38 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
     created: results.filter((r) => r.outcome === 'created').length,
     declined: results.filter((r) => r.outcome === 'declined').length,
   })
-  const result: SubmitResult = { results }
+  const { feedback, failed: feedbackFailed } =
+    await pendingFeedback(deps, summary.groupId, summary.id, [...candidates.keys()], requester)
+  const result: SubmitResult = { results, feedback, feedbackFailed }
   return { status: 200, body: result }
+}
+
+/** The "Tasks created" message for every Task this requester created from this
+ *  Summary that the group has not been told about yet, so a retry after a lost
+ *  response still announces them. The Tasks are saved by now: a failed lookup is
+ *  reported as `failed` (not an error status), and the page offers a retry. */
+async function pendingFeedback(
+  deps: Deps, groupId: string, summaryId: string, candidateIds: string[], requester: string,
+): Promise<{ feedback: SubmitResult['feedback']; failed: boolean }> {
+  try {
+    const tasks = (await deps.store.listTasksByCandidates(candidateIds))
+      .filter((t) => t.createdByLineUserId === requester && t.deletedAt === null && t.announcedAt === null)
+    if (tasks.length === 0) return { feedback: null, failed: false }
+    const order = new Map(candidateIds.map((id, i) => [id, i]))
+    tasks.sort((a, b) => (order.get(a.candidateId ?? '') ?? 0) - (order.get(b.candidateId ?? '') ?? 0))
+    let names = new Map<string, string | null>()
+    try {
+      names = new Map((await deps.store.listLiveMembers(groupId)).map((m) => [m.lineUserId, m.displayName]))
+    } catch (err) {
+      logError('review_feedback_names_failed', { summaryId }, err)
+    }
+    const created: CreatedTask[] = tasks.map((t) => ({
+      title: t.title, assigned: t.assigneeLineUserId !== null, dueAt: t.dueAt,
+      assigneeName: t.assigneeLineUserId ? (names.get(t.assigneeLineUserId) ?? null) : null,
+    }))
+    return { feedback: { text: buildTaskFeedback(created), taskIds: tasks.map((t) => t.id) }, failed: false }
+  } catch (err) {
+    logError('review_feedback_failed', { summaryId }, err)
+    return { feedback: null, failed: true }
+  }
 }

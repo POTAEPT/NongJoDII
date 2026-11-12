@@ -6,7 +6,8 @@ import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, type ParsedTask } from './parse-output'
-import { buildSummaryPrompt, substituteMemberRefs } from './prompt'
+import { isTaskFeedback } from '../review/feedback'
+import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
 
 export type SummaryJob = { groupId: string; lineGroupId: string; replyToken: string | null; requesterLineUserId: string | null }
@@ -60,7 +61,8 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
 
   // The command message itself is already stored and takes one slot (M1).
   const messages = (await store.listRecentTextMessages(groupId, SUMMARY_MESSAGE_LIMIT + 1))
-    .filter((m) => parseGroupCommand(m.text) === null)
+    // Commands and the "Tasks created" messages a LIFF page posted are not chat to summarize.
+    .filter((m) => parseGroupCommand(m.text) === null && !isTaskFeedback(m.text))
     .slice(-SUMMARY_MESSAGE_LIMIT)
   if (messages.length === 0) return replyText(deps, replyToken, groupId, REPLY_NO_MESSAGES, sent)
 
@@ -99,18 +101,21 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     )
   }
   const messageByRef = new Map(prompt.messageRefs.map((r) => [r.ref, r.message]))
-  const summaryText = substituteMemberRefs(parsed.summary, nameByRef)
+  // The model may still leak a message ref (msg14) into text people read: strip it
+  // from the model's text first, so a LINE name that looks like a ref is never cut.
+  const readable = (text: string) => substituteMemberRefs(stripMessageRefs(text), nameByRef)
+  const summaryText = readable(parsed.summary)
 
   const candidates: NewCandidate[] = []
   const replyCandidates: ReplyCandidate[] = []
   // M4: with Draft tasks off, the model's tasks are ignored.
   if (group.featureDraftTasks) {
     for (const task of parsed.tasks) {
-      const title = substituteMemberRefs(task.title, nameByRef).trim().slice(0, TITLE_MAX)
+      const title = readable(task.title).trim().slice(0, TITLE_MAX)
       if (title === '') continue
       const details = task.details === null
         ? null
-        : substituteMemberRefs(task.details, nameByRef).trim().slice(0, DETAILS_MAX) || null
+        : readable(task.details).trim().slice(0, DETAILS_MAX) || null
       // Never trust raw model output: only a live Member can be the suggested assignee.
       const refUser = task.assigneeRef ? userByRef.get(task.assigneeRef) : undefined
       const assignee = refUser ? liveById.get(refUser) : undefined

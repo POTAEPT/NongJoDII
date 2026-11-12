@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
-import type { ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
+import type { NotifyResult, ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
 import {
   countDecisions, initialForms, needsDeclineConfirm, summarizeResults, toDecisions, validateForms,
   type CandidateForm, type SavedTask,
@@ -36,6 +36,33 @@ async function post(path: string, body: Record<string, unknown>): Promise<{ stat
   return { status: res.status, json }
 }
 
+type Announce = 'idle' | 'working' | 'posted' | 'quota' | 'failed'
+
+const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
+  working: 'กำลังแจ้งในกลุ่ม...',
+  posted: 'แจ้งในกลุ่มแล้ว',
+  quota: 'งานถูกสร้างแล้ว แต่เดือนนี้แจ้งในกลุ่มไม่ได้ (โควตาข้อความใกล้หมด)',
+  failed: 'งานถูกสร้างแล้ว แต่แจ้งในกลุ่มไม่สำเร็จ',
+}
+
+/** Asks the bot to tell the group which Tasks were created (a push: it counts
+ *  against the LINE quota and is skipped near the limit). The server claims each Task
+ *  once and pushes with a stable retry key, so repeating this call never repeats the
+ *  message. */
+async function announce(
+  idToken: string, summaryId: string, taskIds: string[],
+): Promise<Exclude<Announce, 'idle' | 'working'>> {
+  if (taskIds.length === 0) return 'failed'
+  try {
+    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds })
+    if (status !== 200) return 'failed'
+    const n = json as NotifyResult
+    return n.posted || n.reason !== 'quota' ? 'posted' : 'quota'
+  } catch {
+    return 'failed'
+  }
+}
+
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: ReviewData }
 
 export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
@@ -44,6 +71,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [done, setDone] = useState<SubmitResult | null>(null)
+  const [announced, setAnnounced] = useState<Announce>('idle')
   const started = useRef(false)
   const inFlight = useRef(false) // blocks a double submit before state re-renders
 
@@ -85,7 +113,16 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
           decisions: toDecisions(next),
         })
         if (status !== 200) setFormError(errorCopy(status, ERR_SUBMIT))
-        else setDone(json as SubmitResult)
+        else {
+          const result = json as SubmitResult
+          setDone(result)
+          const feedback = result.feedback
+          if (result.feedbackFailed) setAnnounced('failed')
+          else if (feedback && id) {
+            setAnnounced('working')
+            void announce(idToken, id, feedback.taskIds).then(setAnnounced)
+          }
+        }
       } catch {
         setFormError(ERR_SUBMIT)
       } finally {
@@ -139,6 +176,23 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
           </>
         )}
         <p className="mt-3">ไม่สร้าง {declined} งาน</p>
+        {announced !== 'idle' && <p className="mt-2 text-sm opacity-80">{ANNOUNCE_COPY[announced]}</p>}
+        {announced === 'failed' && id && (
+          <button
+            type="button"
+            className="mt-2 rounded border px-4 py-2"
+            onClick={() => {
+              // Only the notification is retried; the Tasks are already saved. The
+              // server builds the message, so this also works when submit could not.
+              const taskIds = done.feedback?.taskIds ??
+                done.results.flatMap((r) => (r.taskId ? [r.taskId] : []))
+              setAnnounced('working')
+              void announce(idToken, id, taskIds).then(setAnnounced)
+            }}
+          >
+            ลองแจ้งในกลุ่มอีกครั้ง
+          </button>
+        )}
         <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
           ปิด
         </button>

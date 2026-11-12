@@ -2,6 +2,7 @@ import { parseGroupCommand } from '../commands/parse'
 import type { LineMessage } from '../line/types'
 import { log, logError } from '../log'
 import type { Deps, NewCandidate } from '../ports'
+import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, type ParsedTask } from './parse-output'
@@ -39,7 +40,9 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
   }
   const ownerLineUserId = group.nominatedOwnerLineUserId
 
-  // Task 12: Fair-use cap check goes here.
+  // Fair-use cap: a capped Owner gets the cap message only (no AI call, no usage, no Summary).
+  const before = await getFairUseStatus(store, ownerLineUserId, deps.now())
+  if (before.level === 'capped') return reply(deps, replyToken, groupId, [capMessage(before)])
 
   // The command message itself is already stored and takes one slot (M1).
   const messages = (await store.listRecentTextMessages(groupId, SUMMARY_MESSAGE_LIMIT + 1))
@@ -117,9 +120,23 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
     candidates,
   )
 
-  await reply(deps, replyToken, groupId, buildSummaryReply({
+  const replyMessages = buildSummaryReply({
     summaryText, candidates: replyCandidates, summaryId, liffId: deps.config.liffId, draftTasks: group.featureDraftTasks,
-  }))
+  })
+  // This call may have crossed 80% or the cap; the notice rides on the same reply (no pushes).
+  try {
+    const after = await getFairUseStatus(store, ownerLineUserId, deps.now())
+    if (after.level === 'capped') replyMessages.push(capMessage(after))
+    else if (
+      after.level === 'warn' &&
+      (await store.claimFairUseNotice({ ownerLineUserId, groupId, monthStartBkk: after.monthStartBkk, kind: 'warn_80' })).inserted
+    ) {
+      replyMessages.push(warnMessage(after))
+    }
+  } catch (err) {
+    logError('summary_fair_use_notice_failed', { groupId }, err)
+  }
+  await reply(deps, replyToken, groupId, replyMessages)
 }
 
 function replyText(deps: Deps, replyToken: string, groupId: string, text: string): Promise<void> {

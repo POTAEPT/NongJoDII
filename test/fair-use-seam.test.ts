@@ -136,6 +136,44 @@ describe('Fair-use seam', () => {
     expect(t.llm.requests).toHaveLength(1)
   })
 
+  it('two summaries racing for one Owner just under the cap: one model call, one charge, the other gets the cap reply', async () => {
+    const t = await setup()
+    t.seed(0.4995)
+    // Both requests read usage before either claims (the race the claim closes).
+    const read = t.store.sumOwnerMonthUsage.bind(t.store)
+    let waiting = 0
+    let release!: () => void
+    const bothRead = new Promise<void>((r) => { release = r })
+    vi.spyOn(t.store, 'sumOwnerMonthUsage').mockImplementation(async (owner, month) => {
+      const out = await read(owner, month)
+      if (++waiting === 2) release()
+      if (waiting <= 2) await bothRead
+      return out
+    })
+    t.llm.respond({ content: ANSWER, model: TEXT_MODEL, usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.0001 } })
+    const usageBefore = t.store.tables.ai_usage.length
+    t.line.replies.length = 0
+    for (const group of ['Cga', 'Cgb']) {
+      const res = await handleWebhookRequest(
+        signedRequest(webhookBody(ev.groupText({ text: 'NongJoDII summarize', groupId: group, userId: 'Uuser1', timestamp: t.deps.now().getTime() }))),
+        t.deps, t.defer,
+      )
+      expect(res.status).toBe(200)
+    }
+    await Promise.all(t.deferred.splice(0).map((job) => job()))
+    await t.runDeferred()
+
+    expect(t.llm.requests).toHaveLength(1)
+    expect(t.store.tables.ai_usage).toHaveLength(usageBefore + 1)
+    expect(t.store.tables.summaries).toHaveLength(1)
+    expect(t.line.replies).toHaveLength(2)
+    const outs = t.line.replies.map((r) => texts(r.messages))
+    const capped = outs.filter((o) => o.length === 1 && o[0].includes('ครบโควตา'))
+    const summarized = outs.filter((o) => o[0].includes('สรุป') && !o[0].includes('ครบโควตา'))
+    expect(capped).toHaveLength(1)
+    expect(summarized).toHaveLength(1)
+  })
+
   it('no notice and no claim when the AI call fails', async () => {
     const t = await setup()
     t.seed(0.45)

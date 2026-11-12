@@ -3,7 +3,7 @@ import type { LineMessage } from '../line/types'
 import { log, logError } from '../log'
 import type { Deps, NewCandidate } from '../ports'
 import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
-import { runMeteredAi } from '../usage/meter'
+import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, type ParsedTask } from './parse-output'
 import { buildSummaryPrompt, substituteMemberRefs } from './prompt'
@@ -54,6 +54,7 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   const ownerLineUserId = group.nominatedOwnerLineUserId
 
   // Fair-use cap: a capped Owner gets the cap message only (no AI call, no usage, no Summary).
+  // This read is not race-safe by itself; the usage claim in runMeteredAi is the real gate.
   const before = await getFairUseStatus(store, ownerLineUserId, deps.now())
   if (before.level === 'capped') return reply(deps, replyToken, groupId, [capMessage(before)], sent)
 
@@ -75,6 +76,11 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     )
     parsed = parseSummaryOutput(result.content)
   } catch (err) {
+    // The pre-check passed but another request for this Owner claimed the rest of the cap
+    // first: same cap reply, no AI call was made, no Summary.
+    if (err instanceof FairUseCapReachedError) {
+      return reply(deps, replyToken, groupId, [capMessage(await getFairUseStatus(store, ownerLineUserId, deps.now()))], sent)
+    }
     // Any error: AdapterError, a raw TimeoutError/SyntaxError from the client, or ModelOutputError.
     logError('summary_ai_failed', { groupId }, err)
     return replyText(deps, replyToken, groupId, REPLY_FAILED, sent)

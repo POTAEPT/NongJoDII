@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  AiUsageActual,
+  AiUsageCap,
   CandidateRow,
   CandidateState,
   GroupRow,
@@ -38,7 +40,7 @@ export type CandidateRecord = CandidateRow & {
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
   lastEditedByLineUserId: string | null; lastActivityAt: Date | null
 }
-export type AiUsageRecord = NewAiUsage & { id: string }
+export type AiUsageRecord = NewAiUsage & { id: string; settledAt: Date | null } // settledAt null = open claim
 export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }
 export type GoogleAccountRecord = {
   id: string; lineUserId: string; googleSubject: string; email: string | null; grantedScopes: string[]
@@ -325,15 +327,38 @@ export class FakeStore implements StorePort {
   }
 
   // ---- #5 / #6 usage ----
-  async insertAiUsage(u: NewAiUsage): Promise<void> {
-    this.fault('insertAiUsage')
+  // Mirrors claim_ai_usage: the sum and the insert run with no await between them, so
+  // concurrent claims are serialized like the per-Owner advisory lock, and a claim
+  // sees every earlier claim (open or settled).
+  async claimAiUsage(u: NewAiUsage, cap: AiUsageCap): Promise<{ claimId: string | null }> {
+    this.fault('claimAiUsage')
     fk(this.hasLineUser(u.ownerLineUserId), 'ai_usage.owner_line_user_id')
     fk(this.hasGroup(u.groupId), 'ai_usage.group_id')
-    this.tables.ai_usage.push({ ...u, id: randomUUID() })
+    const used = this.sumMonth(u.ownerLineUserId, bangkokMonthRange(u.createdAt).monthStartBkk)
+    if (used.tokens >= cap.capTokens || used.costMicroUsd >= Math.round(cap.capCostUsd * 1e6)) return { claimId: null }
+    const id = randomUUID()
+    this.tables.ai_usage.push({ ...u, id, settledAt: null })
+    return { claimId: id }
+  }
+
+  async settleAiUsage(claimId: string, actual: AiUsageActual): Promise<void> {
+    this.fault('settleAiUsage')
+    const row = this.tables.ai_usage.find((r) => r.id === claimId)
+    if (!row) throw new Error('FakeStore: settleAiUsage claim not found')
+    Object.assign(row, actual, { settledAt: row.settledAt ?? row.createdAt })
+  }
+
+  async releaseAiUsage(claimId: string): Promise<void> {
+    this.fault('releaseAiUsage')
+    this.tables.ai_usage = this.tables.ai_usage.filter((r) => !(r.id === claimId && r.settledAt === null))
   }
 
   async sumOwnerMonthUsage(ownerLineUserId: string, monthStart: string): Promise<{ tokens: number; costMicroUsd: number }> {
     this.fault('sumOwnerMonthUsage')
+    return this.sumMonth(ownerLineUserId, monthStart)
+  }
+
+  private sumMonth(ownerLineUserId: string, monthStart: string): { tokens: number; costMicroUsd: number } {
     const rows = this.tables.ai_usage.filter(
       (u) => u.ownerLineUserId === ownerLineUserId && bangkokMonthRange(u.createdAt).monthStartBkk === monthStart,
     )
@@ -412,7 +437,7 @@ export class FakeStore implements StorePort {
     const row: AiUsageRecord = {
       ownerLineUserId: 'Uowner1', projectId: null, groupId: null, purpose: 'summary',
       model: 'openai/gpt-oss-20b', inputTokens: 0, outputTokens: 0, costUsd: 0, createdAt: SEED_NOW,
-      ...partial, id: randomUUID(),
+      ...partial, id: randomUUID(), settledAt: partial.createdAt ?? SEED_NOW,
     }
     fk(this.hasGroup(row.groupId), 'ai_usage.group_id')
     this.ensureLineUserRow(row.ownerLineUserId)

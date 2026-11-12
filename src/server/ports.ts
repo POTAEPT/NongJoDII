@@ -74,6 +74,9 @@ export type NewAiUsage = {
   ownerLineUserId: string; projectId: string | null; groupId: string | null; purpose: AiPurpose
   model: string; inputTokens: number; outputTokens: number; costUsd: number; createdAt: Date
 }
+/** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
+export type AiUsageCap = { capTokens: number; capCostUsd: number }
+export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -102,7 +105,14 @@ export interface StorePort {
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
   // #5 / #6 usage
-  insertAiUsage(u: NewAiUsage): Promise<void>
+  /** Serialized per Owner: sums the Owner's Bangkok month (open claims included) and, when it is
+   *  below the cap in tokens and dollars, inserts an open claim row holding the estimate `u`.
+   *  claimId null = cap reached, nothing inserted. */
+  claimAiUsage(u: NewAiUsage, cap: AiUsageCap): Promise<{ claimId: string | null }>
+  /** UPDATE by id with the real numbers and marks it settled; idempotent, never inserts. */
+  settleAiUsage(claimId: string, actual: AiUsageActual): Promise<void>
+  /** Deletes the claim row only while it is still open (the AI call failed). */
+  releaseAiUsage(claimId: string): Promise<void>
   /** Reads the owner_monthly_usage view (one row per Owner per Bangkok month), so the
    *  PostgREST max_rows limit (1000, supabase/config.toml) can never truncate the sum. */
   sumOwnerMonthUsage(ownerLineUserId: string, monthStartBkk: string): Promise<{ tokens: number; costMicroUsd: number }> // monthStartBkk 'YYYY-MM-01'; integer micro-dollars

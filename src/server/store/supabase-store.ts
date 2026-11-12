@@ -3,6 +3,7 @@ import { AdapterError } from '../log'
 import type {
   AiUsageActual,
   AiUsageCap,
+  AnnounceClaim,
   CandidateRow,
   GroupRow,
   Member,
@@ -320,23 +321,87 @@ export class SupabaseStore implements StorePort {
     return data ? toTaskRow(data as unknown as DbTask) : null
   }
 
-  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
-    if (taskIds.length === 0) return []
-    const { data, error } = await this.db
+  // Several statements, no RPC: each one is atomic, and its WHERE clause is
+  // rechecked against the locked row, so two claims do not both take a batch as long
+  // as they lock rows in a consistent order. A concurrent re-claim can still abort on
+  // a deadlock; the batch then recovers through the stale path.
+  async claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]> {
+    if (c.taskIds.length === 0) return []
+    type Held = { id: string; announce_pending_token: string }
+    const held = await this.db
       .from('tasks')
-      .update({ announced_at: at.toISOString() })
-      .in('id', taskIds)
+      .select('id, announce_pending_token')
+      .in('id', c.taskIds)
       .is('announced_at', null)
       .is('deleted_at', null)
+      .not('announce_pending_token', 'is', null)
+    check('claimTaskAnnouncements', held.error)
+    const tokens = [...new Set(((held.data ?? []) as Held[]).map((r) => r.announce_pending_token))]
+    const out: { taskId: string; token: string }[] = []
+    if (tokens.length > 0) {
+      // A released batch (pending_at null), then a stale one; a live claim is left alone.
+      const released = await this.db
+        .from('tasks')
+        .update({ announce_pending_at: c.at.toISOString() })
+        .in('announce_pending_token', tokens)
+        .is('announced_at', null)
+        .is('deleted_at', null)
+        .is('announce_pending_at', null)
+        .select('id, announce_pending_token')
+      check('claimTaskAnnouncements', released.error)
+      const stale = await this.db
+        .from('tasks')
+        .update({ announce_pending_at: c.at.toISOString() })
+        .in('announce_pending_token', tokens)
+        .is('announced_at', null)
+        .is('deleted_at', null)
+        .lt('announce_pending_at', c.staleBefore.toISOString())
+        .select('id, announce_pending_token')
+      check('claimTaskAnnouncements', stale.error)
+      for (const r of [...((released.data ?? []) as Held[]), ...((stale.data ?? []) as Held[])]) {
+        out.push({ taskId: r.id, token: r.announce_pending_token })
+      }
+    }
+    const fresh = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: c.token, announce_pending_at: c.at.toISOString() })
+      .in('id', c.taskIds)
+      .is('announced_at', null)
+      .is('deleted_at', null)
+      .is('announce_pending_token', null)
       .select('id')
-    check('claimTaskAnnouncements', error)
-    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+    check('claimTaskAnnouncements', fresh.error)
+    for (const r of (fresh.data ?? []) as { id: string }[]) out.push({ taskId: r.id, token: c.token })
+    return out
   }
 
-  async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
-    if (taskIds.length === 0) return
-    const { error } = await this.db.from('tasks').update({ announced_at: null }).in('id', taskIds)
+  async confirmTaskAnnouncements(token: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announced_at: at.toISOString(), announce_pending_token: null, announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .is('announced_at', null)
+    check('confirmTaskAnnouncements', error)
+  }
+
+  async releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
+      .is('announced_at', null)
     check('releaseTaskAnnouncements', error)
+  }
+
+  async abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: null, announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
+      .is('announced_at', null)
+    check('abandonTaskAnnouncements', error)
   }
 
   async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {

@@ -64,6 +64,17 @@ export class LineHttpClient implements LinePort {
     return { displayName: body.displayName }
   }
 
+  async getGroupMemberCount(lineGroupId: string): Promise<number> {
+    const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/members/count`
+    const res = await this.fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } })
+    if (res.status !== 200) throw new AdapterError(`line member count ${res.status}`)
+    const body = (await res.json()) as { count?: unknown }
+    if (typeof body.count !== 'number' || !Number.isInteger(body.count) || body.count < 0) {
+      throw new AdapterError('line member count 200')
+    }
+    return body.count
+  }
+
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
     const headers = { Authorization: `Bearer ${this.token}` }
     const [quota, usage] = await Promise.all([

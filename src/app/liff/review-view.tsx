@@ -46,8 +46,9 @@ const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
 }
 
 /** Asks the bot to tell the group which Tasks were created (a push: it counts
- *  against the LINE quota and is skipped near the limit). The server claims each Task
- *  once and pushes with a stable retry key, so repeating this call never repeats the
+ *  against the LINE quota and is skipped near the limit). The server claims the Tasks
+ *  as a batch and pushes it with the batch's token as the LINE retry key; a retry
+ *  resends a failed batch with the same key, so repeating this call never repeats the
  *  message. */
 async function announce(
   idToken: string, summaryId: string, taskIds: string[],

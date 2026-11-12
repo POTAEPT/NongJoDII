@@ -140,13 +140,56 @@ describe('weekly insight (#20)', () => {
     expect(insightsOf(store, notSetUp.id)).toHaveLength(0)
   })
 
-  it('two overlapping ticks save one insight', async () => {
-    const { store, deps, defer, runDeferred, setNow } = setup()
+  it('two ticks that really overlap still save one insight', async () => {
+    const { store, deps, defer, deferred, setNow } = setup()
     const group = seedOwnedGroup(store)
     setNow(bkk('2026-11-16T09:00:00'))
     await handleTickRequest(tickRequest(), deps, defer)
     await handleTickRequest(tickRequest(), deps, defer)
-    await runDeferred()
+    expect(deferred).toHaveLength(2)
+
+    // Pause the first run right after its claim (its first count), so the second run
+    // works while the first is still unfinished.
+    let open!: () => void
+    const gate = new Promise<void>((resolve) => { open = resolve })
+    const count = store.countTasksByStatus.bind(store)
+    let counts = 0
+    vi.spyOn(store, 'countTasksByStatus').mockImplementation(async (groupId) => {
+      counts += 1
+      if (counts === 1) await gate
+      return count(groupId)
+    })
+
+    const both = Promise.all(deferred.splice(0).map((job) => job()))
+    await new Promise((resolve) => setTimeout(resolve, 0)) // let the second run go as far as it can
+    open()
+    await both
+
+    // Either the claim stopped the second run, or the second run got past it and the
+    // unique (group_id, week_start) kept the row single. Both paths end with one row.
+    expect(insightsOf(store, group.id)).toHaveLength(1)
+    expect(store.tables.group_schedules.find((s) => s.groupId === group.id)?.weeklySummaryLastSentOn).toBe('2026-11-16')
+  })
+
+  it('recovers later the same day when both the save and the release fail', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { store, tickAt } = setup()
+    const group = seedOwnedGroup(store)
+    store.failNext('saveWeeklyInsight')
+    store.failNext('releaseWeeklySummary')
+
+    await tickAt(bkk('2026-11-16T09:00:00'))
+    expect(insightsOf(store, group.id)).toHaveLength(0)
+    // The claim is stuck on today, with no row for the week.
+    expect(store.tables.group_schedules.find((s) => s.groupId === group.id)?.weeklySummaryLastSentOn).toBe('2026-11-16')
+    const events = errors.mock.calls.map((c) => JSON.parse(String(c[0])).event)
+    expect(events).toEqual(['weekly_insight_release_failed', 'weekly_insight_failed'])
+
+    await tickAt(bkk('2026-11-16T09:15:00'))
+    expect(insightsOf(store, group.id)).toHaveLength(1)
+    expect(insightsOf(store, group.id)[0].weekStart).toBe('2026-11-16')
+
+    await tickAt(bkk('2026-11-16T09:30:00'))
     expect(insightsOf(store, group.id)).toHaveLength(1)
   })
 
@@ -185,7 +228,7 @@ describe('buildWeeklyInsight (#20, read by #21)', () => {
     const { store, deps } = setup()
     const group = seedOwnedGroup(store)
     seedTasks(store, group.id)
-    const [row] = await store.listWeeklySummaryGroups()
+    const [row] = await store.listWeeklySummaryGroups(1)
     const insight = await buildWeeklyInsight(deps, row, bkk('2026-11-18T09:00:00'))
     expect(insight.weekStart).toBe('2026-11-16')
     expect(insight.lineGroupId).toBe(group.lineGroupId)
@@ -200,7 +243,7 @@ describe('buildWeeklyInsight (#20, read by #21)', () => {
     for (let i = 1; i <= UNOWNED_LIST_LIMIT + 3; i++) {
       store.seedTask({ groupId: group.id, title: `Task ${i}`, createdByLineUserId: 'Uowner1' })
     }
-    const [row] = await store.listWeeklySummaryGroups()
+    const [row] = await store.listWeeklySummaryGroups(1)
     const insight = await buildWeeklyInsight(deps, row, bkk('2026-11-16T09:00:00'))
     expect(insight.counts.awaitingOwner).toBe(UNOWNED_LIST_LIMIT + 3)
     expect(insight.unowned).toHaveLength(UNOWNED_LIST_LIMIT)

@@ -452,12 +452,12 @@ export class FakeStore implements StorePort {
     return this.tables.tasks.filter((t) => t.groupId === groupId && t.deletedAt === null)
   }
 
-  async listWeeklySummaryGroups(): Promise<WeeklySummaryGroup[]> {
+  async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     this.fault('listWeeklySummaryGroups')
     return this.tables.groups
       .filter((g) => g.projectId !== null)
       .map((g) => ({ g, s: this.scheduleOf(g.id) }))
-      .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary)
+      .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary && s.weeklySummaryWeekday === weekday)
       .sort((a, b) => a.g.id.localeCompare(b.g.id))
       .map(({ g, s }) => ({
         groupId: g.id, lineGroupId: g.lineGroupId, weekday: s.weeklySummaryWeekday,
@@ -507,6 +507,11 @@ export class FakeStore implements StorePort {
     fk(this.hasGroup(i.groupId), 'weekly_insights.group_id')
     this.tables.weekly_insights.push({ ...i, counts: { ...i.counts }, id: randomUUID(), postedAt: null })
     return { inserted: true }
+  }
+
+  async hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean> {
+    this.fault('hasWeeklyInsight')
+    return this.tables.weekly_insights.some((w) => w.groupId === groupId && w.weekStart === weekStart)
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

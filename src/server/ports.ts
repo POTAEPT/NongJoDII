@@ -143,8 +143,9 @@ export interface StorePort {
   sumOwnerMonthUsage(ownerLineUserId: string, monthStartBkk: string): Promise<{ tokens: number; costMicroUsd: number }> // monthStartBkk 'YYYY-MM-01'; integer micro-dollars
   claimFairUseNotice(n: { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }): Promise<{ inserted: boolean }> // ON CONFLICT (PK) DO NOTHING
   // #20 weekly insight
-  /** groups where project_id is not null, left_at is null and feature_weekly_summary. */
-  listWeeklySummaryGroups(): Promise<WeeklySummaryGroup[]>
+  /** groups where project_id is not null, left_at is null, feature_weekly_summary and
+   *  weekly_summary_weekday = `weekday` (ISO 1..7). Every page, ordered by id. */
+  listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]>
   /** One statement: sets weekly_summary_last_sent_on = todayBkk where it is null or before
    *  todayBkk. claimed false = another tick already took today's slot. */
   claimWeeklySummary(groupId: string, todayBkk: string): Promise<{ claimed: boolean }>
@@ -156,6 +157,7 @@ export interface StorePort {
   listUnownedTasks(groupId: string, limit: number): Promise<UnownedTask[]>
   /** ON CONFLICT (group_id, week_start) DO NOTHING; inserted false = this week already has one. */
   saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }>
+  hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean>
   // #12 Google
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>

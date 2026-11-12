@@ -1,6 +1,6 @@
 import { log, logError } from '@/server/log'
 import type { Deps, TaskCounts, UnownedTask, WeeklySummaryGroup } from '@/server/ports'
-import { bangkokTodayLabel, bangkokWeekStartLabel, isWeeklyDue } from '@/server/time/bangkok'
+import { bangkokIsoWeekday, bangkokTodayLabel, bangkokWeekStartLabel, isWeeklyDue } from '@/server/time/bangkok'
 import type { TickJob } from '@/server/tick/run-tick'
 
 // #20 Weekly insight, part 1: on the group's chosen weekday and time, count its Tasks in
@@ -24,38 +24,65 @@ export async function buildWeeklyInsight(deps: Deps, group: WeeklySummaryGroup, 
   return { groupId: group.groupId, lineGroupId: group.lineGroupId, weekStart: bangkokWeekStartLabel(now), counts, unowned }
 }
 
-export type WeeklyResult = 'not_due' | 'claimed_elsewhere' | 'saved' | 'already_this_week'
+/** 'saved' and 'recovered' are the only results that wrote this week's row; #21 posts on them. */
+export type WeeklyResult = 'not_due' | 'claimed_elsewhere' | 'saved' | 'recovered' | 'already_this_week'
 
-/** One group: due check, claim, build, save. A failure after the claim releases it, so
- *  the next tick retries instead of losing this week's insight. */
-export async function runWeeklyInsightForGroup(deps: Deps, group: WeeklySummaryGroup, now: Date): Promise<WeeklyResult> {
-  if (!isWeeklyDue({ weekday: group.weekday, time: group.time, lastSentOn: group.lastSentOn }, now)) return 'not_due'
-  const today = bangkokTodayLabel(now)
-  if (!(await deps.store.claimWeeklySummary(group.groupId, today)).claimed) return 'claimed_elsewhere'
-  try {
-    const insight = await buildWeeklyInsight(deps, group, now)
-    // Second guard: one row per group and week, even if the weekday changed mid-week.
-    const { inserted } = await deps.store.saveWeeklyInsight({
-      groupId: insight.groupId, weekStart: insight.weekStart, counts: insight.counts, createdAt: now,
-    })
-    if (!inserted) return 'already_this_week'
+async function buildAndSave(deps: Deps, group: WeeklySummaryGroup, now: Date): Promise<boolean> {
+  const insight = await buildWeeklyInsight(deps, group, now)
+  // One row per group and week (unique key): a concurrent or repeated run cannot add a second.
+  const { inserted } = await deps.store.saveWeeklyInsight({
+    groupId: insight.groupId, weekStart: insight.weekStart, counts: insight.counts, createdAt: now,
+  })
+  if (inserted) {
     log('weekly_insight_saved', {
       groupId: group.groupId, weekStart: insight.weekStart,
       done: insight.counts.done, inProcess: insight.counts.inProcess, awaitingOwner: insight.counts.awaitingOwner,
     })
-    return 'saved'
-  } catch (err) {
-    await deps.store.releaseWeeklySummary(group.groupId, today, group.lastSentOn)
-    throw err
   }
+  return inserted
 }
 
-/** Tick job: every group whose weekly slot has come. One group's failure is logged and
- *  never stops the others. */
+/** One group, on one tick:
+ *  - Due (weekday and time reached, not done today): claim the day, then build and save.
+ *    A failure releases the claim, so the next tick retries.
+ *  - Already claimed today but this week has no row: an earlier tick claimed, then failed
+ *    and could not release (for example while the database was down). Build and save again
+ *    without a claim; the unique key still keeps one row per week. This also repairs a
+ *    claim whose release failed, which no other path would. */
+export async function runWeeklyInsightForGroup(deps: Deps, group: WeeklySummaryGroup, now: Date): Promise<WeeklyResult> {
+  const today = bangkokTodayLabel(now)
+  const slot = { weekday: group.weekday, time: group.time, lastSentOn: group.lastSentOn }
+
+  if (isWeeklyDue(slot, now)) {
+    if (!(await deps.store.claimWeeklySummary(group.groupId, today)).claimed) return 'claimed_elsewhere'
+    try {
+      return (await buildAndSave(deps, group, now)) ? 'saved' : 'already_this_week'
+    } catch (err) {
+      try {
+        await deps.store.releaseWeeklySummary(group.groupId, today, group.lastSentOn)
+      } catch (releaseErr) {
+        // The recovery path above picks this group up on a later tick today.
+        logError('weekly_insight_release_failed', { groupId: group.groupId }, releaseErr)
+      }
+      throw err
+    }
+  }
+
+  const slotReachedToday = isWeeklyDue({ ...slot, lastSentOn: null }, now)
+  if (slotReachedToday && group.lastSentOn === today) {
+    if (await deps.store.hasWeeklyInsight(group.groupId, bangkokWeekStartLabel(now))) return 'not_due'
+    log('weekly_insight_recovering', { groupId: group.groupId })
+    return (await buildAndSave(deps, group, now)) ? 'recovered' : 'already_this_week'
+  }
+  return 'not_due'
+}
+
+/** Tick job: the groups whose weekly slot falls on today's Bangkok weekday. One group's
+ *  failure is logged and never stops the others. */
 export const weeklyInsightJob: TickJob = {
   name: 'weekly_insight',
   async run(deps, now) {
-    const groups = await deps.store.listWeeklySummaryGroups()
+    const groups = await deps.store.listWeeklySummaryGroups(bangkokIsoWeekday(now))
     for (const group of groups) {
       try {
         await runWeeklyInsightForGroup(deps, group, now)

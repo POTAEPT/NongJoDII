@@ -53,6 +53,9 @@ const CANDIDATE_COLS =
 const TASK_COLS =
   'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, groups(line_group_id)'
 
+/** Page size for listWeeklySummaryGroups; equal to PostgREST max_rows in supabase/config.toml. */
+export const WEEKLY_PAGE = 1000
+
 type PgError = { code: string } | null
 
 function check(method: keyof StorePort, error: PgError): void {
@@ -365,23 +368,34 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #20 weekly insight ----
-  async listWeeklySummaryGroups(): Promise<WeeklySummaryGroup[]> {
-    const { data, error } = await this.db
-      .from('groups')
-      .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
-      .not('project_id', 'is', null)
-      .is('left_at', null)
-      .eq('feature_weekly_summary', true)
-      .order('id')
-    check('listWeeklySummaryGroups', error)
-    const rows = (data ?? []) as {
+  /** Pages of WEEKLY_PAGE rows ordered by id, so PostgREST max_rows (1000) never hides
+   *  the groups after the first page. */
+  async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
+    type Row = {
       id: string; line_group_id: string; weekly_summary_weekday: number
       weekly_summary_time: string; weekly_summary_last_sent_on: string | null
-    }[]
-    return rows.map((r) => ({
-      groupId: r.id, lineGroupId: r.line_group_id, weekday: r.weekly_summary_weekday,
-      time: r.weekly_summary_time, lastSentOn: r.weekly_summary_last_sent_on,
-    }))
+    }
+    const out: WeeklySummaryGroup[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .eq('feature_weekly_summary', true)
+        .eq('weekly_summary_weekday', weekday)
+        .order('id')
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listWeeklySummaryGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({
+          groupId: r.id, lineGroupId: r.line_group_id, weekday: r.weekly_summary_weekday,
+          time: r.weekly_summary_time, lastSentOn: r.weekly_summary_last_sent_on,
+        })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
   }
 
   async claimWeeklySummary(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
@@ -449,6 +463,17 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('saveWeeklyInsight', error)
     return { inserted: (data ?? []).length === 1 }
+  }
+
+  async hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from('weekly_insights')
+      .select('id')
+      .eq('group_id', groupId)
+      .eq('week_start', weekStart)
+      .maybeSingle()
+    check('hasWeeklyInsight', error)
+    return data !== null
   }
 
   // ---- #12 Google ----

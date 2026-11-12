@@ -93,3 +93,17 @@ describe('LineHttpClient.verifyIdToken', () => {
     await expect(client.verifyIdToken('idt')).rejects.toThrow(new AdapterError('line verify 503'))
   })
 })
+
+describe('LineHttpClient timeout', () => {
+  it('cuts a LINE call that does not answer and throws AdapterError "line timeout"', async () => {
+    // A fetch that only ends when its signal aborts, like a LINE call that hangs.
+    const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })) as typeof fetch
+    const client = new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl, timeoutMs: 20 })
+    const err = await client.getGroupMemberProfile('Cg', 'Uu').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as Error).message).toBe('line timeout')
+  })
+})

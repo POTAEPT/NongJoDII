@@ -6,6 +6,7 @@ import type { LlmRequest, LlmUsage } from '@/server/ports'
 import { runSummaryCommand } from '@/server/summary/run-summary'
 import { TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
+import { NAME_WAIT_MS } from '@/server/webhook/process'
 import { chatLines, refMentioning, refOf, taggedRefs, todayOf } from './fakes/prompt-reader'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, TEST_LIFF_ID, webhookBody } from './harness'
 
@@ -482,6 +483,39 @@ describe('Summary commands in one webhook', () => {
     ])
     expect(t.store.tables.summaries).toHaveLength(1)
   })
+
+  it('a slow name lookup holds a Summary back at most NAME_WAIT_MS and never holds other jobs', async () => {
+    const t = setup()
+    await seedChat(t)
+    t.respond(() => ({ summary: 'คุยกันทั่วไป', tasks: [] }))
+    // A sender the bot has never seen needs a LINE profile call, which is slow here.
+    t.line.slowProfileMs = NAME_WAIT_MS + 1_000
+    const order: string[] = []
+    const reply = t.line.reply.bind(t.line)
+    t.line.reply = async (replyToken, messages) => {
+      order.push(`reply ${replyToken}`)
+      return reply(replyToken, messages)
+    }
+    const profile = t.line.getGroupMemberProfile.bind(t.line)
+    t.line.getGroupMemberProfile = async (g, u) => {
+      try {
+        return await profile(g, u)
+      } finally {
+        order.push('profile settled')
+      }
+    }
+    await t.send(
+      ev.groupText({ text: 'มีใครว่างบ้าง', userId: 'Unewcomer', timestamp: T0 + 9 * MIN }),
+      ev.follow({ userId: 'Ufriend' }),
+      ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', replyToken: 'rt-1', timestamp: T0 + 10 * MIN }),
+    )
+    // Both replies go out before the slow lookup ends; the batch still waits for it.
+    expect(order).toHaveLength(3)
+    expect(order.slice(0, 2).filter((e) => e.startsWith('reply '))).toHaveLength(2)
+    expect(order.slice(0, 2)).toContain('reply rt-1')
+    expect(order[2]).toBe('profile settled')
+    expect(t.store.tables.summaries).toHaveLength(1)
+  }, 10_000)
 
   it('a job that throws is logged and the other job still runs', async () => {
     const t = setup()

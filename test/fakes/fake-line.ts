@@ -15,6 +15,9 @@ export class FakeLine implements LinePort {
   failReply = false
   /** Makes getGroupMemberProfile reject, as the real adapter does on a LINE 5xx/429. */
   failProfile = false
+  /** When above 0, getGroupMemberProfile answers only after this many ms, then rejects
+   *  as the real adapter does when its timeout cuts a slow LINE call. */
+  slowProfileMs = 0
 
   async reply(replyToken: string, messages: LineMessage[]): Promise<void> {
     this.replies.push({ replyToken, messages })
@@ -23,6 +26,10 @@ export class FakeLine implements LinePort {
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {
     this.profileCalls.push({ lineGroupId, lineUserId })
+    if (this.slowProfileMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.slowProfileMs))
+      throw new AdapterError('line timeout')
+    }
     if (this.failProfile) throw new AdapterError('line profile 500')
     const displayName = this.profiles.get(`${lineGroupId}:${lineUserId}`)
     return displayName === undefined ? null : { displayName }

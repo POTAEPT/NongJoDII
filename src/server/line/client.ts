@@ -10,12 +10,25 @@ export class LineHttpClient implements LinePort {
   private readonly token: string
   private readonly loginChannelId: string
   private readonly fetchImpl: typeof fetch
+  private readonly timeoutMs: number
 
-  constructor(opts: { channelAccessToken: string; loginChannelId: string; fetchImpl?: typeof fetch }) {
+  constructor(opts: { channelAccessToken: string; loginChannelId: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
     this.token = opts.channelAccessToken
     this.loginChannelId = opts.loginChannelId
     // Resolve the global at call time, so a fetch replaced after construction is used.
-    this.fetchImpl = opts.fetchImpl ?? ((...args) => fetch(...args))
+    const fetchImpl = opts.fetchImpl ?? ((...args) => fetch(...args))
+    // Every LINE call is cut at 10 s, so a slow LINE answer cannot use up the webhook
+    // route's 60 s budget (a Summary's model call takes up to 45 s of it).
+    this.timeoutMs = opts.timeoutMs ?? 10_000
+    this.fetchImpl = (async (input, init) => {
+      try {
+        return await fetchImpl(input, { ...init, signal: AbortSignal.timeout(this.timeoutMs) })
+      } catch (err) {
+        const name = (err as { name?: unknown } | null)?.name
+        if (name === 'TimeoutError' || name === 'AbortError') throw new AdapterError('line timeout')
+        throw err
+      }
+    }) as typeof fetch
   }
 
   async reply(replyToken: string, messages: LineMessage[]): Promise<void> {

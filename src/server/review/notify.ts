@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { log, logError } from '../log'
 import type { ApiResult, Deps, TaskRow } from '../ports'
 import { buildTaskFeedback } from './feedback'
@@ -10,11 +10,17 @@ const MAX_TASKS = 10
 /** Share of the monthly LINE quota kept back for pushes that matter more (reminders,
  *  Owner and member cards): a "Tasks created" push is skipped inside it. Agent choice. */
 const QUOTA_RESERVE = 0.1
+/** A claim older than this belongs to a dead request and may be taken over. Longer
+ *  than the route's maxDuration (60 s), so a live request's claim is never taken over;
+ *  a take-over of a dead one keeps the token (the retry key), so LINE still sends once. */
+const ANNOUNCE_STALE_MS = 2 * 60_000
 
 /** POST /api/review/notify. The bot pushes the "Tasks created" message to the
- *  Summary's group. Each Task is announced once (claimed through announced_at). The
- *  push never spends the quota reserve, and a retry of the same Tasks reuses one LINE
- *  retry key, so LINE sends it once. */
+ *  Summary's group. Tasks are claimed with a pending token, and announced_at is set
+ *  only after LINE accepts. Each claim batch is one push whose LINE retry key is its
+ *  token: a failed or abandoned batch is retried whole with the same key, never merged
+ *  with new Tasks, so LINE delivers each batch once. The push never spends the quota
+ *  reserve. */
 export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult> {
   const gate = await openSummary(deps, body)
   if (!gate.ok) return gate.result
@@ -40,13 +46,36 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
     if (t.deletedAt === null && t.createdByLineUserId === requester) tasks.push(t)
   }
   if (tasks.length === 0) return ok({ posted: false, reason: 'nothing_to_announce' })
-  const claimed = new Set(await deps.store.claimTaskAnnouncements(tasks.map((t) => t.id), deps.now()))
-  const toAnnounce = tasks.filter((t) => claimed.has(t.id))
-  if (toAnnounce.length === 0) return ok({ posted: false, reason: 'already_announced' })
-  const releaseTasks = () => deps.store.releaseTaskAnnouncements(toAnnounce.map((t) => t.id))
+  const token = randomUUID()
+  const now = deps.now()
+  const claimed = await deps.store.claimTaskAnnouncements({
+    taskIds: tasks.map((t) => t.id), token, at: now, staleBefore: new Date(now.getTime() - ANNOUNCE_STALE_MS),
+  })
+  if (claimed.length === 0) {
+    if (tasks.every((t) => t.announcedAt !== null)) return ok({ posted: false, reason: 'already_announced' })
+    // Another live request holds the claim. Not a 200: the page would show it as posted.
+    return { status: 409, body: { error: 'announce_in_progress' } }
+  }
 
-  let pushLogId: string | null = null
+  // Batches not yet pushed; whatever ends the request early releases them.
+  const pending = batchesOf(claimed, tasks.map((t) => t.id), token)
+  const releaseRest = async () => {
+    for (const b of pending.splice(0)) {
+      await deps.store.releaseTaskAnnouncements(b.token)
+        .catch((e) => logError('task_feedback_release_failed', { summaryId: summary.id }, e))
+    }
+  }
+  let posted = 0
   try {
+    const known = new Map(tasks.map((t) => [t.id, t]))
+    for (const b of pending) {
+      for (const id of b.taskIds) {
+        if (known.has(id)) continue
+        // A row of a re-claimed batch this request did not name.
+        const t = await deps.store.getTask(id)
+        if (t && t.deletedAt === null) known.set(id, t)
+      }
+    }
     const members = await deps.store.listLiveMembers(summary.groupId)
     // LINE counts a group push once per person in the group. Its count includes
     // members the bot never stored (silent ones); the stored list can still hold
@@ -55,47 +84,69 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
     const lineCount = await deps.line.getGroupMemberCount(summary.lineGroupId)
     const recipients = Math.max(lineCount, members.length, 1)
     const quota = await deps.line.getMessageQuota()
-    if (quota.limit !== null) {
+    const names = new Map(members.map((m) => [m.lineUserId, m.displayName]))
+
+    while (pending.length > 0) {
+      const batch = pending[0]
+      const rows = batch.taskIds.flatMap((id) => known.get(id) ?? [])
       // Claimed under a lock with the pushes still in flight, so two announces
       // cannot both pass the check and together spend the reserve.
-      ;({ pushLogId } = await deps.store.claimPushBudget({
+      const { pushLogId } = await deps.store.claimPushBudget({
         purpose: 'task_created', lineTargetId: summary.lineGroupId, messageCount: recipients,
-        lineUsed: quota.used, allowed: Math.floor(quota.limit * (1 - QUOTA_RESERVE)),
-      }))
+        lineUsed: quota.limit !== null ? quota.used : 0,
+        allowed: quota.limit !== null ? Math.floor(quota.limit * (1 - QUOTA_RESERVE)) : Number.MAX_SAFE_INTEGER,
+      })
       if (pushLogId === null) {
-        await releaseTasks()
+        await releaseRest()
         log('task_feedback_skipped', { summaryId: summary.id, reason: 'quota' })
-        return ok({ posted: false, reason: 'quota' })
+        break
       }
-    } else {
-      ;({ pushLogId } = await deps.store.claimPushBudget({
-        purpose: 'task_created', lineTargetId: summary.lineGroupId, messageCount: recipients,
-        lineUsed: 0, allowed: Number.MAX_SAFE_INTEGER,
-      }))
+      try {
+        await deps.line.push(summary.lineGroupId, [{ type: 'text', text: feedbackText(rows, names) }], { retryKey: batch.token })
+      } catch (err) {
+        // The push may still have reached LINE (a timeout). Releasing keeps the token,
+        // so the retry sends the same retry key and LINE answers 409 instead of sending twice.
+        logError('task_feedback_failed', { summaryId: summary.id }, err)
+        await deps.store.releasePushBudget(pushLogId)
+          .catch((e) => logError('task_feedback_budget_release_failed', { summaryId: summary.id }, e))
+        await releaseRest()
+        return { status: 502, body: { error: 'line_failed' } }
+      }
+      pending.shift()
+      posted++
+      log('task_feedback_pushed', { summaryId: summary.id, tasks: rows.length })
+      try {
+        await deps.store.confirmTaskAnnouncements(batch.token, now)
+      } catch (err) {
+        // LINE has the push. The claim goes stale and the next claim resends it with
+        // the same key: LINE answers 409, then the confirm runs again.
+        logError('task_feedback_confirm_failed', { summaryId: summary.id }, err)
+      }
     }
-    const text = feedbackText(toAnnounce, new Map(members.map((m) => [m.lineUserId, m.displayName])))
-    await deps.line.push(summary.lineGroupId, [{ type: 'text', text }], { retryKey: retryKeyFor(toAnnounce) })
-    log('task_feedback_pushed', { summaryId: summary.id, tasks: toAnnounce.length })
-    return ok({ posted: true })
   } catch (err) {
-    // The push may still have reached LINE (a timeout). Releasing is safe: a retry of
-    // the same Tasks sends the same retry key, and LINE answers 409 instead of
-    // sending twice.
     logError('task_feedback_failed', { summaryId: summary.id }, err)
-    if (pushLogId) {
-      const id = pushLogId
-      await deps.store.releasePushBudget(id).catch((e) => logError('task_feedback_budget_release_failed', { summaryId: summary.id }, e))
-    }
-    await releaseTasks().catch((e) => logError('task_feedback_release_failed', { summaryId: summary.id }, e))
+    await releaseRest()
     return { status: 502, body: { error: 'line_failed' } }
   }
+  return ok(posted > 0 ? { posted: true } : { posted: false, reason: 'quota' })
 }
 
-/** One stable UUID per set of Tasks: the LINE retry key for announcing exactly them. */
-export function retryKeyFor(tasks: { id: string }[]): string {
-  const hex = createHash('sha256').update(tasks.map((t) => t.id).sort().join(',')).digest('hex')
-  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+type Batch = { token: string; taskIds: string[] }
+
+/** Groups the claimed rows by token. Re-claimed batches go first (in the order the
+ *  request names them), the fresh batch last; inside a batch the request's order
+ *  comes first, then a re-claimed batch's other rows. */
+function batchesOf(claimed: { taskId: string; token: string }[], requested: string[], fresh: string): Batch[] {
+  const rank = (id: string) => {
+    const i = requested.indexOf(id)
+    return i === -1 ? requested.length : i
+  }
+  const byToken = new Map<string, string[]>()
+  for (const c of [...claimed].sort((a, b) => rank(a.taskId) - rank(b.taskId))) {
+    byToken.set(c.token, [...(byToken.get(c.token) ?? []), c.taskId])
+  }
+  const batches = [...byToken].map(([token, taskIds]) => ({ token, taskIds }))
+  return [...batches.filter((b) => b.token !== fresh), ...batches.filter((b) => b.token === fresh)]
 }
 
 function feedbackText(tasks: TaskRow[], names: Map<string, string | null>): string {

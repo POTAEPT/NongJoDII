@@ -179,6 +179,89 @@ describe('FakeStore', () => {
     expect(await store.claimFairUseNotice({ ...n, monthStartBkk: '2026-12-01' })).toEqual({ inserted: true })
   })
 
+  describe('Task announcement claims', () => {
+    const T = new Date('2026-11-12T02:00:00Z')
+    const STALE = new Date(T.getTime() - 2 * 60_000)
+    const TOK = (n: number) => `00000000-0000-4000-8000-00000000000${n}`
+    function setup() {
+      const store = new FakeStore()
+      const group = store.seedGroup({ lineGroupId: 'Cgroup1' })
+      const task = (title: string, p: Record<string, unknown> = {}) =>
+        store.seedTask({ groupId: group.id, title, createdByLineUserId: 'Uuser1', ...p }).id
+      const row = (id: string) => store.tables.tasks.find((t) => t.id === id)!
+      const claim = (taskIds: string[], token: string, at = T) =>
+        store.claimTaskAnnouncements({ taskIds, token, at, staleBefore: new Date(at.getTime() - 2 * 60_000) })
+      return { store, task, row, claim }
+    }
+
+    test('a fresh claim gives every live, unannounced row the new token', async () => {
+      const { task, row, claim } = setup()
+      const a = task('a')
+      const b = task('b')
+      expect(await claim([a, b], TOK(1))).toEqual([{ taskId: a, token: TOK(1) }, { taskId: b, token: TOK(1) }])
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: T, announcedAt: null })
+    })
+
+    test('a live claim is not taken over', async () => {
+      const { task, row, claim } = setup()
+      const a = task('a')
+      await claim([a], TOK(1))
+      expect(await claim([a], TOK(2), new Date(T.getTime() + 60_000))).toEqual([])
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: T })
+    })
+
+    test('a released batch is re-claimed whole with its old token, including rows not asked for', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const x = task('x')
+      const b = task('b')
+      await claim([a, x], TOK(1))
+      await store.releaseTaskAnnouncements(TOK(1))
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: null })
+      const later = new Date(T.getTime() + 10_000)
+      const got = await claim([a, b], TOK(2), later)
+      expect(got).toEqual([{ taskId: a, token: TOK(1) }, { taskId: x, token: TOK(1) }, { taskId: b, token: TOK(2) }])
+      expect(row(x)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: later })
+      expect(row(b)).toMatchObject({ announcePendingToken: TOK(2), announcePendingAt: later })
+    })
+
+    test('a stale batch is re-claimed with its old token', async () => {
+      const { task, row, claim } = setup()
+      const a = task('a')
+      await claim([a], TOK(1), new Date(STALE.getTime() - 1))
+      expect(await claim([a], TOK(2))).toEqual([{ taskId: a, token: TOK(1) }])
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: T })
+    })
+
+    test('announced and deleted rows are left alone', async () => {
+      const { task, row, claim } = setup()
+      const done = task('done', { announcedAt: STALE })
+      const gone = task('gone', { deletedAt: STALE })
+      expect(await claim([done, gone], TOK(1))).toEqual([])
+      expect(row(done)).toMatchObject({ announcePendingToken: null, announcedAt: STALE })
+      expect(row(gone)).toMatchObject({ announcePendingToken: null, announcedAt: null })
+    })
+
+    test('confirm marks the batch announced and clears the claim', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const other = task('other')
+      await claim([a], TOK(1))
+      await claim([other], TOK(2))
+      await store.confirmTaskAnnouncements(TOK(1), T)
+      expect(row(a)).toMatchObject({ announcedAt: T, announcePendingToken: null, announcePendingAt: null })
+      expect(row(other)).toMatchObject({ announcedAt: null, announcePendingToken: TOK(2) })
+    })
+
+    test('release keeps the token and clears only pending_at', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      await claim([a], TOK(1))
+      await store.releaseTaskAnnouncements(TOK(1))
+      expect(row(a)).toMatchObject({ announcedAt: null, announcePendingToken: TOK(1), announcePendingAt: null })
+    })
+  })
+
   test('createSummary keeps candidate order, 1 ms apart', async () => {
     const store = new FakeStore()
     const group = await store.ensureGroup('Cgroup1')

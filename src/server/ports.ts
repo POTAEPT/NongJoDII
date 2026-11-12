@@ -100,6 +100,9 @@ export type PushBudgetClaim = {
   lineUsed: number   // LINE's figure for this month
   allowed: number    // most the month may reach with this push
 }
+/** One "Tasks created" push attempt: `token` is the new batch's id and LINE retry key;
+ *  a claim whose announce_pending_at is before `staleBefore` belongs to a dead request. */
+export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleBefore: Date }
 /** A set-up group (attached to a Project, bot still in it) with the weekly summary on,
  *  and its chosen slot: ISO weekday 1..7, Bangkok time 'HH:MM:SS', last sent Bangkok date. */
 export type WeeklySummaryGroup = {
@@ -163,11 +166,20 @@ export interface StorePort {
   confirmCandidate(t: NewTask, decidedAt: Date): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }>
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
-  /** The bot's push claim: marks live, unannounced Tasks announced (announced_at null
-   *  -> at) and returns the ids it marked, so each Task is announced at most once. */
-  claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]>
-  /** Clears announced_at again after the bot's own push failed (server only). */
-  releaseTaskAnnouncements(taskIds: string[]): Promise<void>
+  /** Claims Tasks for one "Tasks created" push attempt (#16). A batch released after a
+   *  failed push, or whose claim went stale (its request died), is re-claimed whole by
+   *  its token: every live, unannounced row holding that token, including rows not in
+   *  taskIds. The token is kept, so the retry reuses the LINE retry key. Live,
+   *  unannounced rows of taskIds with no token get c.token. Rows with a live claim,
+   *  announced rows and deleted rows are left alone. Returns every row this call now
+   *  holds, with its token. */
+  claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]>
+  /** LINE accepted the push of batch `token`: announced_at = at, token and pending_at
+   *  cleared (rows with announced_at null only). */
+  confirmTaskAnnouncements(token: string, at: Date): Promise<void>
+  /** The push of batch `token` failed or its outcome is unknown: pending_at = null,
+   *  token kept, so the next claim retries the same batch with the same retry key. */
+  releaseTaskAnnouncements(token: string): Promise<void>
   /** rpc claim_push_budget: serialized; counts recent push_log rows on top of
    *  lineUsed and inserts this push's row when the total stays within `allowed`.
    *  null = no budget, nothing inserted. */

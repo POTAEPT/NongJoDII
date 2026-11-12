@@ -350,10 +350,12 @@ describe('Tasks created feedback', () => {
     const { feedback } = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
     const ids = feedback!.taskIds
     const [a, b] = await Promise.all([t.notify(ids), t.notify(ids)])
-    expect([a.body, b.body]).toEqual(expect.arrayContaining([
-      { posted: true }, { posted: false, reason: 'already_announced' },
+    // Both load the Tasks before either claims, so the second finds a live claim.
+    expect([a, b]).toEqual(expect.arrayContaining([
+      { status: 200, body: { posted: true } }, { status: 409, body: { error: 'announce_in_progress' } },
     ]))
     expect(t.line.pushes).toHaveLength(1)
+    expect(t.line.delivered).toHaveLength(1)
     // Once announced, a resubmit offers nothing.
     expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
   })
@@ -446,6 +448,60 @@ describe('Tasks created feedback', () => {
     t.line.timeoutAfterAccept = false
     expect((await t.notify(ids)).body).toEqual({ posted: true })
     expect(t.line.delivered).toHaveLength(1)
+  })
+
+  const textOf = (d: { messages: unknown[] }) => JSON.stringify(d.messages)
+  const STALE = 2 * MIN + 1000 // just past the 2-minute stale window
+
+  it('20c. a lost answer then a new Task: the old batch is resent alone, each Task delivered once', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.timeoutAfterAccept = true
+    expect((await t.notify([a])).status).toBe(502)
+    t.line.timeoutAfterAccept = false
+    const { feedback } = (await t.submit([t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null })])).body as SubmitResult
+    const b = feedback!.taskIds.find((id) => id !== a)!
+    expect(feedback!.taskIds).toEqual([a, b])
+    expect((await t.notify([a, b])).body).toEqual({ posted: true })
+    const withA = t.line.delivered.filter((d) => textOf(d).includes('ทำสไลด์'))
+    const withB = t.line.delivered.filter((d) => textOf(d).includes('จองห้อง'))
+    expect(withA).toHaveLength(1)
+    expect(withB).toHaveLength(1)
+    expect(textOf(withB[0])).not.toContain('ทำสไลด์')
+    expect(withA[0].retryKey).not.toBe(withB[0].retryKey)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20d. a failed push whose release also fails is retried after the claim goes stale', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failPush = true
+    t.store.failNext('releaseTaskAnnouncements')
+    expect((await t.notify(ids)).status).toBe(502)
+    t.line.failPush = false
+    expect(((await t.submit([t.confirm(t.c1)])).body as SubmitResult).feedback?.taskIds).toEqual(ids)
+    // Still claimed by the dead request: no second push yet.
+    expect(await t.notify(ids)).toEqual({ status: 409, body: { error: 'announce_in_progress' } })
+    expect(t.line.pushes).toHaveLength(1)
+    t.setNow(new Date(t.deps.now().getTime() + STALE))
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.delivered).toHaveLength(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20e. a failed confirm after LINE accepted is resent with the same key, not delivered twice', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.store.failNext('confirmTaskAnnouncements')
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    // Not marked announced yet, so the page can still offer it.
+    expect(((await t.submit([t.confirm(t.c1)])).body as SubmitResult).feedback?.taskIds).toEqual(ids)
+    t.setNow(new Date(t.deps.now().getTime() + STALE))
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.pushes).toHaveLength(2)
+    expect(t.line.delivered).toHaveLength(1)
+    expect(t.line.acceptedRetryKeys.size).toBe(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
   })
 
   it('21. only the confirmer can announce Tasks of this Summary', async () => {

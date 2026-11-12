@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AiUsageActual,
   AiUsageCap,
+  AnnounceClaim,
   CandidateRow,
   CandidateState,
   GroupRow,
@@ -49,6 +50,7 @@ export type CandidateRecord = CandidateRow & {
 }
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
   lastEditedByLineUserId: string | null; lastActivityAt: Date | null; doneAt: Date | null
+  announcePendingToken: string | null; announcePendingAt: Date | null
 }
 export type PushLogRecord = { id: string; purpose: string; lineTargetId: string; messageCount: number; sentAt: Date }
 /** task_prompts, kind mark_done only (the kind #7 writes). */
@@ -330,6 +332,7 @@ export class FakeStore implements StorePort {
       taskId = randomUUID()
       this.tables.tasks.push({
         ...t, id: taskId, deletedAt: null, announcedAt: null, lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
+        announcePendingToken: null, announcePendingAt: null,
       })
     }
     if (c.state === 'proposed') {
@@ -361,16 +364,43 @@ export class FakeStore implements StorePort {
     return t ? this.toTaskRow(t) : null
   }
 
-  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
+  // Mirrors SupabaseStore: the same statements in the same order, with no await
+  // between them, so each claim is atomic like the database statements.
+  async claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]> {
     this.fault('claimTaskAnnouncements')
-    const rows = this.tables.tasks.filter((t) => taskIds.includes(t.id) && !t.announcedAt && t.deletedAt === null)
-    for (const t of rows) t.announcedAt = at
-    return rows.map((t) => t.id)
+    const open = (t: TaskRecord) => t.announcedAt === null && t.deletedAt === null
+    const tokens = new Set(this.tables.tasks
+      .filter((t) => c.taskIds.includes(t.id) && open(t) && t.announcePendingToken !== null)
+      .map((t) => t.announcePendingToken as string))
+    const out: { taskId: string; token: string }[] = []
+    const inBatch = (t: TaskRecord) => open(t) && t.announcePendingToken !== null && tokens.has(t.announcePendingToken)
+    const released = this.tables.tasks.filter((t) => inBatch(t) && t.announcePendingAt === null)
+    for (const t of released) t.announcePendingAt = c.at
+    const stale = this.tables.tasks.filter((t) => inBatch(t) && t.announcePendingAt !== null && t.announcePendingAt < c.staleBefore)
+    for (const t of stale) t.announcePendingAt = c.at
+    for (const t of [...released, ...stale]) out.push({ taskId: t.id, token: t.announcePendingToken as string })
+    const fresh = this.tables.tasks.filter((t) => c.taskIds.includes(t.id) && open(t) && t.announcePendingToken === null)
+    for (const t of fresh) {
+      t.announcePendingToken = c.token
+      t.announcePendingAt = c.at
+      out.push({ taskId: t.id, token: c.token })
+    }
+    return out
   }
 
-  async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
+  async confirmTaskAnnouncements(token: string, at: Date): Promise<void> {
+    this.fault('confirmTaskAnnouncements')
+    for (const t of this.tables.tasks) {
+      if (t.announcePendingToken !== token || t.announcedAt !== null) continue
+      t.announcedAt = at
+      t.announcePendingToken = null
+      t.announcePendingAt = null
+    }
+  }
+
+  async releaseTaskAnnouncements(token: string): Promise<void> {
     this.fault('releaseTaskAnnouncements')
-    for (const t of this.tables.tasks) if (taskIds.includes(t.id)) t.announcedAt = null
+    for (const t of this.tables.tasks) if (t.announcePendingToken === token && t.announcedAt === null) t.announcePendingAt = null
   }
 
   /** Clock for push_log rows (the database uses now()); tests may move it. */
@@ -698,6 +728,7 @@ export class FakeStore implements StorePort {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
       assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null,
       lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
+      announcePendingToken: null, announcePendingAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,
     }
     unique(row.candidateId !== null && this.tables.tasks.some((t) => t.candidateId === row.candidateId), 'tasks.candidate_id')

@@ -566,6 +566,27 @@ describe('Tasks created feedback', () => {
     expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
   })
 
+  it('20j. a Task held by another live request keeps the answer retryable', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    const { feedback } = (await t.submit([t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null })])).body as SubmitResult
+    const b = feedback!.taskIds.find((id) => id !== a)!
+    // Request X holds A and has not pushed yet.
+    const atX = t.deps.now()
+    await t.store.claimTaskAnnouncements({ taskIds: [a], token: randomUUID(), at: atX, staleBefore: new Date(atX.getTime() - 2 * MIN) })
+    expect(await t.notify([a, b])).toEqual({ status: 409, body: { error: 'announce_in_progress' } })
+    const delivered = () => t.line.delivered.map(textOf)
+    expect(delivered()).toHaveLength(1)
+    expect(delivered()[0]).toContain('จองห้อง')
+    expect(delivered()[0]).not.toContain('ทำสไลด์')
+    // X died; once its claim is stale a retry announces A.
+    t.setNow(new Date(atX.getTime() + STALE))
+    expect((await t.notify([a, b])).body).toEqual({ posted: true })
+    expect(delivered().filter((x) => x.includes('ทำสไลด์'))).toHaveLength(1)
+    expect(delivered().filter((x) => x.includes('จองห้อง'))).toHaveLength(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
   it('21. only the confirmer can announce Tasks of this Summary', async () => {
     const t = await setup()
     const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)

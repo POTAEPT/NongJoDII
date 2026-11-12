@@ -63,6 +63,8 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
   }
   let posted = 0
   let skipped = false
+  // Requested Tasks this call holds; any other unannounced one is held elsewhere.
+  let held = new Set<string>()
   try {
     let claimed: { taskId: string; token: string }[]
     try {
@@ -81,6 +83,7 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
       // Another live request holds the claim. Not a 200: the page would show it as posted.
       return { status: 409, body: { error: 'announce_in_progress' } }
     }
+    held = new Set(claimed.map((c) => c.taskId))
     pending.push(...batchesOf(claimed, tasks.map((t) => t.id), token))
 
     const known = new Map(tasks.map((t) => [t.id, t]))
@@ -157,6 +160,11 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
   // A skipped batch means some Tasks were not announced: report quota even if an
   // earlier batch went out, so the page does not show them as posted.
   if (skipped) return ok({ posted: false, reason: 'quota' })
+  // Another live request holds some of these Tasks and may still fail: not a 200, so
+  // the page keeps its retry. A Task announced before this call is not missing.
+  if (tasks.some((t) => t.announcedAt === null && !held.has(t.id))) {
+    return { status: 409, body: { error: 'announce_in_progress' } }
+  }
   return ok(posted > 0 ? { posted: true } : { posted: false, reason: 'nothing_to_announce' })
 }
 

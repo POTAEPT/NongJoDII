@@ -1,21 +1,16 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans_Thai } from "next/font/google";
 import Image from "next/image";
+import Link from "next/link";
+import { ADD_FRIEND_URL, thai } from "./fonts";
 
 // Home page of the app's domain: what NongJoDII is and how to start. The product itself
 // lives in LINE (docs/PROJECT.md); this page only introduces it, and gives Google's OAuth
 // consent screen a homepage to link to. Logo: Figma "Logo" page, "Cell v38 Final".
 
-const thai = IBM_Plex_Sans_Thai({ subsets: ["thai", "latin"], weight: ["400", "600", "700"] });
-
 export const metadata: Metadata = {
   title: "น้องจดดี · NongJoDII",
   description: "ผู้ช่วยจดงานในกลุ่ม LINE: สรุปแชตเป็นงาน เก็บไฟล์ลง Google Drive ติดตามความคืบหน้า และสรุปทุกสัปดาห์",
 };
-
-/** Optional, set at build time: the LINE OA's add-friend link (https://line.me/R/ti/p/@...).
- *  Without it the page simply has no add-friend button. */
-const ADD_FRIEND_URL = process.env.NEXT_PUBLIC_LINE_ADD_FRIEND_URL;
 
 const FEATURES = [
   { title: "สรุปแชตเป็นงาน", body: "พิมพ์ “น้องจดดี สรุปหน่อย” แล้วตรวจและยืนยันงานก่อนสร้างจริง ไม่มีงานไหนเกิดขึ้นเองโดยไม่มีคนยืนยัน" },
@@ -87,8 +82,11 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="border-t border-[#E6EAF0] px-6 py-6 text-center text-sm text-[#8A94A6]">
-        น้องจดดี · โปรเจกต์ DII Design, Pitching &amp; Hackathon 2026
+      <footer className="flex flex-col items-center gap-2 border-t border-[#E6EAF0] px-6 py-6 text-center text-sm text-[#8A94A6]">
+        <Link href="/privacy" className="text-[#1F5BAD] underline underline-offset-4">
+          นโยบายความเป็นส่วนตัว
+        </Link>
+        <span>น้องจดดี · โปรเจกต์ DII Design, Pitching &amp; Hackathon 2026</span>
       </footer>
     </div>
   );

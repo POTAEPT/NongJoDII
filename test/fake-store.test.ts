@@ -253,6 +253,18 @@ describe('FakeStore', () => {
       expect(row(other)).toMatchObject({ announcedAt: null, announcePendingToken: TOK(2) })
     })
 
+    test('abandon clears the token so the rows are claimed fresh', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const done = task('done', { announcedAt: STALE })
+      await claim([a], TOK(1))
+      row(done).announcePendingToken = TOK(1)
+      await store.abandonTaskAnnouncements(TOK(1))
+      expect(row(a)).toMatchObject({ announcedAt: null, announcePendingToken: null, announcePendingAt: null })
+      expect(row(done).announcePendingToken).toBe(TOK(1)) // announced rows are left alone
+      expect(await claim([a], TOK(2))).toEqual([{ taskId: a, token: TOK(2) }])
+    })
+
     test('release keeps the token and clears only pending_at', async () => {
       const { store, task, row, claim } = setup()
       const a = task('a')

@@ -504,6 +504,45 @@ describe('Tasks created feedback', () => {
     expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
   })
 
+  it('20f. near the quota an old batch posts, the new one is skipped and claimed fresh later', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failPush = true
+    expect((await t.notify([a])).status).toBe(502) // [A] released with its token
+    t.line.failPush = false
+    const { feedback } = (await t.submit([t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null })])).body as SubmitResult
+    const b = feedback!.taskIds.find((id) => id !== a)!
+    // allowed = 270; each push counts 3, so only one more push fits.
+    t.line.quota = { limit: 300, used: 265 }
+    expect((await t.notify([a, b])).body).toEqual({ posted: false, reason: 'quota' })
+    const rowOf = (id: string) => t.store.tables.tasks.find((r) => r.id === id)!
+    expect(rowOf(a).announcedAt).not.toBeNull()
+    expect(rowOf(b)).toMatchObject({ announcedAt: null, announcePendingToken: null, announcePendingAt: null })
+    t.line.quota = { limit: 300, used: 0 }
+    expect((await t.notify([a, b])).body).toEqual({ posted: true })
+    const textOfAll = t.line.delivered.map(textOf)
+    expect(textOfAll.filter((x) => x.includes('ทำสไลด์'))).toHaveLength(1)
+    expect(textOfAll.filter((x) => x.includes('จองห้อง'))).toHaveLength(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20g. a failed claim gives 502, not an unhandled error, and a retry posts', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.store.failNext('claimTaskAnnouncements')
+    expect(await t.notify(ids)).toEqual({ status: 502, body: { error: 'line_failed' } })
+    expect(t.line.pushes).toHaveLength(0)
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('20h. a pre-push failure drops the new batch\'s token', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failQuota = true
+    expect((await t.notify(ids)).status).toBe(502)
+    expect(t.store.tables.tasks[0]).toMatchObject({ announcePendingToken: null, announcePendingAt: null })
+  })
+
   it('21. only the confirmer can announce Tasks of this Summary', async () => {
     const t = await setup()
     const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)

@@ -48,25 +48,41 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
   if (tasks.length === 0) return ok({ posted: false, reason: 'nothing_to_announce' })
   const token = randomUUID()
   const now = deps.now()
-  const claimed = await deps.store.claimTaskAnnouncements({
-    taskIds: tasks.map((t) => t.id), token, at: now, staleBefore: new Date(now.getTime() - ANNOUNCE_STALE_MS),
-  })
-  if (claimed.length === 0) {
-    if (tasks.every((t) => t.announcedAt !== null)) return ok({ posted: false, reason: 'already_announced' })
-    // Another live request holds the claim. Not a 200: the page would show it as posted.
-    return { status: 409, body: { error: 'announce_in_progress' } }
-  }
-
-  // Batches not yet pushed; whatever ends the request early releases them.
-  const pending = batchesOf(claimed, tasks.map((t) => t.id), token)
-  const releaseRest = async () => {
-    for (const b of pending.splice(0)) {
-      await deps.store.releaseTaskAnnouncements(b.token)
+  // Batches not yet pushed. A re-claimed batch may have reached LINE before, so it is
+  // released with its token kept (same retry key next time). The fresh batch was
+  // never pushed under its token, so it drops the token and its Tasks are claimed
+  // fresh next time, together with any newer ones.
+  const pending: Batch[] = []
+  const free = (b: Batch) => b.token === token
+    ? deps.store.abandonTaskAnnouncements(b.token)
+        .catch((e) => logError('task_feedback_abandon_failed', { summaryId: summary.id }, e))
+    : deps.store.releaseTaskAnnouncements(b.token)
         .catch((e) => logError('task_feedback_release_failed', { summaryId: summary.id }, e))
-    }
+  const releaseRest = async () => {
+    for (const b of pending.splice(0)) await free(b)
   }
   let posted = 0
+  let skipped = false
   try {
+    let claimed: { taskId: string; token: string }[]
+    try {
+      claimed = await deps.store.claimTaskAnnouncements({
+        taskIds: tasks.map((t) => t.id), token, at: now, staleBefore: new Date(now.getTime() - ANNOUNCE_STALE_MS),
+      })
+    } catch (err) {
+      // The fresh update may have committed before the answer was lost. Re-claimed
+      // batches are unknown here; they go stale and recover with their own token.
+      logError('task_feedback_claim_failed', { summaryId: summary.id }, err)
+      await free({ token, taskIds: [] })
+      return { status: 502, body: { error: 'line_failed' } }
+    }
+    if (claimed.length === 0) {
+      if (tasks.every((t) => t.announcedAt !== null)) return ok({ posted: false, reason: 'already_announced' })
+      // Another live request holds the claim. Not a 200: the page would show it as posted.
+      return { status: 409, body: { error: 'announce_in_progress' } }
+    }
+    pending.push(...batchesOf(claimed, tasks.map((t) => t.id), token))
+
     const known = new Map(tasks.map((t) => [t.id, t]))
     for (const b of pending) {
       for (const id of b.taskIds) {
@@ -89,6 +105,13 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
     while (pending.length > 0) {
       const batch = pending[0]
       const rows = batch.taskIds.flatMap((id) => known.get(id) ?? [])
+      if (rows.length === 0) {
+        // Every row was deleted after the claim: nothing to announce, never an empty push.
+        pending.shift()
+        await deps.store.confirmTaskAnnouncements(batch.token, now)
+          .catch((e) => logError('task_feedback_confirm_failed', { summaryId: summary.id }, e))
+        continue
+      }
       // Claimed under a lock with the pushes still in flight, so two announces
       // cannot both pass the check and together spend the reserve.
       const { pushLogId } = await deps.store.claimPushBudget({
@@ -97,10 +120,12 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
         allowed: quota.limit !== null ? Math.floor(quota.limit * (1 - QUOTA_RESERVE)) : Number.MAX_SAFE_INTEGER,
       })
       if (pushLogId === null) {
+        skipped = true
         await releaseRest()
         log('task_feedback_skipped', { summaryId: summary.id, reason: 'quota' })
         break
       }
+      pending.shift()
       try {
         await deps.line.push(summary.lineGroupId, [{ type: 'text', text: feedbackText(rows, names) }], { retryKey: batch.token })
       } catch (err) {
@@ -109,10 +134,11 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
         logError('task_feedback_failed', { summaryId: summary.id }, err)
         await deps.store.releasePushBudget(pushLogId)
           .catch((e) => logError('task_feedback_budget_release_failed', { summaryId: summary.id }, e))
+        await deps.store.releaseTaskAnnouncements(batch.token)
+          .catch((e) => logError('task_feedback_release_failed', { summaryId: summary.id }, e))
         await releaseRest()
         return { status: 502, body: { error: 'line_failed' } }
       }
-      pending.shift()
       posted++
       log('task_feedback_pushed', { summaryId: summary.id, tasks: rows.length })
       try {
@@ -128,7 +154,10 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
     await releaseRest()
     return { status: 502, body: { error: 'line_failed' } }
   }
-  return ok(posted > 0 ? { posted: true } : { posted: false, reason: 'quota' })
+  // A skipped batch means some Tasks were not announced: report quota even if an
+  // earlier batch went out, so the page does not show them as posted.
+  if (skipped) return ok({ posted: false, reason: 'quota' })
+  return ok(posted > 0 ? { posted: true } : { posted: false, reason: 'nothing_to_announce' })
 }
 
 type Batch = { token: string; taskIds: string[] }

@@ -166,6 +166,8 @@ export interface StorePort {
   confirmCandidate(t: NewTask, decidedAt: Date): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }>
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
+  // tasks.announce_pending_token / announce_pending_at now carry the bot's batch token
+  // (the comment in applied migration 20261112171952 describes an older page-token use).
   /** Claims Tasks for one "Tasks created" push attempt (#16). A batch released after a
    *  failed push, or whose claim went stale (its request died), is re-claimed whole by
    *  its token: every live, unannounced row holding that token, including rows not in
@@ -180,6 +182,9 @@ export interface StorePort {
   /** The push of batch `token` failed or its outcome is unknown: pending_at = null,
    *  token kept, so the next claim retries the same batch with the same retry key. */
   releaseTaskAnnouncements(token: string): Promise<void>
+  /** Batch `token` was never pushed under its token: token and pending_at cleared
+   *  (rows with announced_at null only), so its Tasks are claimed fresh next time. */
+  abandonTaskAnnouncements(token: string): Promise<void>
   /** rpc claim_push_budget: serialized; counts recent push_log rows on top of
    *  lineUsed and inserts this push's row when the total stays within `allowed`.
    *  null = no budget, nothing inserted. */

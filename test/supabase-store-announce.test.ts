@@ -139,9 +139,24 @@ describe('SupabaseStore announce claims', () => {
     }])
   })
 
+  it('abandon clears the token and pending_at of that batch', async () => {
+    const { store, statements } = stubDb([ok(null)])
+    await store.abandonTaskAnnouncements(TOKEN)
+    expect(statements).toEqual([{
+      table: 'tasks',
+      calls: [
+        { method: 'update', args: [{ announce_pending_token: null, announce_pending_at: null }] },
+        { method: 'eq', args: ['announce_pending_token', TOKEN] },
+        { method: 'is', args: ['announced_at', null] },
+      ],
+    }])
+  })
+
   it('confirm and release throw on an error', async () => {
     const { store } = stubDb([{ data: null, error: { code: 'X1' } }, { data: null, error: { code: 'X2' } }])
     await expect(store.confirmTaskAnnouncements(TOKEN, AT)).rejects.toThrow('supabase confirmTaskAnnouncements: X1')
     await expect(store.releaseTaskAnnouncements(TOKEN)).rejects.toThrow('supabase releaseTaskAnnouncements: X2')
+    const { store: s2 } = stubDb([{ data: null, error: { code: 'X3' } }])
+    await expect(s2.abandonTaskAnnouncements(TOKEN)).rejects.toThrow('supabase abandonTaskAnnouncements: X3')
   })
 })

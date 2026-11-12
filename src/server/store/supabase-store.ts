@@ -322,7 +322,9 @@ export class SupabaseStore implements StorePort {
   }
 
   // Several statements, no RPC: each one is atomic, and its WHERE clause is
-  // rechecked against the locked row, so two claims cannot both take a batch.
+  // rechecked against the locked row, so two claims do not both take a batch as long
+  // as they lock rows in a consistent order. A concurrent re-claim can still abort on
+  // a deadlock; the batch then recovers through the stale path.
   async claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]> {
     if (c.taskIds.length === 0) return []
     type Held = { id: string; announce_pending_token: string }
@@ -389,6 +391,15 @@ export class SupabaseStore implements StorePort {
       .eq('announce_pending_token', token)
       .is('announced_at', null)
     check('releaseTaskAnnouncements', error)
+  }
+
+  async abandonTaskAnnouncements(token: string): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: null, announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .is('announced_at', null)
+    check('abandonTaskAnnouncements', error)
   }
 
   async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {

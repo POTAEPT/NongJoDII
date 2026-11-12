@@ -403,6 +403,15 @@ export class FakeStore implements StorePort {
     for (const t of this.tables.tasks) if (t.announcePendingToken === token && t.announcedAt === null) t.announcePendingAt = null
   }
 
+  async abandonTaskAnnouncements(token: string): Promise<void> {
+    this.fault('abandonTaskAnnouncements')
+    for (const t of this.tables.tasks) {
+      if (t.announcePendingToken !== token || t.announcedAt !== null) continue
+      t.announcePendingToken = null
+      t.announcePendingAt = null
+    }
+  }
+
   /** Clock for push_log rows (the database uses now()); tests may move it. */
   pushClock: () => Date = () => new Date()
 

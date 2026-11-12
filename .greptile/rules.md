@@ -60,6 +60,8 @@ Apply each rule to the code a pull request adds or changes. The code is still a 
 - Daily reminders and the weekly insight go out at the group's own chosen time, not at a fixed system time; each tick serves the groups whose chosen time has come (decided 2026-11-11).
 - Reminders and flags are posted in the group where the Task lives, never in a 1:1 chat (#8, decided 2026-11-11).
 - Every push adds to the push count kept against the LINE monthly quota. Near the limit, the bot stops pushing and the items show on the Dashboard only (#8, decided 2026-11-11).
+- The "Tasks created" message goes out as the member's own LIFF message (liff.sendMessages) when possible; otherwise `/api/review/notify` pushes it once per Task (claimed through `tasks.announced_at`), checks LINE's quota API first and skips the push when it would use the last 10% of the monthly quota (decided 2026-11-12).
+- Message refs in the Summary prompt (s1, s2...) never reach text people read; leaked ones are stripped (decided 2026-11-12).
 - The weekly insight is counts from code, posted to the group; it makes no AI call (decided 2026-11-11, replaces the AI paragraph in #10).
 - Every onboarding setting (what the group works on, members' nicknames and roles, the features in use, the Owner, and the reminder and weekly summary times) is editable later in Settings (decided 2026-11-11).
 

@@ -4,7 +4,7 @@ import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
 
-/** LINE Messaging API (reply, group member profile) and LINE Login ID token verify.
+/** LINE Messaging API (reply, push, quota, group member profile) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
 export class LineHttpClient implements LinePort {
   private readonly token: string
@@ -57,6 +57,31 @@ export class LineHttpClient implements LinePort {
     const body = (await res.json()) as { displayName?: unknown }
     if (typeof body.displayName !== 'string') throw new AdapterError('line profile 200')
     return { displayName: body.displayName }
+  }
+
+  async push(to: string, messages: LineMessage[]): Promise<void> {
+    const res = await this.fetchImpl(`${API}/v2/bot/message/push`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, messages }),
+    })
+    if (!res.ok) throw new AdapterError(`line push ${res.status}`)
+  }
+
+  async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
+    const headers = { Authorization: `Bearer ${this.token}` }
+    const [quota, usage] = await Promise.all([
+      this.fetchImpl(`${API}/v2/bot/message/quota`, { method: 'GET', headers }),
+      this.fetchImpl(`${API}/v2/bot/message/quota/consumption`, { method: 'GET', headers }),
+    ])
+    if (!quota.ok) throw new AdapterError(`line quota ${quota.status}`)
+    if (!usage.ok) throw new AdapterError(`line quota consumption ${usage.status}`)
+    const q = (await quota.json()) as { type?: unknown; value?: unknown }
+    const u = (await usage.json()) as { totalUsage?: unknown }
+    if (typeof u.totalUsage !== 'number') throw new AdapterError('line quota consumption 200')
+    if (q.type === 'none') return { limit: null, used: u.totalUsage }
+    if (q.type !== 'limited' || typeof q.value !== 'number') throw new AdapterError('line quota 200')
+    return { limit: q.value, used: u.totalUsage }
   }
 
   /** LINE checks the signature, aud (= the LINE Login channel ID) and exp. */

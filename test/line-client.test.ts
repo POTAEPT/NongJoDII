@@ -130,3 +130,42 @@ describe('LineHttpClient timeout', () => {
     expect((err as Error).message).toBe('line timeout')
   })
 })
+
+describe('LineHttpClient.push', () => {
+  it('posts the target and messages', async () => {
+    const { client, calls } = stubFetch(200)
+    await client.push('C1', [{ type: 'text', text: 'x' }])
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/message/push')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ to: 'C1', messages: [{ type: 'text', text: 'x' }] })
+  })
+
+  it('throws AdapterError "line push 429" on a non-2xx answer', async () => {
+    const { client } = stubFetch(429, { message: 'secret detail' })
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }])).rejects.toThrow('line push 429')
+  })
+})
+
+describe('LineHttpClient.getMessageQuota', () => {
+  function quotaFetch(quota: unknown, usage: unknown, status = 200) {
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const body = String(input).endsWith('/consumption') ? usage : quota
+      return new Response(JSON.stringify(body), { status })
+    }) as typeof fetch
+    return new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl })
+  }
+
+  it('returns the limit and the messages counted this month', async () => {
+    await expect(quotaFetch({ type: 'limited', value: 300 }, { totalUsage: 42 }).getMessageQuota())
+      .resolves.toEqual({ limit: 300, used: 42 })
+  })
+
+  it('returns limit null when the plan has no limit', async () => {
+    await expect(quotaFetch({ type: 'none' }, { totalUsage: 5 }).getMessageQuota()).resolves.toEqual({ limit: null, used: 5 })
+  })
+
+  it('throws AdapterError on a bad answer', async () => {
+    await expect(quotaFetch({ type: 'limited' }, { totalUsage: 1 }).getMessageQuota()).rejects.toBeInstanceOf(AdapterError)
+    await expect(quotaFetch({}, {}, 500).getMessageQuota()).rejects.toThrow('line quota 500')
+  })
+})

@@ -13,6 +13,11 @@ export class FakeLine implements LinePort {
   profiles = new Map<string, string>()
   /** ID token -> verified identity. A missing token answers null (LINE rejects it). */
   idTokens = new Map<string, { lineUserId: string; displayName: string | null }>()
+  pushes: { to: string; messages: LineMessage[] }[] = []
+  /** Push budget getMessageQuota answers with; limit null = no limit. */
+  quota: { limit: number | null; used: number } = { limit: 300, used: 0 }
+  failPush = false
+  failQuota = false
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
   /** Makes push reject, as the real adapter does on a LINE 5xx or 429. */
@@ -42,6 +47,16 @@ export class FakeLine implements LinePort {
     if (this.failProfile) throw new AdapterError('line profile 500')
     const displayName = this.profiles.get(`${lineGroupId}:${lineUserId}`)
     return displayName === undefined ? null : { displayName }
+  }
+
+  async push(to: string, messages: LineMessage[]): Promise<void> {
+    this.pushes.push({ to, messages })
+    if (this.failPush) throw new AdapterError('line push 500')
+  }
+
+  async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
+    if (this.failQuota) throw new AdapterError('line quota 500')
+    return { ...this.quota }
   }
 
   async verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null> {

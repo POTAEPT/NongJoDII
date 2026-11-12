@@ -1,6 +1,7 @@
 import { log } from '../log'
 import type { ApiResult, Deps } from '../ports'
 import { statusFor, type TaskFields, validateTaskFields } from '../tasks/fields'
+import { buildTaskFeedback, type CreatedTask } from './feedback'
 import { badRequest, field, openSummary } from './load'
 import type { SubmitResult } from './types'
 
@@ -50,6 +51,7 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
 
   const now = deps.now()
   const results: SubmitResult['results'] = []
+  const created: { assigneeLineUserId: string | null; task: Omit<CreatedTask, 'assigneeName'> }[] = []
   for (const p of plan) {
     if (p.action === 'decline') {
       // D30: a decline is final; only a proposed candidate can be declined.
@@ -64,12 +66,25 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
       status: statusFor(p.fields.assigneeLineUserId, null), createdByLineUserId: requester,
     }, now)
     results.push(taskId ? { candidateId: p.candidateId, outcome, taskId } : { candidateId: p.candidateId, outcome })
+    if (outcome === 'created') {
+      const { title, assigneeLineUserId, dueAt } = p.fields
+      created.push({ assigneeLineUserId, task: { title, assigned: assigneeLineUserId !== null, dueAt } })
+    }
   }
   log('review_submitted', {
     summaryId: summary.id,
     created: results.filter((r) => r.outcome === 'created').length,
     declined: results.filter((r) => r.outcome === 'declined').length,
   })
-  const result: SubmitResult = { results }
+  let feedback: SubmitResult['feedback'] = null
+  if (created.length > 0) {
+    const names = new Map((await deps.store.listLiveMembers(summary.groupId)).map((m) => [m.lineUserId, m.displayName]))
+    feedback = {
+      text: buildTaskFeedback(created.map((c) => ({
+        ...c.task, assigneeName: c.assigneeLineUserId ? (names.get(c.assigneeLineUserId) ?? null) : null,
+      }))),
+    }
+  }
+  const result: SubmitResult = { results, feedback }
   return { status: 200, body: result }
 }

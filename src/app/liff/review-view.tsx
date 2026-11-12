@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
-import type { ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
+import type { NotifyResult, ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
 import {
   countDecisions, initialForms, needsDeclineConfirm, summarizeResults, toDecisions, validateForms,
   type CandidateForm, type SavedTask,
@@ -36,6 +36,42 @@ async function post(path: string, body: Record<string, unknown>): Promise<{ stat
   return { status: res.status, json }
 }
 
+type Announce = 'idle' | 'working' | 'posted' | 'quota' | 'failed'
+
+const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
+  working: 'กำลังแจ้งในกลุ่ม...',
+  posted: 'แจ้งในกลุ่มแล้ว',
+  quota: 'งานถูกสร้างแล้ว แต่เดือนนี้แจ้งในกลุ่มไม่ได้ (โควตาข้อความใกล้หมด)',
+  failed: 'งานถูกสร้างแล้ว แต่แจ้งในกลุ่มไม่สำเร็จ',
+}
+
+/** Tells the group which Tasks were created: first as the member's own message from
+ *  this LIFF page (free), else by asking the server to push it (counts against the
+ *  LINE quota). sendMessages works only inside LINE, opened from a chat, with the
+ *  chat_message.write scope; anywhere else it throws and the push takes over. */
+async function announce(
+  liff: LiffViewProps['liff'], idToken: string, summaryId: string, result: SubmitResult,
+): Promise<Exclude<Announce, 'idle' | 'working'>> {
+  if (!result.feedback) return 'posted'
+  try {
+    if (liff.isInClient() && liff.isApiAvailable('sendMessages')) {
+      await liff.sendMessages([{ type: 'text', text: result.feedback.text }])
+      return 'posted'
+    }
+  } catch {
+    // Not granted or not opened from a chat: fall back to the bot's push.
+  }
+  const taskIds = result.results.flatMap((r) => (r.outcome === 'created' && r.taskId ? [r.taskId] : []))
+  try {
+    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds })
+    if (status !== 200) return 'failed'
+    const n = json as NotifyResult
+    return n.posted || n.reason === 'already_announced' ? 'posted' : 'quota'
+  } catch {
+    return 'failed'
+  }
+}
+
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: ReviewData }
 
 export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
@@ -44,6 +80,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [done, setDone] = useState<SubmitResult | null>(null)
+  const [announced, setAnnounced] = useState<Announce>('idle')
   const started = useRef(false)
   const inFlight = useRef(false) // blocks a double submit before state re-renders
 
@@ -85,7 +122,14 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
           decisions: toDecisions(next),
         })
         if (status !== 200) setFormError(errorCopy(status, ERR_SUBMIT))
-        else setDone(json as SubmitResult)
+        else {
+          const result = json as SubmitResult
+          setDone(result)
+          if (result.feedback && id) {
+            setAnnounced('working')
+            void announce(liff, idToken, id, result).then(setAnnounced)
+          }
+        }
       } catch {
         setFormError(ERR_SUBMIT)
       } finally {
@@ -93,7 +137,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
         setSubmitting(false)
       }
     },
-    [idToken, id],
+    [liff, idToken, id],
   )
 
   const update = (candidateId: string, patch: Partial<CandidateForm>) =>
@@ -139,6 +183,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
           </>
         )}
         <p className="mt-3">ไม่สร้าง {declined} งาน</p>
+        {announced !== 'idle' && <p className="mt-2 text-sm opacity-80">{ANNOUNCE_COPY[announced]}</p>}
         <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
           ปิด
         </button>

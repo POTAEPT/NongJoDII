@@ -11,6 +11,7 @@ import type {
   NewCandidate,
   NewGoogleAccount,
   NewMessage,
+  NewPushLog,
   NewSummary,
   NewTask,
   NewWebhookEvent,
@@ -38,7 +39,7 @@ export type CandidateRecord = CandidateRow & {
   decidedByLineUserId: string | null; decidedAt: Date | null; createdAt: Date
 }
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
-  lastEditedByLineUserId: string | null; lastActivityAt: Date | null
+  lastEditedByLineUserId: string | null; lastActivityAt: Date | null; announcedAt?: Date | null
 }
 export type AiUsageRecord = NewAiUsage & { id: string; settledAt: Date | null } // settledAt null = open claim
 export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }
@@ -56,6 +57,7 @@ export type FakeTables = {
   summaries: SummaryRecord[]
   task_candidates: CandidateRecord[]
   tasks: TaskRecord[]
+  push_log: NewPushLog[]
   ai_usage: AiUsageRecord[]
   fair_use_notices: FairUseNoticeRecord[]
   google_accounts: GoogleAccountRecord[]
@@ -81,6 +83,7 @@ export class FakeStore implements StorePort {
     summaries: [],
     task_candidates: [],
     tasks: [],
+    push_log: [],
     ai_usage: [],
     fair_use_notices: [],
     google_accounts: [],
@@ -329,6 +332,23 @@ export class FakeStore implements StorePort {
     this.fault('getTask')
     const t = this.tables.tasks.find((row) => row.id === taskId)
     return t ? this.toTaskRow(t) : null
+  }
+
+  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
+    this.fault('claimTaskAnnouncements')
+    const rows = this.tables.tasks.filter((t) => taskIds.includes(t.id) && !t.announcedAt && t.deletedAt === null)
+    for (const t of rows) t.announcedAt = at
+    return rows.map((t) => t.id)
+  }
+
+  async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
+    this.fault('releaseTaskAnnouncements')
+    for (const t of this.tables.tasks) if (taskIds.includes(t.id)) t.announcedAt = null
+  }
+
+  async recordPush(p: NewPushLog): Promise<void> {
+    this.fault('recordPush')
+    this.tables.push_log.push({ ...p })
   }
 
   async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {

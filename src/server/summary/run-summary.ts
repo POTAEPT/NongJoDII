@@ -6,6 +6,7 @@ import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, type ParsedTask } from './parse-output'
+import { isTaskFeedback } from '../review/feedback'
 import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
 
@@ -60,7 +61,8 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
 
   // The command message itself is already stored and takes one slot (M1).
   const messages = (await store.listRecentTextMessages(groupId, SUMMARY_MESSAGE_LIMIT + 1))
-    .filter((m) => parseGroupCommand(m.text) === null)
+    // Commands and the "Tasks created" messages a LIFF page posted are not chat to summarize.
+    .filter((m) => parseGroupCommand(m.text) === null && !isTaskFeedback(m.text))
     .slice(-SUMMARY_MESSAGE_LIMIT)
   if (messages.length === 0) return replyText(deps, replyToken, groupId, REPLY_NO_MESSAGES, sent)
 

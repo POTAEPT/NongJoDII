@@ -11,6 +11,7 @@ import type {
   NewCandidate,
   NewGoogleAccount,
   NewMessage,
+  NewPushLog,
   NewSummary,
   NewTask,
   NewWebhookEvent,
@@ -287,6 +288,32 @@ export class SupabaseStore implements StorePort {
     const { data, error } = await this.db.from('tasks').select(TASK_COLS).eq('id', taskId).maybeSingle()
     check('getTask', error)
     return data ? toTaskRow(data as unknown as DbTask) : null
+  }
+
+  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
+    if (taskIds.length === 0) return []
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ announced_at: at.toISOString() })
+      .in('id', taskIds)
+      .is('announced_at', null)
+      .is('deleted_at', null)
+      .select('id')
+    check('claimTaskAnnouncements', error)
+    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+
+  async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
+    if (taskIds.length === 0) return
+    const { error } = await this.db.from('tasks').update({ announced_at: null }).in('id', taskIds)
+    check('releaseTaskAnnouncements', error)
+  }
+
+  async recordPush(p: NewPushLog): Promise<void> {
+    const { error } = await this.db.from('push_log').insert({
+      purpose: p.purpose, line_target_id: p.lineTargetId, message_count: p.messageCount, sent_at: p.sentAt.toISOString(),
+    })
+    check('recordPush', error)
   }
 
   async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {

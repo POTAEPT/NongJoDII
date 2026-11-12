@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent } from '@/server/line/types'
 import type { LlmRequest } from '@/server/ports'
 import { loadReview } from '@/server/review/load'
+import { notifyReview } from '@/server/review/notify'
 import { submitReview } from '@/server/review/submit'
-import type { ReviewView, SubmitResult } from '@/server/review/types'
+import type { NotifyResult, ReviewView, SubmitResult } from '@/server/review/types'
 import { TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
+import { chatLines } from './fakes/prompt-reader'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 const T0 = Date.UTC(2026, 10, 12, 2, 0, 0) // 09:00 Bangkok
@@ -36,6 +38,7 @@ async function setup() {
   const group = seedOwnedGroup(h.store, { members: MEMBERS })
   h.store.seedMember({ groupId: group.id, lineUserId: 'Uleft', displayName: 'Left Person', leftAt: new Date(T0 - 60 * MIN) })
   h.line.idTokens.set('tok-pim', { lineUserId: 'Upim', displayName: 'Pim Sirin' })
+  h.line.idTokens.set('tok-bank', { lineUserId: 'Ubank', displayName: 'Bank T.' })
   h.line.idTokens.set('tok-out', { lineUserId: 'Uoutsider', displayName: 'Outsider' })
   h.line.idTokens.set('tok-new', { lineUserId: 'Unew', displayName: null })
   h.line.idTokens.set('tok-left', { lineUserId: 'Uleft', displayName: 'Left Person' })
@@ -75,7 +78,8 @@ async function setup() {
     candidateId, action: 'confirm', title: 'ทำสไลด์', details: null, assigneeLineUserId: 'Upim', dueAt: null, ...p,
   })
   const decline = (candidateId: string) => ({ candidateId, action: 'decline' })
-  return { ...h, group, summaryId, c1, c2, candidate, submit, confirm, decline }
+  const notify = async (taskIds: unknown, idToken = 'tok-pim') => notifyReview(h.deps, { idToken, summaryId, taskIds })
+  return { ...h, group, summaryId, c1, c2, candidate, submit, confirm, decline, send, notify }
 }
 
 function results(body: unknown) {
@@ -306,5 +310,103 @@ describe('submitReview', () => {
     expect(t.candidate(t.c1).decidedByLineUserId).toBe('Upim')
     expect(await loadReview(t.deps, { lineUserId: 'Upim', summaryId: t.summaryId }))
       .toEqual({ status: 401, body: { error: 'unauthorized' } })
+  })
+})
+
+function createdIds(body: unknown): string[] {
+  return results(body).flatMap((r) => (r.outcome === 'created' && r.taskId ? [r.taskId] : []))
+}
+
+describe('Tasks created feedback', () => {
+  it('17. submit returns the group message for the Tasks it created, with LINE names', async () => {
+    const t = await setup()
+    const res = await t.submit([
+      t.confirm(t.c1, { dueAt: '2026-11-20T10:00:00.000Z' }),
+      t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null }),
+    ])
+    expect((res.body as SubmitResult).feedback?.text).toBe(
+      '✅ สร้างงานแล้ว 2 งาน\n1. ทำสไลด์\n   ผู้รับ: Pim Sirin · กำหนด: 20 พ.ย. 17:00\n2. จองห้อง\n   ผู้รับ: ยังไม่มีผู้รับ · กำหนด: ไม่ระบุ',
+    )
+  })
+
+  it('17b. no feedback when the submit created no Task', async () => {
+    const t = await setup()
+    expect((await t.submit([t.decline(t.c1)])).body).toMatchObject({ feedback: null })
+    await t.submit([t.confirm(t.c2)])
+    // Resubmitting a confirmed candidate creates nothing new.
+    expect((await t.submit([t.confirm(t.c2)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('18. notify pushes once to the group and logs one message per live Member', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    const res = await t.notify(ids)
+    expect(res).toEqual({ status: 200, body: { posted: true } satisfies NotifyResult })
+    expect(t.line.pushes).toHaveLength(1)
+    expect(t.line.pushes[0].to).toBe(t.group.lineGroupId)
+    expect(t.line.pushes[0].messages[0]).toMatchObject({ type: 'text', text: expect.stringContaining('1. ทำสไลด์') })
+    const live = (await t.store.listLiveMembers(t.group.id)).length
+    expect(t.store.tables.push_log).toEqual([
+      { purpose: 'task_created', lineTargetId: t.group.lineGroupId, messageCount: live, sentAt: expect.any(Date) },
+    ])
+    // A second call (double tap, retry) never pushes the same Tasks again.
+    expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'already_announced' })
+    expect(t.line.pushes).toHaveLength(1)
+  })
+
+  it('19. near the quota limit it skips the push and leaves the Tasks unannounced', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.quota = { limit: 300, used: 269 } // 269 + 3 Members > 90% of 300
+    expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'quota' })
+    expect(t.line.pushes).toHaveLength(0)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.quota = { limit: 300, used: 0 }
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('19b. a plan without a limit always pushes', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.quota = { limit: null, used: 100_000 }
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('20. a failed push gives 502 and a retry can still announce', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failPush = true
+    expect((await t.notify(ids)).status).toBe(502)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.failPush = false
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.pushes).toHaveLength(2) // the failed attempt and the retry
+  })
+
+  it('21. only the confirmer can announce Tasks of this Summary', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    expect((await t.notify(ids, 'tok-bank')).status).toBe(400)
+    expect((await t.notify([randomUUID()])).status).toBe(400)
+    expect((await t.notify([])).status).toBe(400)
+    expect((await t.notify(['not-a-uuid'])).status).toBe(400)
+    expect((await t.notify([ids[0], ids[0]])).status).toBe(400)
+    const other = t.store.seedTask({ groupId: t.group.id, title: 'อื่น', createdByLineUserId: 'Upim' })
+    expect((await t.notify([other.id])).status).toBe(400)
+    expect((await t.notify(ids, 'bad-token')).status).toBe(401)
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('22. the next Summary skips the feedback message a LIFF page posted', async () => {
+    const t = await setup()
+    const feedback = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
+    await t.send(ev.groupText({ text: feedback.feedback!.text, userId: 'Upim', timestamp: T0 + 3 * MIN }))
+    let read: string[] = []
+    t.llm.respond((req: LlmRequest) => {
+      read = chatLines(req).map((c) => c.text)
+      return { content: JSON.stringify({ summary: 'x', tasks: [] }), model: TEXT_MODEL, usage: null }
+    })
+    await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', timestamp: T0 + 4 * MIN }))
+    expect(read).toEqual(['ใครทำสไลด์ได้บ้าง', 'เดี๋ยวทำสไลด์เอง'])
   })
 })

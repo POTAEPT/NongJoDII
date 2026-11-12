@@ -10,6 +10,10 @@ export interface LinePort {
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
   /** null when LINE rejects the ID token. */
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
+  /** Push to a group. LINE counts one message per person in the group. */
+  push(to: string, messages: LineMessage[]): Promise<void>
+  /** This month's push budget: limit null = no limit; used = messages counted so far. */
+  getMessageQuota(): Promise<{ limit: number | null; used: number }>
 }
 
 // ---- OpenRouter ----
@@ -86,6 +90,7 @@ export type NewAiUsage = {
 /** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
+export type NewPushLog = { purpose: 'task_created'; lineTargetId: string; messageCount: number; sentAt: Date }
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -117,6 +122,12 @@ export interface StorePort {
   confirmCandidate(t: NewTask, decidedAt: Date): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }>
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
+  /** Marks live Tasks as announced in the group (announced_at null -> at) and returns
+   *  the ids it marked, so each Task is announced at most once. */
+  claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]>
+  /** Clears announced_at again after the announcement failed. */
+  releaseTaskAnnouncements(taskIds: string[]): Promise<void>
+  recordPush(p: NewPushLog): Promise<void>
   // #5 / #6 usage
   /** Serialized per Owner: sums the Owner's Bangkok month (open claims included) and, when it is
    *  below the cap in tokens and dollars, inserts an open claim row holding the estimate `u`.

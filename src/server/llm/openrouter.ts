@@ -38,7 +38,7 @@ export class OpenRouterClient implements LlmPort {
           max_tokens: req.maxTokens,
           response_format: { type: 'json_object' },
         }),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(Math.min(this.timeoutMs, req.timeoutMs ?? this.timeoutMs)),
       })
     } catch (err) {
       const name = err instanceof Error ? err.name : ''

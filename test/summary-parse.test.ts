@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ModelOutputError, parseSummaryOutput } from '@/server/summary/parse-output'
 
 const task = (over: Record<string, unknown> = {}) => ({
-  title: 'ทำสไลด์', details: null, assignee: 'm1', due: null, source: '#1', ...over,
+  title: 'ทำสไลด์', details: null, assignee: 'm1', due: null, source: 'msg1', ...over,
 })
 const json = (tasks: unknown[], summary: unknown = 'สรุป') => JSON.stringify({ summary, tasks })
 
@@ -11,7 +11,7 @@ describe('parseSummaryOutput', () => {
     const out = parseSummaryOutput(json([task({ details: 'รายละเอียด' })]))
     expect(out).toEqual({
       summary: 'สรุป',
-      tasks: [{ title: 'ทำสไลด์', details: 'รายละเอียด', assigneeRef: 'm1', due: null, sourceRef: '#1' }],
+      tasks: [{ title: 'ทำสไลด์', details: 'รายละเอียด', assigneeRef: 'm1', due: null, sourceRef: 'msg1' }],
     })
   })
 
@@ -57,5 +57,11 @@ describe('parseSummaryOutput', () => {
   it('nulls a bad source ref and treats missing tasks as none', () => {
     expect(parseSummaryOutput(json([task({ source: '14' })])).tasks[0].sourceRef).toBeNull()
     expect(parseSummaryOutput(JSON.stringify({ summary: 'x' })).tasks).toEqual([])
+  })
+
+  it('reads a source ref written as msg14, {msg14} or the older #14', () => {
+    for (const source of ['msg14', '{msg14}', '#14']) {
+      expect(parseSummaryOutput(json([task({ source })])).tasks[0].sourceRef).toBe('msg14')
+    }
   })
 })

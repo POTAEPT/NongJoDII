@@ -9,6 +9,7 @@ import { FakeStore } from './fakes/fake-store'
 export const TEST_SECRET = 'test-channel-secret'
 export const TEST_LIFF_ID = '2000000000-abcdefgh'
 export const TEST_KEY = Buffer.alloc(32, 7)
+export const TEST_TICK_SECRET = 'test-tick-secret'
 /** Default clock: 10:00 in Bangkok. */
 export const TEST_NOW = new Date('2026-11-12T03:00:00Z')
 
@@ -30,7 +31,7 @@ export function makeTestDeps(opts?: { now?: Date }): {
   const deps: Deps = {
     line, llm, google, store,
     now: () => new Date(current.getTime()),
-    config: { lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY },
+    config: { lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET },
   }
   return {
     deps, line, llm, google, store,
@@ -63,6 +64,20 @@ export function signedRequest(body: string, opts?: { secret?: string; signature?
   return new Request('http://test/api/line/webhook', { method: 'POST', headers, body })
 }
 
+/** POST to the tick route as Supabase pg_cron sends it. `secret: null` omits the
+ *  x-tick-secret header; a string replaces the test secret. */
+export function tickRequest(opts?: { secret?: string | null; method?: string }): Request {
+  const headers = new Headers({ 'content-type': 'application/json' })
+  const secret = opts?.secret === undefined ? TEST_TICK_SECRET : opts.secret
+  if (secret !== null) headers.set('x-tick-secret', secret)
+  const method = opts?.method ?? 'POST'
+  return new Request('http://test/api/tick', {
+    method,
+    headers,
+    body: method === 'GET' ? undefined : JSON.stringify({ kind: 'tick' }),
+  })
+}
+
 export function webhookBody(...events: LineEvent[]): string {
   return JSON.stringify({ destination: 'Ubot', events })
 }
@@ -78,6 +93,7 @@ export const ev: {
   groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number } }): LineEvent
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
+  groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string }): LineEvent
 } = {
   groupText(p) {
     const userId = p.userId === undefined ? DEFAULT_USER : p.userId
@@ -120,6 +136,21 @@ export const ev: {
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: false },
       message: { id: next('msg'), type: 'text', text: p.text },
+    }
+  },
+  groupPostback(p) {
+    const userId = p.userId === undefined ? DEFAULT_USER : p.userId
+    return {
+      type: 'postback',
+      mode: 'active',
+      timestamp: TEST_NOW.getTime(),
+      source: userId === null
+        ? { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP }
+        : { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP, userId },
+      replyToken: p.replyToken ?? next('rt'),
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: false },
+      postback: { data: p.data },
     }
   },
   follow(p) {

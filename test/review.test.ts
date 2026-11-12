@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent } from '@/server/line/types'
 import type { LlmRequest } from '@/server/ports'
 import { loadReview } from '@/server/review/load'
+import { notifyReview } from '@/server/review/notify'
 import { submitReview } from '@/server/review/submit'
-import type { ReviewView, SubmitResult } from '@/server/review/types'
+import type { NotifyResult, ReviewView, SubmitResult } from '@/server/review/types'
 import { TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
+import { chatLines } from './fakes/prompt-reader'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 const T0 = Date.UTC(2026, 10, 12, 2, 0, 0) // 09:00 Bangkok
@@ -36,6 +38,7 @@ async function setup() {
   const group = seedOwnedGroup(h.store, { members: MEMBERS })
   h.store.seedMember({ groupId: group.id, lineUserId: 'Uleft', displayName: 'Left Person', leftAt: new Date(T0 - 60 * MIN) })
   h.line.idTokens.set('tok-pim', { lineUserId: 'Upim', displayName: 'Pim Sirin' })
+  h.line.idTokens.set('tok-bank', { lineUserId: 'Ubank', displayName: 'Bank T.' })
   h.line.idTokens.set('tok-out', { lineUserId: 'Uoutsider', displayName: 'Outsider' })
   h.line.idTokens.set('tok-new', { lineUserId: 'Unew', displayName: null })
   h.line.idTokens.set('tok-left', { lineUserId: 'Uleft', displayName: 'Left Person' })
@@ -75,7 +78,8 @@ async function setup() {
     candidateId, action: 'confirm', title: 'ทำสไลด์', details: null, assigneeLineUserId: 'Upim', dueAt: null, ...p,
   })
   const decline = (candidateId: string) => ({ candidateId, action: 'decline' })
-  return { ...h, group, summaryId, c1, c2, candidate, submit, confirm, decline }
+  const notify = async (taskIds: unknown, idToken = 'tok-pim') => notifyReview(h.deps, { idToken, summaryId, taskIds })
+  return { ...h, group, summaryId, c1, c2, candidate, submit, confirm, decline, send, notify }
 }
 
 function results(body: unknown) {
@@ -306,5 +310,308 @@ describe('submitReview', () => {
     expect(t.candidate(t.c1).decidedByLineUserId).toBe('Upim')
     expect(await loadReview(t.deps, { lineUserId: 'Upim', summaryId: t.summaryId }))
       .toEqual({ status: 401, body: { error: 'unauthorized' } })
+  })
+})
+
+function createdIds(body: unknown): string[] {
+  return results(body).flatMap((r) => (r.outcome === 'created' && r.taskId ? [r.taskId] : []))
+}
+
+describe('Tasks created feedback', () => {
+  it('17. submit returns the group message for the Tasks it created, with LINE names', async () => {
+    const t = await setup()
+    const res = await t.submit([
+      t.confirm(t.c1, { dueAt: '2026-11-20T10:00:00.000Z' }),
+      t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null }),
+    ])
+    expect((res.body as SubmitResult).feedback?.text).toBe(
+      '✅ สร้างงานแล้ว 2 งาน\n1. ทำสไลด์\n   ผู้รับ: Pim Sirin · กำหนด: 20 พ.ย. 17:00\n2. จองห้อง\n   ผู้รับ: ยังไม่มีผู้รับ · กำหนด: ไม่ระบุ',
+    )
+  })
+
+  it('17b. no feedback when nothing is waiting to be announced', async () => {
+    const t = await setup()
+    expect((await t.submit([t.decline(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('17d. a retry after a lost response still carries the unannounced Tasks', async () => {
+    const t = await setup()
+    const first = (await t.submit([t.confirm(t.c2)])).body as SubmitResult
+    const retry = (await t.submit([t.confirm(t.c2)])).body as SubmitResult
+    expect(results(retry)[0].outcome).toBe('already_decided')
+    expect(retry.feedback).toEqual(first.feedback)
+    // Once announced, a resubmit offers nothing.
+    await t.notify(first.feedback!.taskIds)
+    expect((await t.submit([t.confirm(t.c2)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('17e. two pages announcing the same Tasks push the message once', async () => {
+    const t = await setup()
+    const { feedback } = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
+    const ids = feedback!.taskIds
+    const [a, b] = await Promise.all([t.notify(ids), t.notify(ids)])
+    // Both load the Tasks before either claims, so the second finds a live claim.
+    expect([a, b]).toEqual(expect.arrayContaining([
+      { status: 200, body: { posted: true } }, { status: 409, body: { error: 'announce_in_progress' } },
+    ]))
+    expect(t.line.pushes).toHaveLength(1)
+    expect(t.line.delivered).toHaveLength(1)
+    // Once announced, a resubmit offers nothing.
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('18. notify pushes once to the group and logs one message per live Member', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    const res = await t.notify(ids)
+    expect(res).toEqual({ status: 200, body: { posted: true } satisfies NotifyResult })
+    expect(t.line.pushes).toHaveLength(1)
+    expect(t.line.pushes[0].to).toBe(t.group.lineGroupId)
+    expect(t.line.pushes[0].messages[0]).toMatchObject({ type: 'text', text: expect.stringContaining('1. ทำสไลด์') })
+    const live = (await t.store.listLiveMembers(t.group.id)).length
+    expect(t.store.tables.push_log).toEqual([
+      { id: expect.any(String), purpose: 'task_created', lineTargetId: t.group.lineGroupId, messageCount: live, sentAt: expect.any(Date) },
+    ])
+    // A second call (double tap, retry) never pushes the same Tasks again.
+    expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'already_announced' })
+    expect(t.line.pushes).toHaveLength(1)
+  })
+
+  it('19. near the quota limit it skips the push and leaves the Tasks unannounced', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.quota = { limit: 300, used: 269 } // 269 + 3 Members > 90% of 300
+    expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'quota' })
+    expect(t.line.pushes).toHaveLength(0)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.quota = { limit: 300, used: 0 }
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('19d. the budget uses LINE\'s member count, not just the stored Members', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.groupMemberCounts.set(t.group.lineGroupId, 10) // 7 silent Members the bot never stored
+    t.line.quota = { limit: 300, used: 265 } // 265 + 10 > 270, though 265 + 3 stored would pass
+    expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'quota' })
+    expect(t.line.pushes).toHaveLength(0)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.quota = { limit: 300, used: 0 }
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.store.tables.push_log[0].messageCount).toBe(10)
+  })
+
+  it('19e. a failed member count gives 502, pushes nothing, and a retry posts', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failMemberCount = true
+    expect((await t.notify(ids)).status).toBe(502)
+    expect(t.line.pushes).toHaveLength(0)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.failMemberCount = false
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('19c. two announces at once cannot together spend the reserve', async () => {
+    const t = await setup()
+    const [a, b] = [t.c1, t.c2]
+    const ids = createdIds((await t.submit([t.confirm(a), t.confirm(b, { title: 'จองห้อง' })])).body)
+    // allowed = 270; each push counts 3. LINE still reports 265 after the first push.
+    t.line.quota = { limit: 300, used: 265 }
+    expect((await t.notify([ids[0]])).body).toEqual({ posted: true })
+    expect((await t.notify([ids[1]])).body).toEqual({ posted: false, reason: 'quota' })
+  })
+
+  it('19b. a plan without a limit always pushes', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.quota = { limit: null, used: 100_000 }
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('20. a failed push gives 502 and a retry can still announce', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failPush = true
+    expect((await t.notify(ids)).status).toBe(502)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.failPush = false
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.pushes).toHaveLength(2) // the failed attempt and the retry
+  })
+
+  it('20b. a push LINE accepted before the answer was lost is not sent twice', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.timeoutAfterAccept = true
+    expect((await t.notify(ids)).status).toBe(502)
+    t.line.timeoutAfterAccept = false
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.delivered).toHaveLength(1)
+  })
+
+  const textOf = (d: { messages: unknown[] }) => JSON.stringify(d.messages)
+  const STALE = 2 * MIN + 1000 // just past the 2-minute stale window
+
+  it('20c. a lost answer then a new Task: the old batch is resent alone, each Task delivered once', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.timeoutAfterAccept = true
+    expect((await t.notify([a])).status).toBe(502)
+    t.line.timeoutAfterAccept = false
+    const { feedback } = (await t.submit([t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null })])).body as SubmitResult
+    const b = feedback!.taskIds.find((id) => id !== a)!
+    expect(feedback!.taskIds).toEqual([a, b])
+    expect((await t.notify([a, b])).body).toEqual({ posted: true })
+    const withA = t.line.delivered.filter((d) => textOf(d).includes('ทำสไลด์'))
+    const withB = t.line.delivered.filter((d) => textOf(d).includes('จองห้อง'))
+    expect(withA).toHaveLength(1)
+    expect(withB).toHaveLength(1)
+    expect(textOf(withB[0])).not.toContain('ทำสไลด์')
+    expect(withA[0].retryKey).not.toBe(withB[0].retryKey)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20d. a failed push whose release also fails is retried after the claim goes stale', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failPush = true
+    t.store.failNext('releaseTaskAnnouncements')
+    expect((await t.notify(ids)).status).toBe(502)
+    t.line.failPush = false
+    expect(((await t.submit([t.confirm(t.c1)])).body as SubmitResult).feedback?.taskIds).toEqual(ids)
+    // Still claimed by the dead request: no second push yet.
+    expect(await t.notify(ids)).toEqual({ status: 409, body: { error: 'announce_in_progress' } })
+    expect(t.line.pushes).toHaveLength(1)
+    t.setNow(new Date(t.deps.now().getTime() + STALE))
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.delivered).toHaveLength(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20e. a failed confirm after LINE accepted is resent with the same key, not delivered twice', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.store.failNext('confirmTaskAnnouncements')
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    // Not marked announced yet, so the page can still offer it.
+    expect(((await t.submit([t.confirm(t.c1)])).body as SubmitResult).feedback?.taskIds).toEqual(ids)
+    t.setNow(new Date(t.deps.now().getTime() + STALE))
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.pushes).toHaveLength(2)
+    expect(t.line.delivered).toHaveLength(1)
+    expect(t.line.acceptedRetryKeys.size).toBe(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20f. near the quota an old batch posts, the new one is skipped and claimed fresh later', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failPush = true
+    expect((await t.notify([a])).status).toBe(502) // [A] released with its token
+    t.line.failPush = false
+    const { feedback } = (await t.submit([t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null })])).body as SubmitResult
+    const b = feedback!.taskIds.find((id) => id !== a)!
+    // allowed = 270; each push counts 3, so only one more push fits.
+    t.line.quota = { limit: 300, used: 265 }
+    expect((await t.notify([a, b])).body).toEqual({ posted: false, reason: 'quota' })
+    const rowOf = (id: string) => t.store.tables.tasks.find((r) => r.id === id)!
+    expect(rowOf(a).announcedAt).not.toBeNull()
+    expect(rowOf(b)).toMatchObject({ announcedAt: null, announcePendingToken: null, announcePendingAt: null })
+    t.line.quota = { limit: 300, used: 0 }
+    expect((await t.notify([a, b])).body).toEqual({ posted: true })
+    const textOfAll = t.line.delivered.map(textOf)
+    expect(textOfAll.filter((x) => x.includes('ทำสไลด์'))).toHaveLength(1)
+    expect(textOfAll.filter((x) => x.includes('จองห้อง'))).toHaveLength(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20g. a failed claim gives 502, not an unhandled error, and a retry posts', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.store.failNext('claimTaskAnnouncements')
+    expect(await t.notify(ids)).toEqual({ status: 502, body: { error: 'line_failed' } })
+    expect(t.line.pushes).toHaveLength(0)
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('20h. a pre-push failure drops the new batch\'s token', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failQuota = true
+    expect((await t.notify(ids)).status).toBe(502)
+    expect(t.store.tables.tasks[0]).toMatchObject({ announcePendingToken: null, announcePendingAt: null })
+  })
+
+  it('20i. a stalled request cannot abandon a batch another request took over and pushed', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    // Request A claims, then stalls before its push.
+    const tokenA = randomUUID()
+    const atA = t.deps.now()
+    await t.store.claimTaskAnnouncements({ taskIds: [a], token: tokenA, at: atA, staleBefore: new Date(atA.getTime() - 2 * MIN) })
+    // Request B takes the stale claim over; LINE accepts its push but the answer is lost.
+    t.setNow(new Date(atA.getTime() + STALE))
+    t.line.timeoutAfterAccept = true
+    expect((await t.notify([a])).status).toBe(502)
+    t.line.timeoutAfterAccept = false
+    // A wakes up, hits quota or a pre-push failure, and lets its claim go.
+    await t.store.abandonTaskAnnouncements(tokenA, atA)
+    await t.store.releaseTaskAnnouncements(tokenA, atA)
+    expect(t.store.tables.tasks.find((r) => r.id === a)!.announcePendingToken).toBe(tokenA)
+    // The next notify resends under the same key: LINE answers 409, nothing new delivered.
+    expect((await t.notify([a])).body).toEqual({ posted: true })
+    expect(t.line.delivered).toHaveLength(1)
+    expect(t.line.delivered[0].retryKey).toBe(tokenA)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('20j. a Task held by another live request keeps the answer retryable', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    const { feedback } = (await t.submit([t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null })])).body as SubmitResult
+    const b = feedback!.taskIds.find((id) => id !== a)!
+    // Request X holds A and has not pushed yet.
+    const atX = t.deps.now()
+    await t.store.claimTaskAnnouncements({ taskIds: [a], token: randomUUID(), at: atX, staleBefore: new Date(atX.getTime() - 2 * MIN) })
+    expect(await t.notify([a, b])).toEqual({ status: 409, body: { error: 'announce_in_progress' } })
+    const delivered = () => t.line.delivered.map(textOf)
+    expect(delivered()).toHaveLength(1)
+    expect(delivered()[0]).toContain('จองห้อง')
+    expect(delivered()[0]).not.toContain('ทำสไลด์')
+    // X died; once its claim is stale a retry announces A.
+    t.setNow(new Date(atX.getTime() + STALE))
+    expect((await t.notify([a, b])).body).toEqual({ posted: true })
+    expect(delivered().filter((x) => x.includes('ทำสไลด์'))).toHaveLength(1)
+    expect(delivered().filter((x) => x.includes('จองห้อง'))).toHaveLength(1)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('21. only the confirmer can announce Tasks of this Summary', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    // Another Member's call announces nothing of Pim's.
+    expect((await t.notify(ids, 'tok-bank')).body).toEqual({ posted: false, reason: 'nothing_to_announce' })
+    expect((await t.notify([randomUUID()])).status).toBe(400)
+    expect((await t.notify([])).status).toBe(400)
+    expect((await t.notify(['not-a-uuid'])).status).toBe(400)
+    expect((await t.notify([ids[0], ids[0]])).status).toBe(400)
+    const other = t.store.seedTask({ groupId: t.group.id, title: 'อื่น', createdByLineUserId: 'Upim' })
+    expect((await t.notify([other.id])).status).toBe(400)
+    expect((await t.notify(ids, 'bad-token')).status).toBe(401)
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('22. the next Summary skips the feedback message a LIFF page posted', async () => {
+    const t = await setup()
+    const feedback = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
+    await t.send(ev.groupText({ text: feedback.feedback!.text, userId: 'Upim', timestamp: T0 + 3 * MIN }))
+    let read: string[] = []
+    t.llm.respond((req: LlmRequest) => {
+      read = chatLines(req).map((c) => c.text)
+      return { content: JSON.stringify({ summary: 'x', tasks: [] }), model: TEXT_MODEL, usage: null }
+    })
+    await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', timestamp: T0 + 4 * MIN }))
+    expect(read).toEqual(['ใครทำสไลด์ได้บ้าง', 'เดี๋ยวทำสไลด์เอง'])
   })
 })

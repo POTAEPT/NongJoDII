@@ -16,6 +16,7 @@ function fullEnv(): Record<string, string | undefined> {
     GOOGLE_CLIENT_ID: 'gid.apps.googleusercontent.com',
     GOOGLE_CLIENT_SECRET: 'gsecret-eee',
     TOKEN_ENCRYPTION_KEY: KEY_32,
+    TICK_SECRET: 'tick-secret-fff',
   }
 }
 
@@ -33,6 +34,7 @@ describe('loadConfig', () => {
       openRouterApiKey: 'or-key-ddd',
       googleClientId: 'gid.apps.googleusercontent.com',
       googleClientSecret: 'gsecret-eee',
+      tickSecret: 'tick-secret-fff',
     })
     expect(Buffer.isBuffer(config.tokenEncryptionKey)).toBe(true)
     expect(config.tokenEncryptionKey.length).toBe(32)

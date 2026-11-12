@@ -5,7 +5,7 @@ import { FakeStore } from './fakes/fake-store'
 import { FakeLine } from './fakes/fake-line'
 import { FakeLlm } from './fakes/fake-llm'
 import { FakeGoogle } from './fakes/fake-google'
-import { TEST_KEY, TEST_LIFF_ID, TEST_SECRET, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
+import { TEST_KEY, TEST_LIFF_ID, TEST_SECRET, TEST_TICK_SECRET, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 const SENT_AT = new Date('2026-11-12T02:00:00Z')
 
@@ -179,6 +179,112 @@ describe('FakeStore', () => {
     expect(await store.claimFairUseNotice({ ...n, monthStartBkk: '2026-12-01' })).toEqual({ inserted: true })
   })
 
+  describe('Task announcement claims', () => {
+    const T = new Date('2026-11-12T02:00:00Z')
+    const STALE = new Date(T.getTime() - 2 * 60_000)
+    const TOK = (n: number) => `00000000-0000-4000-8000-00000000000${n}`
+    function setup() {
+      const store = new FakeStore()
+      const group = store.seedGroup({ lineGroupId: 'Cgroup1' })
+      const task = (title: string, p: Record<string, unknown> = {}) =>
+        store.seedTask({ groupId: group.id, title, createdByLineUserId: 'Uuser1', ...p }).id
+      const row = (id: string) => store.tables.tasks.find((t) => t.id === id)!
+      const claim = (taskIds: string[], token: string, at = T) =>
+        store.claimTaskAnnouncements({ taskIds, token, at, staleBefore: new Date(at.getTime() - 2 * 60_000) })
+      return { store, task, row, claim }
+    }
+
+    test('a fresh claim gives every live, unannounced row the new token', async () => {
+      const { task, row, claim } = setup()
+      const a = task('a')
+      const b = task('b')
+      expect(await claim([a, b], TOK(1))).toEqual([{ taskId: a, token: TOK(1) }, { taskId: b, token: TOK(1) }])
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: T, announcedAt: null })
+    })
+
+    test('a live claim is not taken over', async () => {
+      const { task, row, claim } = setup()
+      const a = task('a')
+      await claim([a], TOK(1))
+      expect(await claim([a], TOK(2), new Date(T.getTime() + 60_000))).toEqual([])
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: T })
+    })
+
+    test('a released batch is re-claimed whole with its old token, including rows not asked for', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const x = task('x')
+      const b = task('b')
+      await claim([a, x], TOK(1))
+      await store.releaseTaskAnnouncements(TOK(1), T)
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: null })
+      const later = new Date(T.getTime() + 10_000)
+      const got = await claim([a, b], TOK(2), later)
+      expect(got).toEqual([{ taskId: a, token: TOK(1) }, { taskId: x, token: TOK(1) }, { taskId: b, token: TOK(2) }])
+      expect(row(x)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: later })
+      expect(row(b)).toMatchObject({ announcePendingToken: TOK(2), announcePendingAt: later })
+    })
+
+    test('a stale batch is re-claimed with its old token', async () => {
+      const { task, row, claim } = setup()
+      const a = task('a')
+      await claim([a], TOK(1), new Date(STALE.getTime() - 1))
+      expect(await claim([a], TOK(2))).toEqual([{ taskId: a, token: TOK(1) }])
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: T })
+    })
+
+    test('announced and deleted rows are left alone', async () => {
+      const { task, row, claim } = setup()
+      const done = task('done', { announcedAt: STALE })
+      const gone = task('gone', { deletedAt: STALE })
+      expect(await claim([done, gone], TOK(1))).toEqual([])
+      expect(row(done)).toMatchObject({ announcePendingToken: null, announcedAt: STALE })
+      expect(row(gone)).toMatchObject({ announcePendingToken: null, announcedAt: null })
+    })
+
+    test('confirm marks the batch announced and clears the claim', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const other = task('other')
+      await claim([a], TOK(1))
+      await claim([other], TOK(2))
+      await store.confirmTaskAnnouncements(TOK(1), T)
+      expect(row(a)).toMatchObject({ announcedAt: T, announcePendingToken: null, announcePendingAt: null })
+      expect(row(other)).toMatchObject({ announcedAt: null, announcePendingToken: TOK(2) })
+    })
+
+    test('abandon clears the token so the rows are claimed fresh', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const done = task('done', { announcedAt: STALE })
+      await claim([a], TOK(1))
+      Object.assign(row(done), { announcePendingToken: TOK(1), announcePendingAt: T })
+      await store.abandonTaskAnnouncements(TOK(1), T)
+      expect(row(a)).toMatchObject({ announcedAt: null, announcePendingToken: null, announcePendingAt: null })
+      expect(row(done).announcePendingToken).toBe(TOK(1)) // announced rows are left alone
+      expect(await claim([a], TOK(2))).toEqual([{ taskId: a, token: TOK(2) }])
+    })
+
+    test('abandon and release with another claim time leave the rows alone', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const later = new Date(T.getTime() + 2 * 60_000 + 1000)
+      await claim([a], TOK(1))
+      expect(await claim([a], TOK(2), later)).toEqual([{ taskId: a, token: TOK(1) }]) // stale take-over
+      await store.abandonTaskAnnouncements(TOK(1), T)
+      await store.releaseTaskAnnouncements(TOK(1), T)
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: later })
+    })
+
+    test('release keeps the token and clears only pending_at', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      await claim([a], TOK(1))
+      await store.releaseTaskAnnouncements(TOK(1), T)
+      expect(row(a)).toMatchObject({ announcedAt: null, announcePendingToken: TOK(1), announcePendingAt: null })
+    })
+  })
+
   test('createSummary keeps candidate order, 1 ms apart', async () => {
     const store = new FakeStore()
     const group = await store.ensureGroup('Cgroup1')
@@ -233,6 +339,26 @@ describe('FakeStore', () => {
     // candidate_id is unique but nullable: two Tasks without a candidate do not clash.
     store.seedTask({ groupId: group.id, title: 'Two', createdByLineUserId: 'Uowner1' })
     expect(store.tables.tasks).toHaveLength(2)
+  })
+
+  test('confirmProgressYes from someone who is neither assignee nor subject is task_changed and writes nothing', async () => {
+    const store = new FakeStore()
+    const group = store.seedGroup({ lineGroupId: 'Cgroup1' })
+    for (const id of ['Uowner1', 'Uassignee', 'Usubject', 'Uother']) store.seedMember({ groupId: group.id, lineUserId: id, displayName: id })
+    const task = store.seedTask({
+      groupId: group.id, title: 'T', createdByLineUserId: 'Uowner1', status: 'in_process', assigneeLineUserId: 'Uassignee',
+    })
+    const { prompt } = await store.createProgressPrompt({
+      groupId: group.id, taskId: task.id, targetStatus: 'done', subjectLineUserId: 'Usubject', triggerMessageId: null, askedAt: SENT_AT,
+    })
+    const yes = (by: string) => ({
+      promptId: prompt!.id, taskId: task.id, fromStatus: 'in_process' as const, toStatus: 'done' as const,
+      byLineUserId: by, assignTo: null, at: SENT_AT,
+    })
+    expect(await store.confirmProgressYes(yes('Uother'))).toEqual({ outcome: 'task_changed' })
+    expect(store.tables.tasks[0]).toMatchObject({ status: 'in_process', doneAt: null, assigneeLineUserId: 'Uassignee' })
+    expect(store.tables.task_prompts[0].answer).toBeNull()
+    expect(await store.confirmProgressYes(yes('Usubject'))).toEqual({ outcome: 'updated' })
   })
 
   test('sumOwnerMonthUsage buckets by Bangkok month', async () => {
@@ -333,7 +459,9 @@ describe('makeTestDeps', () => {
     expect(t.deps.google).toBe(t.google)
     expect(t.deps.store).toBe(t.store)
     expect(t.deps.now()).toEqual(new Date('2026-11-12T03:00:00Z'))
-    expect(t.deps.config).toEqual({ lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY })
+    expect(t.deps.config).toEqual({
+      lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET,
+    })
     t.setNow(new Date('2026-12-01T00:00:00Z'))
     expect(t.deps.now()).toEqual(new Date('2026-12-01T00:00:00Z'))
   })

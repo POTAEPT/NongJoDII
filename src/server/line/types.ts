@@ -17,10 +17,13 @@ export type LineEvent = {
   deliveryContext: { isRedelivery: boolean }
   mode?: string
   message?: LineMessageContent
+  postback?: { data: string }       // event.type 'postback'
 }
 export type LineWebhookBody = { destination: string; events: LineEvent[] }
 
 export type LineUriAction = { type: 'uri'; label: string; uri: string }
+export type LinePostbackAction = { type: 'postback'; label: string; data: string; displayText?: string }
 export type LineMessage =
   | { type: 'text'; text: string }
+  | { type: 'flex'; altText: string; contents: Record<string, unknown> }
   | { type: 'template'; altText: string; template: { type: 'buttons'; text: string; actions: LineUriAction[] } }

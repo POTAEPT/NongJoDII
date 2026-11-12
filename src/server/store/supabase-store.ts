@@ -3,22 +3,35 @@ import { AdapterError } from '../log'
 import type {
   AiUsageActual,
   AiUsageCap,
+  AnnounceClaim,
   CandidateRow,
   GroupRow,
   Member,
   Membership,
+  MessageRef,
   NewAiUsage,
   NewCandidate,
   NewGoogleAccount,
   NewMessage,
+  NewProgressPrompt,
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  PushBudgetClaim,
+  NewWeeklyInsight,
+  ProgressAnswer,
+  ProgressPromptRow,
   StorePort,
   StoredMessage,
   SummaryRow,
+  TaskCounts,
   TaskPatch,
   TaskRow,
+  TaskStatus,
+  UnownedTask,
+  WeeklySummaryGroup,
+  ProgressYes,
+  ProgressYesOutcome,
 } from '../ports'
 import {
   type DbCandidate,
@@ -42,11 +55,30 @@ import {
 // Errors throw AdapterError with the Postgres/PostgREST code only (messages may echo data).
 
 const GROUP_COLS =
-  'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description'
+  'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind'
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
 const TASK_COLS =
-  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, groups(line_group_id)'
+  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, announced_at, groups(line_group_id)'
+const PROMPT_COLS =
+  'id, group_id, task_id, target_status, subject_line_user_id, trigger_message_id, asked_at, answer, answered_by_line_user_id, answered_at'
+
+type DbPrompt = {
+  id: string; group_id: string; task_id: string; target_status: 'in_process' | 'done'
+  subject_line_user_id: string | null; trigger_message_id: string | null; asked_at: string
+  answer: ProgressAnswer | null; answered_by_line_user_id: string | null; answered_at: string | null
+}
+
+function toPromptRow(r: DbPrompt): ProgressPromptRow {
+  return {
+    id: r.id, groupId: r.group_id, taskId: r.task_id, targetStatus: r.target_status,
+    subjectLineUserId: r.subject_line_user_id, triggerMessageId: r.trigger_message_id, askedAt: toDate(r.asked_at),
+    answer: r.answer, answeredByLineUserId: r.answered_by_line_user_id, answeredAt: toDate(r.answered_at),
+  }
+}
+
+/** Page size for listWeeklySummaryGroups; equal to PostgREST max_rows in supabase/config.toml. */
+export const WEEKLY_PAGE = 1000
 
 type PgError = { code: string } | null
 
@@ -289,6 +321,110 @@ export class SupabaseStore implements StorePort {
     return data ? toTaskRow(data as unknown as DbTask) : null
   }
 
+  // Several statements, no RPC: each one is atomic, and its WHERE clause is
+  // rechecked against the locked row, so two claims do not both take a batch as long
+  // as they lock rows in a consistent order. A concurrent re-claim can still abort on
+  // a deadlock; the batch then recovers through the stale path.
+  async claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]> {
+    if (c.taskIds.length === 0) return []
+    type Held = { id: string; announce_pending_token: string }
+    const held = await this.db
+      .from('tasks')
+      .select('id, announce_pending_token')
+      .in('id', c.taskIds)
+      .is('announced_at', null)
+      .is('deleted_at', null)
+      .not('announce_pending_token', 'is', null)
+    check('claimTaskAnnouncements', held.error)
+    const tokens = [...new Set(((held.data ?? []) as Held[]).map((r) => r.announce_pending_token))]
+    const out: { taskId: string; token: string }[] = []
+    if (tokens.length > 0) {
+      // A released batch (pending_at null), then a stale one; a live claim is left alone.
+      const released = await this.db
+        .from('tasks')
+        .update({ announce_pending_at: c.at.toISOString() })
+        .in('announce_pending_token', tokens)
+        .is('announced_at', null)
+        .is('deleted_at', null)
+        .is('announce_pending_at', null)
+        .select('id, announce_pending_token')
+      check('claimTaskAnnouncements', released.error)
+      const stale = await this.db
+        .from('tasks')
+        .update({ announce_pending_at: c.at.toISOString() })
+        .in('announce_pending_token', tokens)
+        .is('announced_at', null)
+        .is('deleted_at', null)
+        .lt('announce_pending_at', c.staleBefore.toISOString())
+        .select('id, announce_pending_token')
+      check('claimTaskAnnouncements', stale.error)
+      for (const r of [...((released.data ?? []) as Held[]), ...((stale.data ?? []) as Held[])]) {
+        out.push({ taskId: r.id, token: r.announce_pending_token })
+      }
+    }
+    const fresh = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: c.token, announce_pending_at: c.at.toISOString() })
+      .in('id', c.taskIds)
+      .is('announced_at', null)
+      .is('deleted_at', null)
+      .is('announce_pending_token', null)
+      .select('id')
+    check('claimTaskAnnouncements', fresh.error)
+    for (const r of (fresh.data ?? []) as { id: string }[]) out.push({ taskId: r.id, token: c.token })
+    return out
+  }
+
+  async confirmTaskAnnouncements(token: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announced_at: at.toISOString(), announce_pending_token: null, announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .is('announced_at', null)
+    check('confirmTaskAnnouncements', error)
+  }
+
+  async releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
+      .is('announced_at', null)
+    check('releaseTaskAnnouncements', error)
+  }
+
+  async abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: null, announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
+      .is('announced_at', null)
+    check('abandonTaskAnnouncements', error)
+  }
+
+  async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {
+    const { data, error } = await this.db.rpc('claim_push_budget', {
+      p_purpose: c.purpose, p_line_target_id: c.lineTargetId, p_message_count: c.messageCount,
+      p_line_used: c.lineUsed, p_allowed: c.allowed,
+    })
+    check('claimPushBudget', error)
+    return { pushLogId: typeof data === 'string' ? data : null }
+  }
+
+  async releasePushBudget(pushLogId: string): Promise<void> {
+    const { error } = await this.db.from('push_log').delete().eq('id', pushLogId)
+    check('releasePushBudget', error)
+  }
+
+  async listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]> {
+    if (candidateIds.length === 0) return []
+    const { data, error } = await this.db.from('tasks').select(TASK_COLS).in('candidate_id', candidateIds)
+    check('listTasksByCandidates', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
+  }
+
   async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {
     const { data, error } = await this.db
       .from('tasks')
@@ -302,6 +438,106 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('updateTask', error)
     return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  // ---- #7 Track progress ----
+  async listOpenTasks(groupId: string): Promise<TaskRow[]> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .select(TASK_COLS)
+      .eq('group_id', groupId)
+      .is('deleted_at', null)
+      .neq('status', 'done')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+    check('listOpenTasks', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
+  }
+
+  async getMessageRef(messageId: string): Promise<MessageRef | null> {
+    const { data, error } = await this.db
+      .from('messages')
+      .select('id, group_id, sender_line_user_id, sent_at')
+      .eq('id', messageId)
+      .maybeSingle()
+    check('getMessageRef', error)
+    const row = data as { id: string; group_id: string; sender_line_user_id: string | null; sent_at: string } | null
+    return row ? { id: row.id, groupId: row.group_id, senderLineUserId: row.sender_line_user_id, sentAt: toDate(row.sent_at) } : null
+  }
+
+  async findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .select(PROMPT_COLS)
+      .eq('task_id', taskId)
+      .eq('kind', 'mark_done')
+      .is('answer', null)
+      .maybeSingle()
+    check('findOpenProgressPrompt', error)
+    return data ? toPromptRow(data as DbPrompt) : null
+  }
+
+  async createProgressPrompt(p: NewProgressPrompt): Promise<{ prompt: ProgressPromptRow | null }> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .insert({
+        group_id: p.groupId, task_id: p.taskId, kind: 'mark_done', target_status: p.targetStatus,
+        subject_line_user_id: p.subjectLineUserId, trigger_message_id: p.triggerMessageId,
+        asked_at: p.askedAt.toISOString(),
+      })
+      .select(PROMPT_COLS)
+      .single()
+    // 23505 = unique_violation on task_prompts_one_open_mark_done: an open card already exists.
+    if (error?.code === '23505') return { prompt: null }
+    check('createProgressPrompt', error)
+    return { prompt: toPromptRow(data as DbPrompt) }
+  }
+
+  async getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .select(PROMPT_COLS)
+      .eq('id', promptId)
+      .eq('kind', 'mark_done')
+      .maybeSingle()
+    check('getProgressPrompt', error)
+    return data ? toPromptRow(data as DbPrompt) : null
+  }
+
+  async answerProgressPrompt(
+    promptId: string, answer: 'no', byLineUserId: string, at: Date,
+  ): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .update({ answer, answered_by_line_user_id: byLineUserId, answered_at: at.toISOString() })
+      .eq('id', promptId)
+      .eq('kind', 'mark_done')
+      .is('answer', null)
+      .select('id')
+    check('answerProgressPrompt', error)
+    return { updated: (data ?? []).length === 1 }
+  }
+
+  async confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }> {
+    const { data, error } = await this.db.rpc('answer_progress_yes', {
+      p_prompt_id: y.promptId, p_task_id: y.taskId, p_from_status: y.fromStatus, p_to_status: y.toStatus,
+      p_by: y.byLineUserId, p_assign_to: y.assignTo, p_at: y.at.toISOString(),
+    })
+    check('confirmProgressYes', error)
+    if (data !== 'updated' && data !== 'already_answered' && data !== 'task_changed') {
+      throw new Error('confirmProgressYes: unexpected result from answer_progress_yes')
+    }
+    return { outcome: data }
+  }
+
+  async withdrawProgressPrompt(promptId: string): Promise<void> {
+    const { error } = await this.db
+      .from('task_prompts')
+      .delete()
+      .eq('id', promptId)
+      .eq('kind', 'mark_done')
+      .is('answer', null)
+    check('withdrawProgressPrompt', error)
   }
 
   // ---- #5 / #6 usage ----
@@ -357,6 +593,115 @@ export class SupabaseStore implements StorePort {
       .select('kind')
     check('claimFairUseNotice', error)
     return { inserted: (data ?? []).length === 1 }
+  }
+
+  // ---- #20 weekly insight ----
+  /** Pages of WEEKLY_PAGE rows ordered by id, so PostgREST max_rows (1000) never hides
+   *  the groups after the first page. */
+  async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
+    type Row = {
+      id: string; line_group_id: string; weekly_summary_weekday: number
+      weekly_summary_time: string; weekly_summary_last_sent_on: string | null
+    }
+    const out: WeeklySummaryGroup[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .eq('feature_weekly_summary', true)
+        .eq('weekly_summary_weekday', weekday)
+        .order('id')
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listWeeklySummaryGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({
+          groupId: r.id, lineGroupId: r.line_group_id, weekday: r.weekly_summary_weekday,
+          time: r.weekly_summary_time, lastSentOn: r.weekly_summary_last_sent_on,
+        })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
+  }
+
+  async claimWeeklySummary(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ weekly_summary_last_sent_on: todayBkk })
+      .eq('id', groupId)
+      .or(`weekly_summary_last_sent_on.is.null,weekly_summary_last_sent_on.lt.${todayBkk}`)
+      .select('id')
+    check('claimWeeklySummary', error)
+    return { claimed: (data?.length ?? 0) > 0 }
+  }
+
+  async releaseWeeklySummary(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ weekly_summary_last_sent_on: previous })
+      .eq('id', groupId)
+      .eq('weekly_summary_last_sent_on', todayBkk)
+    check('releaseWeeklySummary', error)
+  }
+
+  /** One head-only count per status: no rows travel, so max_rows (1000) cannot cut the count. */
+  async countTasksByStatus(groupId: string): Promise<TaskCounts> {
+    const count = async (status: TaskStatus): Promise<number> => {
+      const { count: n, error } = await this.db
+        .from('tasks')
+        .select('id', { count: 'exact', head: true })
+        .eq('group_id', groupId)
+        .eq('status', status)
+        .is('deleted_at', null)
+      check('countTasksByStatus', error)
+      return n ?? 0
+    }
+    const [done, inProcess, awaitingOwner] = await Promise.all([count('done'), count('in_process'), count('not_assigned')])
+    return { done, inProcess, awaitingOwner }
+  }
+
+  async listUnownedTasks(groupId: string, limit: number): Promise<UnownedTask[]> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .select('id, title, due_at')
+      .eq('group_id', groupId)
+      .eq('status', 'not_assigned')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(limit)
+    check('listUnownedTasks', error)
+    const rows = (data ?? []) as { id: string; title: string; due_at: string | null }[]
+    return rows.map((r) => ({ id: r.id, title: r.title, dueAt: toDate(r.due_at) }))
+  }
+
+  async saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }> {
+    const { data, error } = await this.db
+      .from('weekly_insights')
+      .upsert(
+        {
+          group_id: i.groupId, week_start: i.weekStart, tasks_done: i.counts.done,
+          tasks_in_process: i.counts.inProcess, tasks_awaiting_owner: i.counts.awaitingOwner,
+          created_at: i.createdAt.toISOString(),
+        },
+        { onConflict: 'group_id,week_start', ignoreDuplicates: true },
+      )
+      .select('id')
+    check('saveWeeklyInsight', error)
+    return { inserted: (data ?? []).length === 1 }
+  }
+
+  async hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from('weekly_insights')
+      .select('id')
+      .eq('group_id', groupId)
+      .eq('week_start', weekStart)
+      .maybeSingle()
+    check('hasWeeklyInsight', error)
+    return data !== null
   }
 
   // ---- #12 Google ----

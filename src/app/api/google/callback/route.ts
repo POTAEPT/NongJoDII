@@ -5,5 +5,6 @@ import { finishGoogleSignIn, renderCallbackPage } from '@/server/google/callback
 // Components (01-app/01-getting-started/15-route-handlers.md).
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams
-  return renderCallbackPage(await finishGoogleSignIn(getDeps(), params))
+  const deps = getDeps()
+  return renderCallbackPage(await finishGoogleSignIn(deps, params), deps.config.liffId)
 }

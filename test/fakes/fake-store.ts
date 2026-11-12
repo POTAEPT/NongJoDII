@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AiUsageActual,
   AiUsageCap,
+  AnnounceClaim,
   CandidateRow,
   CandidateState,
   GroupRow,
@@ -13,12 +14,22 @@ import type {
   NewMessage,
   NewSummary,
   NewTask,
+  NewProgressPrompt,
   NewWebhookEvent,
+  PushBudgetClaim,
+  NewWeeklyInsight,
+  MessageRef,
+  ProgressPromptRow,
   StorePort,
   StoredMessage,
   SummaryRow,
+  TaskCounts,
   TaskPatch,
   TaskRow,
+  UnownedTask,
+  WeeklySummaryGroup,
+  ProgressYes,
+  ProgressYesOutcome,
 } from '@/server/ports'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
@@ -38,14 +49,27 @@ export type CandidateRecord = CandidateRow & {
   decidedByLineUserId: string | null; decidedAt: Date | null; createdAt: Date
 }
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
-  lastEditedByLineUserId: string | null; lastActivityAt: Date | null
+  lastEditedByLineUserId: string | null; lastActivityAt: Date | null; doneAt: Date | null
+  announcePendingToken: string | null; announcePendingAt: Date | null
 }
+export type PushLogRecord = { id: string; purpose: string; lineTargetId: string; messageCount: number; sentAt: Date }
+/** task_prompts, kind mark_done only (the kind #7 writes). */
+export type ProgressPromptRecord = ProgressPromptRow
 export type AiUsageRecord = NewAiUsage & { id: string; settledAt: Date | null } // settledAt null = open claim
 export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }
 export type GoogleAccountRecord = {
   id: string; lineUserId: string; googleSubject: string; email: string | null; grantedScopes: string[]
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
 }
+
+/** The groups columns the weekly insight reads (left_at, feature_weekly_summary and the
+ *  weekly slot), kept beside `groups` so GroupRow stays as the app reads it. A group with
+ *  no row here has the schema defaults: bot in, feature on, Monday 09:00, never sent. */
+export type GroupScheduleRecord = {
+  groupId: string; leftAt: Date | null; featureWeeklySummary: boolean
+  weeklySummaryWeekday: number; weeklySummaryTime: string; weeklySummaryLastSentOn: string | null
+}
+export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 
 export type FakeTables = {
   line_users: LineUserRecord[]
@@ -56,9 +80,13 @@ export type FakeTables = {
   summaries: SummaryRecord[]
   task_candidates: CandidateRecord[]
   tasks: TaskRecord[]
+  push_log: PushLogRecord[]
+  task_prompts: ProgressPromptRecord[]
   ai_usage: AiUsageRecord[]
   fair_use_notices: FairUseNoticeRecord[]
   google_accounts: GoogleAccountRecord[]
+  group_schedules: GroupScheduleRecord[]
+  weekly_insights: WeeklyInsightRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -81,9 +109,13 @@ export class FakeStore implements StorePort {
     summaries: [],
     task_candidates: [],
     tasks: [],
+    push_log: [],
+    task_prompts: [],
     ai_usage: [],
     fair_use_notices: [],
     google_accounts: [],
+    group_schedules: [],
+    weekly_insights: [],
   }
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
@@ -157,7 +189,7 @@ export class FakeStore implements StorePort {
       row = {
         id: randomUUID(), lineGroupId, projectId: null, name: null,
         nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
-        featureSummarize: true, featureDraftTasks: true, workDescription: null,
+        featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
       }
       this.tables.groups.push(row)
     }
@@ -299,7 +331,8 @@ export class FakeStore implements StorePort {
     if (!taskId) {
       taskId = randomUUID()
       this.tables.tasks.push({
-        ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null,
+        ...t, id: taskId, deletedAt: null, announcedAt: null, lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
+        announcePendingToken: null, announcePendingAt: null,
       })
     }
     if (c.state === 'proposed') {
@@ -321,7 +354,7 @@ export class FakeStore implements StorePort {
     return {
       id: t.id, groupId: t.groupId, lineGroupId: this.groupOf(t.groupId).lineGroupId, candidateId: t.candidateId,
       title: t.title, details: t.details, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
-      createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt,
+      createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt, announcedAt: t.announcedAt,
     }
   }
 
@@ -329,6 +362,86 @@ export class FakeStore implements StorePort {
     this.fault('getTask')
     const t = this.tables.tasks.find((row) => row.id === taskId)
     return t ? this.toTaskRow(t) : null
+  }
+
+  // Mirrors SupabaseStore: the same statements in the same order, with no await
+  // between them, so each claim is atomic like the database statements.
+  async claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]> {
+    this.fault('claimTaskAnnouncements')
+    const open = (t: TaskRecord) => t.announcedAt === null && t.deletedAt === null
+    const tokens = new Set(this.tables.tasks
+      .filter((t) => c.taskIds.includes(t.id) && open(t) && t.announcePendingToken !== null)
+      .map((t) => t.announcePendingToken as string))
+    const out: { taskId: string; token: string }[] = []
+    const inBatch = (t: TaskRecord) => open(t) && t.announcePendingToken !== null && tokens.has(t.announcePendingToken)
+    const released = this.tables.tasks.filter((t) => inBatch(t) && t.announcePendingAt === null)
+    for (const t of released) t.announcePendingAt = c.at
+    const stale = this.tables.tasks.filter((t) => inBatch(t) && t.announcePendingAt !== null && t.announcePendingAt < c.staleBefore)
+    for (const t of stale) t.announcePendingAt = c.at
+    for (const t of [...released, ...stale]) out.push({ taskId: t.id, token: t.announcePendingToken as string })
+    const fresh = this.tables.tasks.filter((t) => c.taskIds.includes(t.id) && open(t) && t.announcePendingToken === null)
+    for (const t of fresh) {
+      t.announcePendingToken = c.token
+      t.announcePendingAt = c.at
+      out.push({ taskId: t.id, token: c.token })
+    }
+    return out
+  }
+
+  async confirmTaskAnnouncements(token: string, at: Date): Promise<void> {
+    this.fault('confirmTaskAnnouncements')
+    for (const t of this.tables.tasks) {
+      if (t.announcePendingToken !== token || t.announcedAt !== null) continue
+      t.announcedAt = at
+      t.announcePendingToken = null
+      t.announcePendingAt = null
+    }
+  }
+
+  private heldBy(t: TaskRecord, token: string, claimedAt: Date): boolean {
+    return t.announcePendingToken === token && t.announcePendingAt?.getTime() === claimedAt.getTime() && t.announcedAt === null
+  }
+
+  async releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    this.fault('releaseTaskAnnouncements')
+    for (const t of this.tables.tasks) if (this.heldBy(t, token, claimedAt)) t.announcePendingAt = null
+  }
+
+  async abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    this.fault('abandonTaskAnnouncements')
+    for (const t of this.tables.tasks) {
+      if (!this.heldBy(t, token, claimedAt)) continue
+      t.announcePendingToken = null
+      t.announcePendingAt = null
+    }
+  }
+
+  /** Clock for push_log rows (the database uses now()); tests may move it. */
+  pushClock: () => Date = () => new Date()
+
+  // Mirrors claim_push_budget: rows of the last 10 minutes count on top of lineUsed.
+  async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {
+    this.fault('claimPushBudget')
+    const now = this.pushClock()
+    const recent = this.tables.push_log
+      .filter((p) => p.sentAt.getTime() > now.getTime() - 10 * 60_000)
+      .reduce((sum, p) => sum + p.messageCount, 0)
+    if (c.lineUsed + recent + c.messageCount > c.allowed) return { pushLogId: null }
+    const id = randomUUID()
+    this.tables.push_log.push({ id, purpose: c.purpose, lineTargetId: c.lineTargetId, messageCount: c.messageCount, sentAt: now })
+    return { pushLogId: id }
+  }
+
+  async releasePushBudget(pushLogId: string): Promise<void> {
+    this.fault('releasePushBudget')
+    this.tables.push_log = this.tables.push_log.filter((p) => p.id !== pushLogId)
+  }
+
+  async listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]> {
+    this.fault('listTasksByCandidates')
+    return this.tables.tasks
+      .filter((t) => t.candidateId !== null && candidateIds.includes(t.candidateId))
+      .map((t) => this.toTaskRow(t))
   }
 
   async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {
@@ -339,6 +452,81 @@ export class FakeStore implements StorePort {
     fk(this.hasLineUser(patch.lastEditedByLineUserId), 'tasks.last_edited_by_line_user_id')
     Object.assign(t, patch)
     return { updated: true }
+  }
+
+  // ---- #7 Track progress ----
+  async listOpenTasks(groupId: string): Promise<TaskRow[]> {
+    this.fault('listOpenTasks')
+    return this.tables.tasks
+      .filter((t) => t.groupId === groupId && t.deletedAt === null && t.status !== 'done')
+      .map((t) => this.toTaskRow(t))
+  }
+
+  async getMessageRef(messageId: string): Promise<MessageRef | null> {
+    this.fault('getMessageRef')
+    const m = this.tables.messages.find((row) => row.id === messageId)
+    return m ? { id: m.id, groupId: m.groupId, senderLineUserId: m.senderLineUserId, sentAt: m.sentAt } : null
+  }
+
+  async findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null> {
+    this.fault('findOpenProgressPrompt')
+    const p = this.tables.task_prompts.find((row) => row.taskId === taskId && row.answer === null)
+    return p ? { ...p } : null
+  }
+
+  async createProgressPrompt(n: NewProgressPrompt): Promise<{ prompt: ProgressPromptRow | null }> {
+    this.fault('createProgressPrompt')
+    // Unique index task_prompts_one_open_mark_done.
+    if (this.tables.task_prompts.some((row) => row.taskId === n.taskId && row.answer === null)) return { prompt: null }
+    fk(this.hasGroup(n.groupId), 'task_prompts.group_id')
+    fk(this.tables.tasks.some((t) => t.id === n.taskId), 'task_prompts.task_id')
+    fk(this.hasLineUser(n.subjectLineUserId), 'task_prompts.subject_line_user_id')
+    fk(n.triggerMessageId === null || this.tables.messages.some((m) => m.id === n.triggerMessageId), 'task_prompts.trigger_message_id')
+    const row: ProgressPromptRecord = { ...n, id: randomUUID(), answer: null, answeredByLineUserId: null, answeredAt: null }
+    this.tables.task_prompts.push(row)
+    return { prompt: { ...row } }
+  }
+
+  async getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null> {
+    this.fault('getProgressPrompt')
+    const p = this.tables.task_prompts.find((row) => row.id === promptId)
+    return p ? { ...p } : null
+  }
+
+  async answerProgressPrompt(promptId: string, answer: 'no', byLineUserId: string, at: Date): Promise<{ updated: boolean }> {
+    this.fault('answerProgressPrompt')
+    const p = this.tables.task_prompts.find((row) => row.id === promptId && row.answer === null)
+    if (!p) return { updated: false }
+    fk(this.hasLineUser(byLineUserId), 'task_prompts.answered_by_line_user_id')
+    Object.assign(p, { answer, answeredByLineUserId: byLineUserId, answeredAt: at })
+    return { updated: true }
+  }
+
+  // Same rules as the answer_progress_yes function, applied as one step: every check
+  // runs before any write, so a throw changes nothing.
+  async confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }> {
+    this.fault('confirmProgressYes')
+    const p = this.tables.task_prompts.find((row) => row.id === y.promptId && row.taskId === y.taskId)
+    if (!p) return { outcome: 'task_changed' }
+    if (p.answer !== null) return { outcome: 'already_answered' }
+    // The presser must still be the Task's assignee or the card's subject at write time.
+    const t = this.tables.tasks.find((row) => row.id === y.taskId && row.deletedAt === null && row.status === y.fromStatus
+      && (row.assigneeLineUserId === y.byLineUserId || p.subjectLineUserId === y.byLineUserId))
+    if (!t) return { outcome: 'task_changed' }
+    fk(this.hasLineUser(y.byLineUserId), 'tasks.last_edited_by_line_user_id')
+    fk(this.hasLineUser(y.assignTo), 'tasks.assignee_line_user_id')
+    t.status = y.toStatus
+    if (y.toStatus === 'done') t.doneAt = y.at
+    if (y.assignTo !== null) t.assigneeLineUserId = y.assignTo
+    t.lastEditedByLineUserId = y.byLineUserId
+    t.lastActivityAt = y.at
+    Object.assign(p, { answer: 'yes', answeredByLineUserId: y.byLineUserId, answeredAt: y.at })
+    return { outcome: 'updated' }
+  }
+
+  async withdrawProgressPrompt(promptId: string): Promise<void> {
+    this.fault('withdrawProgressPrompt')
+    this.tables.task_prompts = this.tables.task_prompts.filter((row) => !(row.id === promptId && row.answer === null))
   }
 
   // ---- #5 / #6 usage ----
@@ -416,12 +604,98 @@ export class FakeStore implements StorePort {
     return rows[0] ? { id: rows[0].id, tokenStatus: rows[0].tokenStatus } : null
   }
 
+  // ---- #20 weekly insight ----
+  /** The schedule row of a group, created with the schema defaults on first use. */
+  private scheduleOf(groupId: string): GroupScheduleRecord {
+    let row = this.tables.group_schedules.find((s) => s.groupId === groupId)
+    if (!row) {
+      fk(this.hasGroup(groupId), 'groups.id')
+      row = {
+        groupId, leftAt: null, featureWeeklySummary: true,
+        weeklySummaryWeekday: 1, weeklySummaryTime: '09:00:00', weeklySummaryLastSentOn: null,
+      }
+      this.tables.group_schedules.push(row)
+    }
+    return row
+  }
+
+  private liveTasksOf(groupId: string): TaskRecord[] {
+    return this.tables.tasks.filter((t) => t.groupId === groupId && t.deletedAt === null)
+  }
+
+  async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
+    this.fault('listWeeklySummaryGroups')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null)
+      .map((g) => ({ g, s: this.scheduleOf(g.id) }))
+      .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary && s.weeklySummaryWeekday === weekday)
+      .sort((a, b) => a.g.id.localeCompare(b.g.id))
+      .map(({ g, s }) => ({
+        groupId: g.id, lineGroupId: g.lineGroupId, weekday: s.weeklySummaryWeekday,
+        time: s.weeklySummaryTime, lastSentOn: s.weeklySummaryLastSentOn,
+      }))
+  }
+
+  async claimWeeklySummary(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+    this.fault('claimWeeklySummary')
+    if (!this.hasGroup(groupId)) return { claimed: false }
+    const s = this.scheduleOf(groupId)
+    if (s.weeklySummaryLastSentOn !== null && s.weeklySummaryLastSentOn >= todayBkk) return { claimed: false }
+    s.weeklySummaryLastSentOn = todayBkk
+    return { claimed: true }
+  }
+
+  async releaseWeeklySummary(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+    this.fault('releaseWeeklySummary')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.weeklySummaryLastSentOn === todayBkk) s.weeklySummaryLastSentOn = previous
+  }
+
+  async countTasksByStatus(groupId: string): Promise<TaskCounts> {
+    this.fault('countTasksByStatus')
+    const live = this.liveTasksOf(groupId)
+    return {
+      done: live.filter((t) => t.status === 'done').length,
+      inProcess: live.filter((t) => t.status === 'in_process').length,
+      awaitingOwner: live.filter((t) => t.status === 'not_assigned').length,
+    }
+  }
+
+  /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */
+  async listUnownedTasks(groupId: string, limit: number): Promise<UnownedTask[]> {
+    this.fault('listUnownedTasks')
+    return this.liveTasksOf(groupId)
+      .filter((t) => t.status === 'not_assigned')
+      .slice(0, limit)
+      .map((t) => ({ id: t.id, title: t.title, dueAt: t.dueAt }))
+  }
+
+  async saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }> {
+    this.fault('saveWeeklyInsight')
+    if (this.tables.weekly_insights.some((w) => w.groupId === i.groupId && w.weekStart === i.weekStart)) {
+      return { inserted: false }
+    }
+    fk(this.hasGroup(i.groupId), 'weekly_insights.group_id')
+    this.tables.weekly_insights.push({ ...i, counts: { ...i.counts }, id: randomUUID(), postedAt: null })
+    return { inserted: true }
+  }
+
+  async hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean> {
+    this.fault('hasWeeklyInsight')
+    return this.tables.weekly_insights.some((w) => w.groupId === groupId && w.weekStart === weekStart)
+  }
+
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
+  /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
+  seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {
+    Object.assign(this.scheduleOf(groupId), partial)
+  }
+
   seedGroup(partial: Partial<GroupRow> = {}): GroupRow {
     const row: GroupRow = {
       id: randomUUID(), lineGroupId: 'Cgroup1', projectId: null, name: null,
       nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
-      featureSummarize: true, featureDraftTasks: true, workDescription: null,
+      featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
       ...partial,
     }
     unique(this.tables.groups.some((g) => g.id === row.id), 'groups.id')
@@ -465,8 +739,9 @@ export class FakeStore implements StorePort {
     fk(this.hasGroup(partial.groupId), 'tasks.group_id')
     const row: TaskRecord = {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
-      assigneeLineUserId: null, dueAt: null, deletedAt: null,
-      lastEditedByLineUserId: null, lastActivityAt: null,
+      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null,
+      lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
+      announcePendingToken: null, announcePendingAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,
     }
     unique(row.candidateId !== null && this.tables.tasks.some((t) => t.candidateId === row.candidateId), 'tasks.candidate_id')

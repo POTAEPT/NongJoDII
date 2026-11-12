@@ -9,6 +9,7 @@ export type DbGroup = {
   id: string; line_group_id: string; project_id: string | null; name: string | null
   nominated_owner_line_user_id: string | null; owner_confirmed_at: Ts | null
   feature_summarize: boolean; feature_draft_tasks: boolean; work_description: string | null
+  feature_track_remind: boolean
 }
 export type DbMessage = {
   id: string; sender_line_user_id: string | null; text: string; sent_at: Ts; line_users: NameEmbed
@@ -22,7 +23,7 @@ export type DbCandidate = {
 export type DbTask = {
   id: string; group_id: string; candidate_id: string | null; title: string; details: string | null
   status: TaskStatus; assignee_line_user_id: string | null; created_by_line_user_id: string
-  due_at: Ts | null; deleted_at: Ts | null; groups: { line_group_id: string }
+  due_at: Ts | null; deleted_at: Ts | null; announced_at?: Ts | null; groups: { line_group_id: string }
 }
 
 export function toDate(ts: Ts): Date
@@ -36,7 +37,7 @@ export function toGroupRow(r: DbGroup): GroupRow {
     id: r.id, lineGroupId: r.line_group_id, projectId: r.project_id, name: r.name,
     nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
     featureSummarize: r.feature_summarize, featureDraftTasks: r.feature_draft_tasks,
-    workDescription: r.work_description,
+    workDescription: r.work_description, featureTrackRemind: r.feature_track_remind,
   }
 }
 
@@ -66,5 +67,6 @@ export function toTaskRow(r: DbTask): TaskRow {
     id: r.id, groupId: r.group_id, lineGroupId: r.groups.line_group_id, candidateId: r.candidate_id,
     title: r.title, details: r.details, status: r.status, assigneeLineUserId: r.assignee_line_user_id,
     createdByLineUserId: r.created_by_line_user_id, dueAt: toDate(r.due_at), deletedAt: toDate(r.deleted_at),
+    announcedAt: toDate(r.announced_at ?? null),
   }
 }

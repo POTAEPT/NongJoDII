@@ -169,3 +169,16 @@ describe('LineHttpClient.getMessageQuota', () => {
     await expect(quotaFetch({}, {}, 500).getMessageQuota()).rejects.toThrow('line quota 500')
   })
 })
+
+describe('LineHttpClient.push retry key', () => {
+  it('sends X-Line-Retry-Key and treats 409 (already accepted) as success', async () => {
+    const { client, calls } = stubFetch(409)
+    await client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })
+    expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBe('k-1')
+  })
+
+  it('a 409 without a retry key is still an error', async () => {
+    const { client } = stubFetch(409)
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }])).rejects.toThrow('line push 409')
+  })
+})

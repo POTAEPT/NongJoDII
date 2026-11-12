@@ -18,8 +18,9 @@ export type Decision =
 
 export type SubmitResult = {
   results: { candidateId: string; outcome: 'created' | 'declined' | 'already_decided'; taskId?: string }[]
-  /** The "Tasks created" message for the group; null when this submit created none. */
-  feedback: { text: string } | null
+  /** The "Tasks created" message for this requester's Tasks from this Summary that the
+   *  group has not been told about yet; null when there are none. */
+  feedback: { text: string; taskIds: string[] } | null
 }
 
 export type NotifyResult = { posted: true } | { posted: false; reason: 'already_announced' | 'quota' }

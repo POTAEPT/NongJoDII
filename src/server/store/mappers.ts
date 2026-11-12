@@ -22,7 +22,7 @@ export type DbCandidate = {
 export type DbTask = {
   id: string; group_id: string; candidate_id: string | null; title: string; details: string | null
   status: TaskStatus; assignee_line_user_id: string | null; created_by_line_user_id: string
-  due_at: Ts | null; deleted_at: Ts | null; groups: { line_group_id: string }
+  due_at: Ts | null; deleted_at: Ts | null; announced_at?: Ts | null; groups: { line_group_id: string }
 }
 
 export function toDate(ts: Ts): Date
@@ -66,5 +66,6 @@ export function toTaskRow(r: DbTask): TaskRow {
     id: r.id, groupId: r.group_id, lineGroupId: r.groups.line_group_id, candidateId: r.candidate_id,
     title: r.title, details: r.details, status: r.status, assigneeLineUserId: r.assignee_line_user_id,
     createdByLineUserId: r.created_by_line_user_id, dueAt: toDate(r.due_at), deletedAt: toDate(r.deleted_at),
+    announcedAt: toDate(r.announced_at ?? null),
   }
 }

@@ -105,6 +105,15 @@ describe('Summary command', () => {
     expect(reply).toContain('จาก Pim Sirin เวลา')
   })
 
+  it('a LINE name that looks like a message ref is kept', async () => {
+    const t = setup()
+    t.store.seedMember({ groupId: t.group.id, lineUserId: 'Umsg', displayName: 'msg5' })
+    await seedChat(t)
+    t.respond((ref) => ({ summary: `{${ref('msg5')}} รับทำสไลด์`, tasks: [] }))
+    await t.command()
+    expect(t.store.tables.summaries[0].summaryText).toBe('msg5 รับทำสไลด์')
+  })
+
   it('2. a non-command text makes no AI call and no reply', async () => {
     const t = setup()
     await seedChat(t)

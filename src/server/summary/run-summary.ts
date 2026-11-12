@@ -101,8 +101,9 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     )
   }
   const messageByRef = new Map(prompt.messageRefs.map((r) => [r.ref, r.message]))
-  // The model may still leak a message ref (s14) into text people read: strip it.
-  const readable = (text: string) => stripMessageRefs(substituteMemberRefs(text, nameByRef))
+  // The model may still leak a message ref (msg14) into text people read: strip it
+  // from the model's text first, so a LINE name that looks like a ref is never cut.
+  const readable = (text: string) => substituteMemberRefs(stripMessageRefs(text), nameByRef)
   const summaryText = readable(parsed.summary)
 
   const candidates: NewCandidate[] = []

@@ -5,7 +5,7 @@ export interface LinePort {
   reply(replyToken: string, messages: LineMessage[]): Promise<void>
   /** Push to a LINE group ID. Unlike a reply, a push counts against the monthly
    *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes). */
-  push(to: string, messages: LineMessage[]): Promise<void>
+  push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
   /** null when LINE rejects the ID token. */
@@ -75,6 +75,7 @@ export type TaskRow = {
   id: string; groupId: string; lineGroupId: string; candidateId: string | null; title: string
   details: string | null; status: TaskStatus; assigneeLineUserId: string | null
   createdByLineUserId: string; dueAt: Date | null; deletedAt: Date | null
+  announcedAt: Date | null   // when the group was told about it (null = not yet)
 }
 export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
@@ -88,7 +89,11 @@ export type NewAiUsage = {
 /** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
-export type NewPushLog = { purpose: 'task_created'; lineTargetId: string; messageCount: number; sentAt: Date }
+export type PushBudgetClaim = {
+  purpose: 'task_created'; lineTargetId: string; messageCount: number
+  lineUsed: number   // LINE's figure for this month
+  allowed: number    // most the month may reach with this push
+}
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -125,7 +130,13 @@ export interface StorePort {
   claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]>
   /** Clears announced_at again after the announcement failed. */
   releaseTaskAnnouncements(taskIds: string[]): Promise<void>
-  recordPush(p: NewPushLog): Promise<void>
+  /** rpc claim_push_budget: serialized; counts recent push_log rows on top of
+   *  lineUsed and inserts this push's row when the total stays within `allowed`.
+   *  null = no budget, nothing inserted. */
+  claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }>
+  /** Deletes a claimed push_log row after the push failed. */
+  releasePushBudget(pushLogId: string): Promise<void>
+  listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]>
   // #5 / #6 usage
   /** Serialized per Owner: sums the Owner's Bangkok month (open claims included) and, when it is
    *  below the cap in tokens and dollars, inserts an open claim row holding the estimate `u`.

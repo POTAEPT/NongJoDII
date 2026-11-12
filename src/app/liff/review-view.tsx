@@ -47,24 +47,29 @@ const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
 
 /** Tells the group which Tasks were created: first as the member's own message from
  *  this LIFF page (free), else by asking the server to push it (counts against the
- *  LINE quota). sendMessages posts to whichever chat opened the page, so it is used
- *  only when that chat is a group (the Summary link lives there); it also needs the
- *  chat_message.write scope. Anywhere else the push takes over. */
+ *  LINE quota). sendMessages posts to whichever chat opened the page, and LIFF no
+ *  longer exposes a group ID to check it against the Summary's group, so the member
+ *  confirms the chat first; the bot's push always goes to the right group. */
 async function announce(
-  liff: LiffViewProps['liff'], idToken: string, summaryId: string, result: SubmitResult,
+  liff: LiffViewProps['liff'], idToken: string, summaryId: string,
+  feedback: NonNullable<SubmitResult['feedback']>, allowSelf: boolean,
 ): Promise<Exclude<Announce, 'idle' | 'working'>> {
-  if (!result.feedback) return 'posted'
-  try {
-    if (liff.isInClient() && liff.getContext()?.type === 'group' && liff.isApiAvailable('sendMessages')) {
-      await liff.sendMessages([{ type: 'text', text: result.feedback.text }])
+  const { text, taskIds } = feedback
+  if (
+    allowSelf && liff.isInClient() && liff.getContext()?.type === 'group' && liff.isApiAvailable('sendMessages') &&
+    window.confirm('แจ้งงานที่สร้างในแชทกลุ่มนี้? (ต้องเป็นกลุ่มเดียวกับที่สรุปแชท) กด "ยกเลิก" ให้น้องจดดีแจ้งแทน')
+  ) {
+    try {
+      await liff.sendMessages([{ type: 'text', text }])
+      // Mark them announced, so a later submit does not offer them again.
+      await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'self' }).catch(() => undefined)
       return 'posted'
+    } catch {
+      // Not granted: fall back to the bot's push.
     }
-  } catch {
-    // Not granted or not opened from a chat: fall back to the bot's push.
   }
-  const taskIds = result.results.flatMap((r) => (r.outcome === 'created' && r.taskId ? [r.taskId] : []))
   try {
-    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds })
+    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'push' })
     if (status !== 200) return 'failed'
     const n = json as NotifyResult
     return n.posted || n.reason === 'already_announced' ? 'posted' : 'quota'
@@ -126,9 +131,10 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
         else {
           const result = json as SubmitResult
           setDone(result)
-          if (result.feedback && id) {
+          const feedback = result.feedback
+          if (feedback && id) {
             setAnnounced('working')
-            void announce(liff, idToken, id, result).then(setAnnounced)
+            void announce(liff, idToken, id, feedback, true).then(setAnnounced)
           }
         }
       } catch {
@@ -185,6 +191,21 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
         )}
         <p className="mt-3">ไม่สร้าง {declined} งาน</p>
         {announced !== 'idle' && <p className="mt-2 text-sm opacity-80">{ANNOUNCE_COPY[announced]}</p>}
+        {announced === 'failed' && done.feedback && id && (
+          <button
+            type="button"
+            className="mt-2 rounded border px-4 py-2"
+            onClick={() => {
+              const feedback = done.feedback
+              if (!feedback) return
+              setAnnounced('working')
+              // Only the notification is retried; the Tasks are already saved.
+              void announce(liff, idToken, id, feedback, false).then(setAnnounced)
+            }}
+          >
+            ลองแจ้งในกลุ่มอีกครั้ง
+          </button>
+        )}
         <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
           ปิด
         </button>

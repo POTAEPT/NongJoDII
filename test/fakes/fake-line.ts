@@ -31,9 +31,21 @@ export class FakeLine implements LinePort {
     if (this.failReply) throw new AdapterError('line reply 500')
   }
 
-  async push(to: string, messages: LineMessage[]): Promise<void> {
+  /** Retry keys LINE has accepted: a repeat is a no-op success (LINE answers 409). */
+  acceptedRetryKeys = new Set<string>()
+  /** Pushes LINE actually delivered (a repeat of an accepted retry key is not one). */
+  delivered: { to: string; messages: LineMessage[]; retryKey?: string }[] = []
+  /** LINE accepts and delivers the push, then the answer is lost (a timeout). */
+  timeoutAfterAccept = false
+
+  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
     this.pushes.push({ to, messages })
     if (this.failPush) throw new AdapterError('line push 500')
+    const key = opts?.retryKey
+    if (key !== undefined && this.acceptedRetryKeys.has(key)) return
+    if (key !== undefined) this.acceptedRetryKeys.add(key)
+    this.delivered.push({ to, messages, retryKey: key })
+    if (this.timeoutAfterAccept) throw new AdapterError('line timeout')
   }
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {

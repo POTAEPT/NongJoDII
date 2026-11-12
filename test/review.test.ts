@@ -78,7 +78,8 @@ async function setup() {
     candidateId, action: 'confirm', title: 'ทำสไลด์', details: null, assigneeLineUserId: 'Upim', dueAt: null, ...p,
   })
   const decline = (candidateId: string) => ({ candidateId, action: 'decline' })
-  const notify = async (taskIds: unknown, idToken = 'tok-pim') => notifyReview(h.deps, { idToken, summaryId, taskIds })
+  const notify = async (taskIds: unknown, idToken = 'tok-pim', mode?: string) =>
+    notifyReview(h.deps, { idToken, summaryId, taskIds, ...(mode ? { mode } : {}) })
   return { ...h, group, summaryId, c1, c2, candidate, submit, confirm, decline, send, notify }
 }
 
@@ -329,12 +330,29 @@ describe('Tasks created feedback', () => {
     )
   })
 
-  it('17b. no feedback when the submit created no Task', async () => {
+  it('17b. no feedback when nothing is waiting to be announced', async () => {
     const t = await setup()
     expect((await t.submit([t.decline(t.c1)])).body).toMatchObject({ feedback: null })
-    await t.submit([t.confirm(t.c2)])
-    // Resubmitting a confirmed candidate creates nothing new.
+  })
+
+  it('17d. a retry after a lost response still carries the unannounced Tasks', async () => {
+    const t = await setup()
+    const first = (await t.submit([t.confirm(t.c2)])).body as SubmitResult
+    const retry = (await t.submit([t.confirm(t.c2)])).body as SubmitResult
+    expect(results(retry)[0].outcome).toBe('already_decided')
+    expect(retry.feedback).toEqual(first.feedback)
+    // Once announced, a resubmit offers nothing.
+    await t.notify(first.feedback!.taskIds)
     expect((await t.submit([t.confirm(t.c2)])).body).toMatchObject({ feedback: null })
+  })
+
+  it('17e. Tasks the page posted itself (mode self) are marked without a push', async () => {
+    const t = await setup()
+    const { feedback } = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
+    expect((await t.notify(feedback!.taskIds, 'tok-pim', 'self')).body).toEqual({ posted: true })
+    expect(t.line.pushes).toHaveLength(0)
+    expect((await t.notify(feedback!.taskIds)).body).toEqual({ posted: false, reason: 'already_announced' })
+    expect((await t.notify(feedback!.taskIds, 'tok-pim', 'loud')).status).toBe(400)
   })
 
   it('17c. a failed name lookup still returns 200 with the saved Tasks', async () => {
@@ -355,7 +373,7 @@ describe('Tasks created feedback', () => {
     expect(t.line.pushes[0].messages[0]).toMatchObject({ type: 'text', text: expect.stringContaining('1. ทำสไลด์') })
     const live = (await t.store.listLiveMembers(t.group.id)).length
     expect(t.store.tables.push_log).toEqual([
-      { purpose: 'task_created', lineTargetId: t.group.lineGroupId, messageCount: live, sentAt: expect.any(Date) },
+      { id: expect.any(String), purpose: 'task_created', lineTargetId: t.group.lineGroupId, messageCount: live, sentAt: expect.any(Date) },
     ])
     // A second call (double tap, retry) never pushes the same Tasks again.
     expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'already_announced' })
@@ -371,6 +389,16 @@ describe('Tasks created feedback', () => {
     expect(t.store.tables.push_log).toHaveLength(0)
     t.line.quota = { limit: 300, used: 0 }
     expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
+  it('19c. two announces at once cannot together spend the reserve', async () => {
+    const t = await setup()
+    const [a, b] = [t.c1, t.c2]
+    const ids = createdIds((await t.submit([t.confirm(a), t.confirm(b, { title: 'จองห้อง' })])).body)
+    // allowed = 270; each push counts 3. LINE still reports 265 after the first push.
+    t.line.quota = { limit: 300, used: 265 }
+    expect((await t.notify([ids[0]])).body).toEqual({ posted: true })
+    expect((await t.notify([ids[1]])).body).toEqual({ posted: false, reason: 'quota' })
   })
 
   it('19b. a plan without a limit always pushes', async () => {
@@ -389,6 +417,16 @@ describe('Tasks created feedback', () => {
     t.line.failPush = false
     expect((await t.notify(ids)).body).toEqual({ posted: true })
     expect(t.line.pushes).toHaveLength(2) // the failed attempt and the retry
+  })
+
+  it('20b. a push LINE accepted before the answer was lost is not sent twice', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.timeoutAfterAccept = true
+    expect((await t.notify(ids)).status).toBe(502)
+    t.line.timeoutAfterAccept = false
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.delivered).toHaveLength(1)
   })
 
   it('21. only the confirmer can announce Tasks of this Summary', async () => {

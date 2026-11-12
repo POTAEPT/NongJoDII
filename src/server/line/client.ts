@@ -40,12 +40,17 @@ export class LineHttpClient implements LinePort {
     if (!res.ok) throw new AdapterError(`line reply ${res.status}`)
   }
 
-  async push(to: string, messages: LineMessage[]): Promise<void> {
+  /** With a retry key, LINE accepts the push at most once per key (24 h): a repeat
+   *  answers 409, which means it was already sent, so it counts as success. */
+  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
+    if (opts?.retryKey) headers['X-Line-Retry-Key'] = opts.retryKey
     const res = await this.fetchImpl(`${API}/v2/bot/message/push`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ to, messages }),
     })
+    if (res.status === 409 && opts?.retryKey) return
     if (!res.ok) throw new AdapterError(`line push ${res.status}`)
   }
 

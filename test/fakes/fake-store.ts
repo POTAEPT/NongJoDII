@@ -11,10 +11,10 @@ import type {
   NewCandidate,
   NewGoogleAccount,
   NewMessage,
-  NewPushLog,
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  PushBudgetClaim,
   StorePort,
   StoredMessage,
   SummaryRow,
@@ -39,8 +39,9 @@ export type CandidateRecord = CandidateRow & {
   decidedByLineUserId: string | null; decidedAt: Date | null; createdAt: Date
 }
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
-  lastEditedByLineUserId: string | null; lastActivityAt: Date | null; announcedAt?: Date | null
+  lastEditedByLineUserId: string | null; lastActivityAt: Date | null
 }
+export type PushLogRecord = { id: string; purpose: string; lineTargetId: string; messageCount: number; sentAt: Date }
 export type AiUsageRecord = NewAiUsage & { id: string; settledAt: Date | null } // settledAt null = open claim
 export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }
 export type GoogleAccountRecord = {
@@ -57,7 +58,7 @@ export type FakeTables = {
   summaries: SummaryRecord[]
   task_candidates: CandidateRecord[]
   tasks: TaskRecord[]
-  push_log: NewPushLog[]
+  push_log: PushLogRecord[]
   ai_usage: AiUsageRecord[]
   fair_use_notices: FairUseNoticeRecord[]
   google_accounts: GoogleAccountRecord[]
@@ -302,7 +303,7 @@ export class FakeStore implements StorePort {
     if (!taskId) {
       taskId = randomUUID()
       this.tables.tasks.push({
-        ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null,
+        ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null, announcedAt: null,
       })
     }
     if (c.state === 'proposed') {
@@ -324,7 +325,7 @@ export class FakeStore implements StorePort {
     return {
       id: t.id, groupId: t.groupId, lineGroupId: this.groupOf(t.groupId).lineGroupId, candidateId: t.candidateId,
       title: t.title, details: t.details, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
-      createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt,
+      createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt, announcedAt: t.announcedAt,
     }
   }
 
@@ -346,9 +347,32 @@ export class FakeStore implements StorePort {
     for (const t of this.tables.tasks) if (taskIds.includes(t.id)) t.announcedAt = null
   }
 
-  async recordPush(p: NewPushLog): Promise<void> {
-    this.fault('recordPush')
-    this.tables.push_log.push({ ...p })
+  /** Clock for push_log rows (the database uses now()); tests may move it. */
+  pushClock: () => Date = () => new Date()
+
+  // Mirrors claim_push_budget: rows of the last 10 minutes count on top of lineUsed.
+  async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {
+    this.fault('claimPushBudget')
+    const now = this.pushClock()
+    const recent = this.tables.push_log
+      .filter((p) => p.sentAt.getTime() > now.getTime() - 10 * 60_000)
+      .reduce((sum, p) => sum + p.messageCount, 0)
+    if (c.lineUsed + recent + c.messageCount > c.allowed) return { pushLogId: null }
+    const id = randomUUID()
+    this.tables.push_log.push({ id, purpose: c.purpose, lineTargetId: c.lineTargetId, messageCount: c.messageCount, sentAt: now })
+    return { pushLogId: id }
+  }
+
+  async releasePushBudget(pushLogId: string): Promise<void> {
+    this.fault('releasePushBudget')
+    this.tables.push_log = this.tables.push_log.filter((p) => p.id !== pushLogId)
+  }
+
+  async listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]> {
+    this.fault('listTasksByCandidates')
+    return this.tables.tasks
+      .filter((t) => t.candidateId !== null && candidateIds.includes(t.candidateId))
+      .map((t) => this.toTaskRow(t))
   }
 
   async updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> {
@@ -485,7 +509,7 @@ export class FakeStore implements StorePort {
     fk(this.hasGroup(partial.groupId), 'tasks.group_id')
     const row: TaskRecord = {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
-      assigneeLineUserId: null, dueAt: null, deletedAt: null,
+      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null,
       lastEditedByLineUserId: null, lastActivityAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,
     }

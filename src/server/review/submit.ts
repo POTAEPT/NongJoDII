@@ -51,7 +51,6 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
 
   const now = deps.now()
   const results: SubmitResult['results'] = []
-  const created: { assigneeLineUserId: string | null; task: Omit<CreatedTask, 'assigneeName'> }[] = []
   for (const p of plan) {
     if (p.action === 'decline') {
       // D30: a decline is final; only a proposed candidate can be declined.
@@ -66,32 +65,43 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
       status: statusFor(p.fields.assigneeLineUserId, null), createdByLineUserId: requester,
     }, now)
     results.push(taskId ? { candidateId: p.candidateId, outcome, taskId } : { candidateId: p.candidateId, outcome })
-    if (outcome === 'created') {
-      const { title, assigneeLineUserId, dueAt } = p.fields
-      created.push({ assigneeLineUserId, task: { title, assigned: assigneeLineUserId !== null, dueAt } })
-    }
   }
   log('review_submitted', {
     summaryId: summary.id,
     created: results.filter((r) => r.outcome === 'created').length,
     declined: results.filter((r) => r.outcome === 'declined').length,
   })
-  let feedback: SubmitResult['feedback'] = null
-  if (created.length > 0) {
-    // The Tasks are saved: a failed name lookup must not turn this into an error,
-    // or the retry finds nothing new and the group is never told.
-    let names = new Map<string, string | null>()
-    try {
-      names = new Map((await deps.store.listLiveMembers(summary.groupId)).map((m) => [m.lineUserId, m.displayName]))
-    } catch (err) {
-      logError('review_feedback_names_failed', { summaryId: summary.id }, err)
-    }
-    feedback = {
-      text: buildTaskFeedback(created.map((c) => ({
-        ...c.task, assigneeName: c.assigneeLineUserId ? (names.get(c.assigneeLineUserId) ?? null) : null,
-      }))),
-    }
-  }
+  const feedback = await pendingFeedback(deps, summary.groupId, summary.id, [...candidates.keys()], requester)
   const result: SubmitResult = { results, feedback }
   return { status: 200, body: result }
+}
+
+/** The "Tasks created" message for every Task this requester created from this
+ *  Summary that the group has not been told about yet, so a retry after a lost
+ *  response still announces them. The Tasks are saved by now: a failed lookup
+ *  gives no message instead of an error. */
+async function pendingFeedback(
+  deps: Deps, groupId: string, summaryId: string, candidateIds: string[], requester: string,
+): Promise<SubmitResult['feedback']> {
+  try {
+    const tasks = (await deps.store.listTasksByCandidates(candidateIds))
+      .filter((t) => t.createdByLineUserId === requester && t.deletedAt === null && t.announcedAt === null)
+    if (tasks.length === 0) return null
+    const order = new Map(candidateIds.map((id, i) => [id, i]))
+    tasks.sort((a, b) => (order.get(a.candidateId ?? '') ?? 0) - (order.get(b.candidateId ?? '') ?? 0))
+    let names = new Map<string, string | null>()
+    try {
+      names = new Map((await deps.store.listLiveMembers(groupId)).map((m) => [m.lineUserId, m.displayName]))
+    } catch (err) {
+      logError('review_feedback_names_failed', { summaryId }, err)
+    }
+    const created: CreatedTask[] = tasks.map((t) => ({
+      title: t.title, assigned: t.assigneeLineUserId !== null, dueAt: t.dueAt,
+      assigneeName: t.assigneeLineUserId ? (names.get(t.assigneeLineUserId) ?? null) : null,
+    }))
+    return { text: buildTaskFeedback(created), taskIds: tasks.map((t) => t.id) }
+  } catch (err) {
+    logError('review_feedback_failed', { summaryId }, err)
+    return null
+  }
 }

@@ -1,6 +1,6 @@
 import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
-import { log } from '../log'
+import { log, logError } from '../log'
 import type { Deps, ProgressPromptRow, TaskRow } from '../ports'
 import { PROGRESS_REPLY, pickerCard, resultCard, textMessage } from './card'
 import { canMove } from './decide'
@@ -52,6 +52,21 @@ function loginMessage(liffId: string, data: string): LineMessage {
       text: PROGRESS_REPLY.needsLogin,
       actions: [{ type: 'uri', label: 'ยืนยันตัวตน', uri: liffUrl(liffId, 'progress', data) }],
     },
+  }
+}
+
+/** A picker row: made from the same chat message for the same target, never posted as a card. */
+function isSamePick(p: ProgressPromptRow, messageId: string, target: ProgressPromptRow['targetStatus']): boolean {
+  return p.triggerMessageId === messageId && p.targetStatus === target
+}
+
+/** Removes an unanswered row; a failure here is logged, not thrown, so the caller's
+ *  own outcome or error is what the presser sees. */
+async function withdrawQuietly(deps: Deps, promptId: string, groupId: string): Promise<void> {
+  try {
+    await deps.store.withdrawProgressPrompt(promptId)
+  } catch (err) {
+    logError('progress_withdraw_failed', { groupId, promptId }, err)
   }
 }
 
@@ -113,14 +128,25 @@ export async function resolveProgressAction(
     if (task.status === action.targetStatus) return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
     if (!canMove(task.status, action.targetStatus)) return say('gone', PROGRESS_REPLY.taskGone)
     // The pick is the person's answer: a card row records it, answered at once.
-    const { prompt } = await store.createProgressPrompt({
+    const { prompt: created } = await store.createProgressPrompt({
       groupId, taskId: task.id, targetStatus: action.targetStatus,
       subjectLineUserId: msg.senderLineUserId, triggerMessageId: msg.id, askedAt: now,
     })
+    // The Task already has an open row. If it is this same pick left by an earlier attempt
+    // that failed before it could be answered or withdrawn, reuse it; a real card stays put.
+    const open = created ? null : await store.findOpenProgressPrompt(task.id)
+    const prompt = created ?? (open && isSamePick(open, msg.id, action.targetStatus) ? open : null)
     if (!prompt) return say('already_answered', PROGRESS_REPLY.openCardExists)
-    const outcome = await applyYes(prompt, task)
-    // Not applied: remove the row, so it cannot block the next card for this Task.
-    if (outcome.result !== 'updated') await store.withdrawProgressPrompt(prompt.id)
+
+    let outcome: ProgressOutcome
+    try {
+      outcome = await applyYes(prompt, task)
+    } catch (err) {
+      // Not applied: remove the row we made (best effort), so it cannot block a retry.
+      if (created) await withdrawQuietly(deps, created.id, groupId)
+      throw err
+    }
+    if (outcome.result !== 'updated' && created) await withdrawQuietly(deps, created.id, groupId)
     return outcome
   }
 
@@ -131,7 +157,10 @@ export async function resolveProgressAction(
   if (!task) return say('gone', PROGRESS_REPLY.taskGone)
   const refused = refusal(task, prompt.subjectLineUserId)
   if (refused) return refused
-  if (prompt.answer !== null) return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
+  // "ผิดงาน" on a card already closed with No only shows the picker again (no write), so
+  // a reopened LIFF link or a second press can still finish choosing the right Task.
+  const reopenPicker = action.kind === 'wrong_task' && prompt.answer === 'no'
+  if (prompt.answer !== null && !reopenPicker) return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
 
   if (action.kind === 'answer' && action.answer === 'yes') {
     if (task.deletedAt || !canMove(task.status, prompt.targetStatus)) return say('gone', PROGRESS_REPLY.taskGone)
@@ -139,8 +168,10 @@ export async function resolveProgressAction(
   }
 
   // No, or "ผิดงาน": close the card; the Task is not touched.
-  if (!(await store.answerProgressPrompt(prompt.id, 'no', userId, now)).updated) {
-    return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
+  if (!reopenPicker && !(await store.answerProgressPrompt(prompt.id, 'no', userId, now)).updated) {
+    // Someone answered in between. A No there still lets "ผิดงาน" show the picker.
+    const latest = await store.getProgressPrompt(prompt.id)
+    if (action.kind === 'answer' || latest?.answer !== 'no') return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
   }
   if (action.kind === 'answer') return say('kept', PROGRESS_REPLY.keptAsIs)
 

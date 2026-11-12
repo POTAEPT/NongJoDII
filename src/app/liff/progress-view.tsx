@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProgressLiffBody } from '@/server/progress/liff'
 import type { LiffViewProps } from './liff-sdk'
+import { finishSend, initialPage, startSend, type ProgressPage, type SendResult } from './progress-model'
 
 // #7: opened from the bot's "ยืนยันตัวตน" button when LINE sent a card press without the
 // presser's user ID. `id` is that press's postback data (IDs only). The page repeats the
-// press with the verified LIFF ID token and shows the answer; a picker shows its choices.
+// press with the verified LIFF ID token and shows the answer; a picker shows its choices,
+// which stay on screen until a pick goes through (progress-model.ts).
 
 const ERR_401 = 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
 const ERR_403 = 'คุณไม่ได้อยู่ในกลุ่มนี้ จึงตอบการ์ดนี้ไม่ได้'
@@ -20,31 +22,34 @@ function errorCopy(status: number): string {
   return ERR_OTHER
 }
 
-type State = { kind: 'sending' } | { kind: 'error'; message: string } | { kind: 'done'; body: ProgressLiffBody }
-
 export function ProgressView({ idToken, id, liff }: LiffViewProps) {
-  const [state, setState] = useState<State>({ kind: 'sending' })
+  const [page, setPage] = useState<ProgressPage>(initialPage)
   const started = useRef(false)
   const inFlight = useRef(false) // blocks a double press before state re-renders
 
   const send = useCallback(async (data: string | null) => {
     if (inFlight.current) return
-    if (!data) return setState({ kind: 'error', message: ERR_404 })
     inFlight.current = true
-    setState({ kind: 'sending' })
-    try {
-      const res = await fetch('/api/progress/answer', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ idToken, data }),
-      })
-      if (res.status !== 200) return setState({ kind: 'error', message: errorCopy(res.status) })
-      setState({ kind: 'done', body: (await res.json()) as ProgressLiffBody })
-    } catch {
-      setState({ kind: 'error', message: ERR_OTHER })
-    } finally {
-      inFlight.current = false
+    setPage(startSend)
+    let res: SendResult
+    if (!data) {
+      res = { ok: false, message: ERR_404 }
+    } else {
+      try {
+        const r = await fetch('/api/progress/answer', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ idToken, data }),
+        })
+        res = r.status === 200
+          ? { ok: true, body: (await r.json()) as ProgressLiffBody }
+          : { ok: false, message: errorCopy(r.status) }
+      } catch {
+        res = { ok: false, message: ERR_OTHER }
+      }
     }
+    inFlight.current = false
+    setPage((p) => finishSend(p, res))
   }, [idToken])
 
   useEffect(() => {
@@ -53,18 +58,21 @@ export function ProgressView({ idToken, id, liff }: LiffViewProps) {
     void send(id)
   }, [send, id])
 
-  if (state.kind === 'sending') return <p className="p-4 text-base">กำลังบันทึก...</p>
-  if (state.kind === 'error') return <p className="p-4 text-base">{state.message}</p>
+  if (page.fatal) return <p className="p-4 text-base">{page.fatal}</p>
+  if (!page.body) return <p className="p-4 text-base">กำลังบันทึก...</p>
 
-  const { text, choices } = state.body
+  const { text, choices } = page.body
   return (
     <main className="flex flex-col gap-3 p-4">
       <p className="text-base">{text}</p>
+      {page.notice && <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{page.notice}</p>}
+      {page.sending && <p className="text-sm text-gray-500">กำลังบันทึก...</p>}
       {choices.map((c) => (
         <button
           key={c.data}
           type="button"
-          className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-base text-blue-900"
+          disabled={page.sending}
+          className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-base text-blue-900 disabled:opacity-50"
           onClick={() => void send(c.data)}
         >
           {c.label}

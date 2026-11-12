@@ -318,6 +318,89 @@ describe('answers', () => {
     expect((await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: 'a=pg&p=not-a-uuid&v=y' })).status).toBe(400)
   })
 
+  it('reopening the LIFF link of "ผิดงาน" shows the picker again, and a pick there finishes', async () => {
+    const t = setup()
+    const b = await askDone(t)
+    const wrong = b['ผิดงาน · เลือกงานอื่น']
+    t.line.idTokens.set('tok-biw', { lineUserId: BIW, displayName: 'บิว' })
+
+    const first = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: wrong })
+    expect(first.body).toMatchObject({ result: 'picker' })
+    expect(t.store.tables.task_prompts[0].answer).toBe('no')
+
+    // The pick failed on the client side, so the person reopens the same link.
+    const again = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: wrong })
+    expect(again.body).toMatchObject({ result: 'picker' })
+    const choices = (again.body as { choices: { label: string; data: string }[] }).choices
+    expect(choices.map((c) => c.label)).toContain('ทำโลโก้')
+
+    const logo = choices.find((c) => c.label === 'ทำโลโก้')!
+    const done = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: logo.data })
+    expect(done.body).toMatchObject({ result: 'updated' })
+    expect(t.task(t.logo.id).status).toBe('done')
+    expect(t.task(t.slides.id).status).toBe('in_process')
+  })
+
+  it('a second "ผิดงาน" press in the chat shows the picker again; after a Yes it does not', async () => {
+    const t = setup()
+    const b = await askDone(t)
+    await t.press(BIW, b['ผิดงาน · เลือกงานอื่น'], 'ev-w1')
+    await t.press(BIW, b['ผิดงาน · เลือกงานอื่น'], 'ev-w2')
+    expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
+    expect(t.store.tables.task_prompts).toHaveLength(1)
+
+    const t2 = setup()
+    const b2 = await askDone(t2)
+    await t2.press(BIW, b2['ใช่ เสร็จแล้ว'], 'ev-y')
+    await t2.press(BIW, b2['ผิดงาน · เลือกงานอื่น'], 'ev-w')
+    expect(json(lastReply(t2))).toContain('มีคนตอบไปแล้ว')
+  })
+
+  it('a pick whose write fails can be pressed again', async () => {
+    const t = setup()
+    t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t.say(TON, 'สไลด์เสร็จแล้วนะ')
+    const pick = buttons(lastReply(t))['ทำสไลด์ปัญหา']
+
+    t.store.failNext('confirmProgressYes')
+    await t.press(TON, pick, 'ev-p1')
+    expect(t.task(t.problem.id).status).toBe('in_process')
+    expect(t.store.tables.task_prompts).toHaveLength(0) // the unanswered row was withdrawn
+
+    await t.press(TON, pick, 'ev-p2')
+    expect(t.task(t.problem.id).status).toBe('done')
+    expect(json(lastReply(t))).toContain('“ทำสไลด์ปัญหา” เสร็จแล้ว')
+  })
+
+  it('a pick retried after both the write and the clean-up failed reuses its row', async () => {
+    const t = setup()
+    t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t.say(TON, 'สไลด์เสร็จแล้วนะ')
+    const pick = buttons(lastReply(t))['ทำสไลด์ปัญหา']
+
+    t.store.failNext('confirmProgressYes')
+    t.store.failNext('withdrawProgressPrompt')
+    await t.press(TON, pick, 'ev-p1')
+    expect(t.store.tables.task_prompts).toHaveLength(1)
+    expect(t.store.tables.task_prompts[0].answer).toBeNull()
+
+    await t.press(TON, pick, 'ev-p2')
+    expect(t.task(t.problem.id).status).toBe('done')
+    expect(t.store.tables.task_prompts).toHaveLength(1)
+    expect(t.store.tables.task_prompts[0]).toMatchObject({ answer: 'yes', answeredByLineUserId: TON })
+  })
+
+  it('a pick does not take over a real card that is still open for the Task', async () => {
+    const t = setup()
+    t.answer({ kind: 'match', task: 3, status: 'done' })
+    await t.say(TON, 'สไลด์ปัญหาเสร็จแล้ว')               // real card for Task 3
+    t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t.say(TON, 'อีกอันก็เสร็จแล้ว')
+    await t.press(TON, buttons(lastReply(t))['ทำสไลด์ปัญหา'])
+    expect(json(lastReply(t))).toContain('มีการ์ดถามงานนี้อยู่แล้ว')
+    expect(t.task(t.problem.id).status).toBe('in_process')
+  })
+
   it('a failed write on Yes leaves the card usable', async () => {
     const t = setup()
     const b = await askDone(t)

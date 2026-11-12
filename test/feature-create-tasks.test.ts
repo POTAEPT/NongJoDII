@@ -111,7 +111,10 @@ describe('#5.1 both phrases trigger the Summary', () => {
     expect(t.store.tables.summaries).toHaveLength(2)
     expect(t.llm.requests).toHaveLength(2)
     // FakeLine.replies also records failed replies; none fail here.
+    expect(t.line.failReply).toBe(false)
     expect(t.line.replies).toHaveLength(2)
+    expect(t.line.replies[0].replyToken).not.toBe(t.line.replies[1].replyToken)
+    for (const r of t.line.replies) expect(textOf(r.messages)).toContain('Pim Sirin รับทำสไลด์')
     expect(t.store.tables.tasks).toHaveLength(0)
   })
 })
@@ -124,6 +127,11 @@ describe('#5.2 candidates carry sender and time context', () => {
     const sentAt = new Date(T0 + MIN)
     expect(text).toContain(`จาก Bank T. เวลา ${formatThaiShort(sentAt)}`)
     expect(text).toContain('จาก Bank T. เวลา 12 พ.ย. 09:01')
+    // Only the first candidate has a source; the other two lines carry no จาก.
+    expect(text.match(/จาก/g)).toHaveLength(1)
+    const noSource = text.split('\n').filter((l) => /^\d+\. (จองห้อง|ซื้อของ)/.test(l))
+    expect(noSource).toHaveLength(2)
+    expect(noSource.every((l) => !l.includes('จาก'))).toBe(true)
   })
 })
 
@@ -131,9 +139,11 @@ describe('#5.3 nicknames match people, screens show LINE names', () => {
   it('prompt has the nickname; reply, candidates and review show only the LINE name', async () => {
     const t = await setup()
     const { summaryId } = await t.summarize()
-    expect(t.llm.requests[0].user).toContain('พิม')
+    expect(t.llm.requests[0].user).toMatch(/^m\d+: LINE name "Pim Sirin"; nicknames: พิม, Pim;/m)
 
-    const text = textOf(t.line.replies[0].messages)
+    const text = t.line.replies[0].messages
+      .map((m) => (m.type === 'text' ? m.text : JSON.stringify(m)))
+      .join('\n')
     expect(text).toContain('Pim Sirin รับทำสไลด์')
     expect(text).toContain('ผู้รับ: Pim Sirin')
     expect(text).not.toContain('พิม')
@@ -168,6 +178,10 @@ describe('#5.4 the form allows several at once', () => {
     expect(results(res.body).map((r) => r.outcome)).toEqual(['created', 'created', 'declined'])
     expect(t.store.tables.tasks).toHaveLength(2)
     expect(t.candidate(c3).state).toBe('declined')
+    expect(t.store.tables.tasks.find((x) => x.candidateId === c2)).toMatchObject({
+      title: 'จองห้องประชุม', assigneeLineUserId: 'Ucarol',
+    })
+    expect(t.store.tables.tasks.find((x) => x.candidateId === c1)).toMatchObject({ title: 'ทำสไลด์', assigneeLineUserId: 'Upim' })
   })
 })
 

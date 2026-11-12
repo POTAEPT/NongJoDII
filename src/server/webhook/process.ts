@@ -1,3 +1,4 @@
+import { sendConnectDriveCard } from '@/server/google/connect-card'
 import { logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
 import type { Job } from './ingest'
@@ -25,6 +26,5 @@ async function processJob(deps: Deps, job: Job): Promise<void> {
     // Task 7: Summary command
     return
   }
-  // user_chat
-  // Task 5: Google connect card
+  await sendConnectDriveCard(deps, job)
 }

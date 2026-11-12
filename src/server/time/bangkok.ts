@@ -30,6 +30,22 @@ export function formatThaiShort(d: Date): string {
   return `${p.d} ${THAI_MONTHS_SHORT[p.m - 1]} ${pad(p.hh)}:${pad(p.mm)}`
 }
 
+/** '16 พ.ย.' */
+export function formatThaiDayMonth(d: Date): string {
+  const p = bangkokParts(d)
+  return `${p.d} ${THAI_MONTHS_SHORT[p.m - 1]}`
+}
+
+/** The Bangkok week starting on `weekStart` ('YYYY-MM-DD', a Monday): '16–22 พ.ย.', or
+ *  '30 พ.ย. – 6 ธ.ค.' when it crosses a month. */
+export function formatThaiWeekRange(weekStart: string): string {
+  const start = new Date(`${weekStart}T00:00:00+07:00`)
+  const end = new Date(start.getTime() + 6 * 86_400_000)
+  const s = bangkokParts(start)
+  const e = bangkokParts(end)
+  return s.m === e.m ? `${s.d}–${e.d} ${THAI_MONTHS_SHORT[e.m - 1]}` : `${formatThaiDayMonth(start)} – ${formatThaiDayMonth(end)}`
+}
+
 /** '1 ธันวาคม 2569' (Buddhist year = y + 543) */
 export function formatThaiDateLong(d: Date): string {
   const p = bangkokParts(d)

@@ -468,4 +468,19 @@ describe('Summary commands in one webhook', () => {
     ])
     expect(t.store.tables.summaries).toHaveLength(1)
   })
+
+  it('a job that throws is logged and the other job still runs', async () => {
+    const t = setup()
+    await seedChat(t)
+    t.respond(() => ({ summary: 'คุยกันทั่วไป', tasks: [] }))
+    // Every reply fails: the Summary logs its own failure, the 1:1 card's reply throws out of its job.
+    t.line.failReply = true
+    await t.send(
+      ev.follow({ userId: 'Ufriend' }),
+      ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', replyToken: 'rt-1', timestamp: T0 + 10 * MIN }),
+    )
+    expect(t.line.replies).toHaveLength(2)
+    expect(t.store.tables.summaries).toHaveLength(1)
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('webhook_job_failed'))
+  })
 })

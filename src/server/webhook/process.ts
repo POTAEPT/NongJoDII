@@ -8,11 +8,13 @@ import type { Job } from './ingest'
 /** Jobs of one webhook that run at the same time.
  *  Time budget: the whole batch runs inside one after() call of the webhook route
  *  (maxDuration 60 s). A job's slowest step is one model call, which the OpenRouter
- *  adapter cuts at 45 s; its store calls and the reply use the rest. Run one after
- *  another, two slow Summaries already pass 60 s, so jobs run together. A job beyond
- *  this limit waits for a free slot and could then run out of time, so the limit sits
- *  above any realistic batch: LINE sends a group's events in small batches, and
- *  commands (the only slow jobs) are rare among them. No queue (rules: Webhook). */
+ *  adapter cuts at 45 s; its store calls, the reply and the sender-name refresh before
+ *  it (one LINE profile call per sender; the LINE client sets no timeout of its own)
+ *  use the rest. Run one after another, two slow Summaries already pass 60 s, so jobs
+ *  run together. A job beyond this limit waits for a free slot and could then run out
+ *  of time, so the limit sits above any realistic batch: LINE sends a group's events
+ *  in small batches, and commands (the only slow jobs) are rare among them.
+ *  No queue (rules: Webhook). */
 export const JOB_CONCURRENCY = 10
 
 export async function processJobs(deps: Deps, jobs: Job[]): Promise<void> {

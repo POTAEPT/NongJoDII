@@ -1,4 +1,4 @@
-import type { ReviewView, Decision } from '@/server/review/types'
+import type { ReviewView, Decision, SubmitResult } from '@/server/review/types'
 
 export type CandidateForm = {
   candidateId: string
@@ -77,4 +77,20 @@ export function countDecisions(forms: CandidateForm[]): { confirm: number; decli
 // Declines are final: a submit that would only decline must be confirmed first.
 export function needsDeclineConfirm(counts: { confirm: number; decline: number }): boolean {
   return counts.confirm === 0 && counts.decline > 0
+}
+
+export type SavedTask = { candidateId: string; taskId: string }
+
+// The success screen: Tasks this submit created, Tasks that already existed (a retry
+// after a lost response returns their IDs as already_decided), and the decline count.
+export function summarizeResults(results: SubmitResult['results']): {
+  created: SavedTask[]; existing: SavedTask[]; declined: number
+} {
+  const withTask = (outcome: 'created' | 'already_decided') =>
+    results.flatMap((r) => (r.outcome === outcome && r.taskId ? [{ candidateId: r.candidateId, taskId: r.taskId }] : []))
+  return {
+    created: withTask('created'),
+    existing: withTask('already_decided'),
+    declined: results.filter((r) => r.outcome === 'declined').length,
+  }
 }

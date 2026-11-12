@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import type { ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
-import { countDecisions, initialForms, needsDeclineConfirm, toDecisions, validateForms, type CandidateForm } from './form-model'
+import {
+  countDecisions, initialForms, needsDeclineConfirm, summarizeResults, toDecisions, validateForms,
+  type CandidateForm, type SavedTask,
+} from './form-model'
 import type { LiffViewProps } from './liff-sdk'
 
 const ERR_401 = 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
@@ -110,22 +113,31 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
 
   const { data } = load
   if (done) {
-    const created = done.results.filter((r) => r.outcome === 'created' && r.taskId)
-    const declined = done.results.filter((r) => r.outcome === 'declined').length
+    const { created, existing, declined } = summarizeResults(done.results)
     const titleOf = (candidateId: string) => forms.find((f) => f.candidateId === candidateId)?.title.trim() ?? ''
+    const taskList = (tasks: SavedTask[]) => (
+      <ul className="mt-2 space-y-2">
+        {tasks.map((r) => (
+          <li key={r.candidateId} className="flex items-center justify-between gap-2 rounded border p-2">
+            <span className="min-w-0 break-words">{titleOf(r.candidateId)}</span>
+            <a className="shrink-0 underline" href={liffUrl(liffId, 'task', r.taskId)}>
+              แก้ไข
+            </a>
+          </li>
+        ))}
+      </ul>
+    )
     return (
       <div className="p-4 text-base">
         <h1 className="text-lg font-bold">สร้างงานแล้ว {created.length} งาน</h1>
-        <ul className="mt-2 space-y-2">
-          {created.map((r) => (
-            <li key={r.candidateId} className="flex items-center justify-between gap-2 rounded border p-2">
-              <span className="min-w-0 break-words">{titleOf(r.candidateId)}</span>
-              <a className="shrink-0 underline" href={liffUrl(liffId, 'task', r.taskId)}>
-                แก้ไข
-              </a>
-            </li>
-          ))}
-        </ul>
+        {taskList(created)}
+        {existing.length > 0 && (
+          <>
+            <h2 className="mt-4 font-bold">งานที่บันทึกไว้แล้ว {existing.length} งาน</h2>
+            <p className="text-sm opacity-80">งานเหล่านี้ถูกสร้างไว้ก่อนแล้ว ไม่ได้สร้างซ้ำ</p>
+            {taskList(existing)}
+          </>
+        )}
         <p className="mt-3">ไม่สร้าง {declined} งาน</p>
         <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
           ปิด

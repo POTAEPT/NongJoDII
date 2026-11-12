@@ -5,6 +5,7 @@ import {
   initialForms,
   needsDeclineConfirm,
   splitBangkokIso,
+  summarizeResults,
   toBangkokIso,
   toDecisions,
   validateForms,
@@ -117,5 +118,29 @@ describe('edit then submit', () => {
       { candidateId: 'c1', action: 'confirm', title: 'ชื่อใหม่', details: 'รายละเอียด', assigneeLineUserId: 'U1', dueAt: '2026-11-21T09:00:00+07:00' },
       { candidateId: 'c2', action: 'decline' },
     ])
+  })
+})
+
+describe('summarizeResults', () => {
+  it('lists created Tasks and already saved Tasks separately, with edit targets', () => {
+    expect(summarizeResults([
+      { candidateId: 'c1', outcome: 'created', taskId: 't1' },
+      { candidateId: 'c2', outcome: 'already_decided', taskId: 't2' },
+      { candidateId: 'c3', outcome: 'already_decided' },
+      { candidateId: 'c4', outcome: 'declined' },
+    ])).toEqual({
+      created: [{ candidateId: 'c1', taskId: 't1' }],
+      existing: [{ candidateId: 'c2', taskId: 't2' }],
+      declined: 1,
+    })
+  })
+
+  it('a retry after a lost response shows every saved Task', () => {
+    const r = summarizeResults([
+      { candidateId: 'c1', outcome: 'already_decided', taskId: 't1' },
+      { candidateId: 'c2', outcome: 'already_decided', taskId: 't2' },
+    ])
+    expect(r.created).toEqual([])
+    expect(r.existing.map((t) => t.taskId)).toEqual(['t1', 't2'])
   })
 })

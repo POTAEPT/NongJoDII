@@ -3,7 +3,6 @@ import type { ApiResult, Deps } from '../ports'
 import { statusFor, type TaskFields, validateTaskFields } from '../tasks/fields'
 import { buildTaskFeedback, type CreatedTask } from './feedback'
 import { badRequest, field, openSummary } from './load'
-import { PENDING_ANNOUNCE_MS } from './notify'
 import type { SubmitResult } from './types'
 
 const MAX_DECISIONS = 10
@@ -87,9 +86,7 @@ async function pendingFeedback(
 ): Promise<{ feedback: SubmitResult['feedback']; failed: boolean }> {
   try {
     const tasks = (await deps.store.listTasksByCandidates(candidateIds))
-      // A Task a page reserved within the last 2 minutes is that page's to post.
-      .filter((t) => t.createdByLineUserId === requester && t.deletedAt === null && t.announcedAt === null &&
-        (t.announcePendingAt === null || t.announcePendingAt.getTime() < deps.now().getTime() - PENDING_ANNOUNCE_MS))
+      .filter((t) => t.createdByLineUserId === requester && t.deletedAt === null && t.announcedAt === null)
     if (tasks.length === 0) return { feedback: null, failed: false }
     const order = new Map(candidateIds.map((id, i) => [id, i]))
     tasks.sort((a, b) => (order.get(a.candidateId ?? '') ?? 0) - (order.get(b.candidateId ?? '') ?? 0))

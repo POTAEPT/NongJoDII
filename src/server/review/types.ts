@@ -29,4 +29,3 @@ export type SubmitResult = {
 export type NotifyResult =
   | { posted: true }
   | { posted: false; reason: 'already_announced' | 'nothing_to_announce' | 'quota' }
-  | { claimed: true; text: string; taskIds: string[] }   // mode 'claim': post exactly this

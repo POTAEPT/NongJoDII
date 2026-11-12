@@ -13,8 +13,6 @@ import { ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './
 
 const T0 = Date.UTC(2026, 10, 12, 2, 0, 0) // 09:00 Bangkok
 const MIN = 60_000
-const T1 = '11111111-1111-4111-8111-111111111111'
-const T2 = '22222222-2222-4222-8222-222222222222'
 const MEMBERS = [
   { lineUserId: 'Upim', displayName: 'Pim Sirin', nicknames: ['พิม', 'Pim'] },
   { lineUserId: 'Ubank', displayName: 'Bank T.', nicknames: ['แบงค์'] },
@@ -80,8 +78,7 @@ async function setup() {
     candidateId, action: 'confirm', title: 'ทำสไลด์', details: null, assigneeLineUserId: 'Upim', dueAt: null, ...p,
   })
   const decline = (candidateId: string) => ({ candidateId, action: 'decline' })
-  const notify = async (taskIds: unknown, idToken = 'tok-pim', mode?: string, claimToken?: string) =>
-    notifyReview(h.deps, { idToken, summaryId, taskIds, ...(mode ? { mode } : {}), ...(claimToken ? { claimToken } : {}) })
+  const notify = async (taskIds: unknown, idToken = 'tok-pim') => notifyReview(h.deps, { idToken, summaryId, taskIds })
   return { ...h, group, summaryId, c1, c2, candidate, submit, confirm, decline, send, notify }
 }
 
@@ -348,62 +345,17 @@ describe('Tasks created feedback', () => {
     expect((await t.submit([t.confirm(t.c2)])).body).toMatchObject({ feedback: null })
   })
 
-  it('17e. a claim gives one page the text to post; a second page and the push get nothing', async () => {
+  it('17e. two pages announcing the same Tasks push the message once', async () => {
     const t = await setup()
     const { feedback } = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
     const ids = feedback!.taskIds
-    expect((await t.notify(ids, 'tok-pim', 'claim', T1)).body).toEqual({ claimed: true, text: feedback!.text, taskIds: ids })
-    expect((await t.notify(ids, 'tok-pim', 'claim', T2)).body).toEqual({ posted: false, reason: 'already_announced' })
-    expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'already_announced' })
-    // While the page holds it, a resubmit does not offer it again.
+    const [a, b] = await Promise.all([t.notify(ids), t.notify(ids)])
+    expect([a.body, b.body]).toEqual(expect.arrayContaining([
+      { posted: true }, { posted: false, reason: 'already_announced' },
+    ]))
+    expect(t.line.pushes).toHaveLength(1)
+    // Once announced, a resubmit offers nothing.
     expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
-    expect((await t.notify(ids, 'tok-pim', 'confirm', T1)).body).toEqual({ posted: true })
-    expect(t.line.pushes).toHaveLength(0)
-  })
-
-  it('17f2. claim and confirm need a valid token; unknown modes are refused', async () => {
-    const t = await setup()
-    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
-    expect((await t.notify(ids, 'tok-pim', 'claim')).status).toBe(400)
-    expect((await t.notify(ids, 'tok-pim', 'confirm')).status).toBe(400)
-    expect((await t.notify(ids, 'tok-pim', 'claim', 'not-a-uuid')).status).toBe(400)
-    expect((await t.notify(ids, 'tok-pim', 'release', T1)).status).toBe(400)
-  })
-
-  it('17h. a failed post hands the reservation to the push with the same token', async () => {
-    const t = await setup()
-    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
-    await t.notify(ids, 'tok-pim', 'claim', T1)
-    expect((await t.notify(ids, 'tok-pim', 'push', T2)).body).toEqual({ posted: false, reason: 'already_announced' })
-    expect((await t.notify(ids, 'tok-pim', 'push', T1)).body).toEqual({ posted: true })
-    expect(t.line.pushes).toHaveLength(1)
-  })
-
-  it('17i. a claim whose response was lost is recovered by retrying with the same token', async () => {
-    const t = await setup()
-    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
-    await t.notify(ids, 'tok-pim', 'claim', T1) // response lost
-    expect((await t.notify(ids, 'tok-pim', 'claim', T1)).body).toMatchObject({ claimed: true, taskIds: ids })
-  })
-
-  it('17j. once announced, no call can make a Task announce again', async () => {
-    const t = await setup()
-    const ids = createdIds((await t.submit([t.confirm(t.c1), t.confirm(t.c2, { title: 'จองห้อง' })])).body)
-    expect((await t.notify(ids)).body).toEqual({ posted: true })
-    expect((await t.notify([ids[0]], 'tok-pim', 'claim', T1)).body).toEqual({ posted: false, reason: 'already_announced' })
-    expect((await t.notify([ids[0]], 'tok-pim', 'confirm', T1)).body).toEqual({ posted: true })
-    expect((await t.notify([ids[0]])).body).toEqual({ posted: false, reason: 'already_announced' })
-    expect((await t.notify([ids[0]], 'tok-pim', 'push', T1)).body).toEqual({ posted: false, reason: 'already_announced' })
-    expect(t.line.pushes).toHaveLength(1)
-  })
-
-  it('17k. a reservation abandoned for over 2 minutes is offered and pushed again', async () => {
-    const t = await setup()
-    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
-    await t.notify(ids, 'tok-pim', 'claim', T1) // the page closes without posting
-    t.setNow(new Date(t.deps.now().getTime() + 3 * MIN))
-    expect(((await t.submit([t.confirm(t.c1)])).body as SubmitResult).feedback?.taskIds).toEqual(ids)
-    expect((await t.notify(ids)).body).toEqual({ posted: true })
   })
 
   it('18. notify pushes once to the group and logs one message per live Member', async () => {

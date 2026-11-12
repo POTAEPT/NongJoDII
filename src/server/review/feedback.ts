@@ -1,8 +1,8 @@
 import { formatThaiShort } from '../time/bangkok'
 
-/** Every "Tasks created" message starts with this. When a member's LIFF page posts it
- *  into the group (liff.sendMessages), it comes back as their chat message, and the
- *  Summary skips it so the AI never proposes those Tasks again. */
+/** Every "Tasks created" message starts with this. The bot pushes it, so it does
+ *  not come back through the webhook; if a member forwards or pastes it into the
+ *  chat, the Summary still skips it, so the AI never proposes those Tasks again. */
 export const TASK_FEEDBACK_PREFIX = '✅ สร้างงานแล้ว'
 
 const TEXT_MAX = 5000

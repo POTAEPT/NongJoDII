@@ -48,7 +48,6 @@ export type CandidateRecord = CandidateRow & {
   decidedByLineUserId: string | null; decidedAt: Date | null; createdAt: Date
 }
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
-  announcePendingToken?: string | null
   lastEditedByLineUserId: string | null; lastActivityAt: Date | null; doneAt: Date | null
 }
 export type PushLogRecord = { id: string; purpose: string; lineTargetId: string; messageCount: number; sentAt: Date }
@@ -330,7 +329,7 @@ export class FakeStore implements StorePort {
     if (!taskId) {
       taskId = randomUUID()
       this.tables.tasks.push({
-        ...t, id: taskId, deletedAt: null, announcedAt: null, announcePendingAt: null, lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
+        ...t, id: taskId, deletedAt: null, announcedAt: null, lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       })
     }
     if (c.state === 'proposed') {
@@ -353,7 +352,6 @@ export class FakeStore implements StorePort {
       id: t.id, groupId: t.groupId, lineGroupId: this.groupOf(t.groupId).lineGroupId, candidateId: t.candidateId,
       title: t.title, details: t.details, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
       createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt, announcedAt: t.announcedAt,
-      announcePendingAt: t.announcePendingAt,
     }
   }
 
@@ -363,44 +361,11 @@ export class FakeStore implements StorePort {
     return t ? this.toTaskRow(t) : null
   }
 
-  async claimTaskAnnouncements(
-    taskIds: string[], at: Date, opts: { staleBefore: Date; takeOverToken: string | null },
-  ): Promise<string[]> {
+  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
     this.fault('claimTaskAnnouncements')
-    const rows = this.tables.tasks.filter((t) =>
-      taskIds.includes(t.id) && !t.announcedAt && t.deletedAt === null &&
-      (!t.announcePendingToken || (t.announcePendingAt !== null && t.announcePendingAt < opts.staleBefore) ||
-        (opts.takeOverToken !== null && t.announcePendingToken === opts.takeOverToken)))
-    for (const t of rows) {
-      t.announcedAt = at
-      t.announcePendingToken = null
-      t.announcePendingAt = null
-    }
+    const rows = this.tables.tasks.filter((t) => taskIds.includes(t.id) && !t.announcedAt && t.deletedAt === null)
+    for (const t of rows) t.announcedAt = at
     return rows.map((t) => t.id)
-  }
-
-  async reserveTaskAnnouncements(taskIds: string[], token: string, at: Date, staleBefore: Date): Promise<string[]> {
-    this.fault('reserveTaskAnnouncements')
-    const rows = this.tables.tasks.filter((t) =>
-      taskIds.includes(t.id) && !t.announcedAt && t.deletedAt === null &&
-      (!t.announcePendingToken || t.announcePendingToken === token ||
-        (t.announcePendingAt !== null && t.announcePendingAt < staleBefore)))
-    for (const t of rows) {
-      t.announcePendingToken = token
-      t.announcePendingAt = at
-    }
-    return rows.map((t) => t.id)
-  }
-
-  async confirmTaskAnnouncements(taskIds: string[], token: string, at: Date): Promise<void> {
-    this.fault('confirmTaskAnnouncements')
-    for (const t of this.tables.tasks) {
-      if (taskIds.includes(t.id) && t.announcePendingToken === token && !t.announcedAt) {
-        t.announcedAt = at
-        t.announcePendingToken = null
-        t.announcePendingAt = null
-      }
-    }
   }
 
   async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
@@ -729,7 +694,7 @@ export class FakeStore implements StorePort {
     fk(this.hasGroup(partial.groupId), 'tasks.group_id')
     const row: TaskRecord = {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
-      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null, announcePendingAt: null,
+      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null,
       lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,
     }

@@ -45,60 +45,18 @@ const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
   failed: 'งานถูกสร้างแล้ว แต่แจ้งในกลุ่มไม่สำเร็จ',
 }
 
-/** Tells the group which Tasks were created: first as the member's own message from
- *  this LIFF page (free), else by asking the server to push it (counts against the
- *  LINE quota). sendMessages posts to whichever chat opened the page, and LIFF no
- *  longer exposes a group ID to check it against the Summary's group, so the member
- *  confirms the chat first; the bot's push always goes to the right group. */
-async function claimWithRetry(
-  idToken: string, summaryId: string, taskIds: string[], claimToken: string,
-): Promise<NotifyResult | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'claim', claimToken })
-      if (status === 200) return json as NotifyResult
-    } catch {
-      // Lost response: the same token gets the same reservation back.
-    }
-  }
-  return null
-}
-
+/** Asks the bot to tell the group which Tasks were created (a push: it counts
+ *  against the LINE quota and is skipped near the limit). The server claims each Task
+ *  once and pushes with a stable retry key, so repeating this call never repeats the
+ *  message. */
 async function announce(
-  liff: LiffViewProps['liff'], idToken: string, summaryId: string,
-  feedback: { text: string | null; taskIds: string[] }, allowSelf: boolean,
+  idToken: string, summaryId: string, taskIds: string[],
 ): Promise<Exclude<Announce, 'idle' | 'working'>> {
-  const { taskIds } = feedback
   if (taskIds.length === 0) return 'failed'
-  const claimToken = crypto.randomUUID()
-  if (
-    allowSelf && feedback.text !== null && liff.isInClient() && liff.getContext()?.type === 'group' &&
-    liff.isApiAvailable('sendMessages') &&
-    window.confirm('แจ้งงานที่สร้างในแชทกลุ่มนี้? (ต้องเป็นกลุ่มเดียวกับที่สรุปแชท) กด "ยกเลิก" ให้น้องจดดีแจ้งแทน')
-  ) {
-    // Reserve first and post only what this page reserved, so a second open page
-    // never posts the same Tasks. The same token makes a retried claim safe.
-    const claim = await claimWithRetry(idToken, summaryId, taskIds, claimToken)
-    if (claim && !('claimed' in claim)) return 'posted' // nothing left to announce
-    if (claim && 'claimed' in claim) {
-      try {
-        await liff.sendMessages([{ type: 'text', text: claim.text }])
-        // Best effort: an unconfirmed reservation lapses after 2 minutes.
-        await post('/api/review/notify', { idToken, summaryId, taskIds: claim.taskIds, mode: 'confirm', claimToken })
-          .catch(() => undefined)
-        return 'posted'
-      } catch {
-        // Not granted: the push below takes over this page's reservation.
-      }
-    }
-  }
   try {
-    // The token lets the push take over this page's own reservation, including one
-    // whose claim response never arrived.
-    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'push', claimToken })
+    const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds })
     if (status !== 200) return 'failed'
     const n = json as NotifyResult
-    if ('claimed' in n) return 'failed'
     return n.posted || n.reason !== 'quota' ? 'posted' : 'quota'
   } catch {
     return 'failed'
@@ -162,7 +120,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
           if (result.feedbackFailed) setAnnounced('failed')
           else if (feedback && id) {
             setAnnounced('working')
-            void announce(liff, idToken, id, feedback, true).then(setAnnounced)
+            void announce(idToken, id, feedback.taskIds).then(setAnnounced)
           }
         }
       } catch {
@@ -172,7 +130,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
         setSubmitting(false)
       }
     },
-    [liff, idToken, id],
+    [idToken, id],
   )
 
   const update = (candidateId: string, patch: Partial<CandidateForm>) =>
@@ -225,11 +183,11 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
             className="mt-2 rounded border px-4 py-2"
             onClick={() => {
               // Only the notification is retried; the Tasks are already saved. The
-              // server rebuilds the message, so this also works when submit could not.
+              // server builds the message, so this also works when submit could not.
               const taskIds = done.feedback?.taskIds ??
                 done.results.flatMap((r) => (r.taskId ? [r.taskId] : []))
               setAnnounced('working')
-              void announce(liff, idToken, id, { text: null, taskIds }, false).then(setAnnounced)
+              void announce(idToken, id, taskIds).then(setAnnounced)
             }}
           >
             ลองแจ้งในกลุ่มอีกครั้ง

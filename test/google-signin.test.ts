@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { open, openState, sealState } from '@/server/crypto/secretbox'
 import { finishGoogleSignIn, renderCallbackPage } from '@/server/google/callback'
 import { startGoogleSignIn } from '@/server/google/start'
-import { makeTestDeps, TEST_KEY, TEST_NOW } from './harness'
+import { googleStatus } from '@/server/google/status'
+import { makeTestDeps, TEST_KEY, TEST_LIFF_ID, TEST_NOW } from './harness'
 
 const MIN = 60_000
 const OWNER = 'Uowner1'
@@ -199,7 +200,7 @@ describe('callback log', () => {
 
 describe('renderCallbackPage', () => {
   it('10. cancelled is a 400 Thai page with the cancel copy', async () => {
-    const res = renderCallbackPage('cancelled')
+    const res = renderCallbackPage('cancelled', TEST_LIFF_ID)
     expect(res.status).toBe(400)
     expect(res.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
     const html = await res.text()
@@ -209,13 +210,59 @@ describe('renderCallbackPage', () => {
   })
 
   it('ok is 200 with the success copy; every outcome has one h1 and one p', async () => {
-    const ok = renderCallbackPage('ok')
+    const ok = renderCallbackPage('ok', TEST_LIFF_ID)
     expect(ok.status).toBe(200)
     expect(await ok.text()).toContain('เชื่อม Google Drive สำเร็จ')
     for (const o of ['ok', 'cancelled', 'expired', 'missing_scope', 'no_refresh_token', 'failed'] as const) {
-      const html = await renderCallbackPage(o).text()
+      const html = await renderCallbackPage(o, TEST_LIFF_ID).text()
       expect(html.match(/<h1>/g)).toHaveLength(1)
       expect(html.match(/<p>/g)).toHaveLength(1)
     }
+  })
+})
+
+describe('renderCallbackPage return to LINE', () => {
+  const href = `https://liff.line.me/${TEST_LIFF_ID}?view=google&amp;id=done`
+  it('11. ok and every failure outcome carry the LIFF return button', async () => {
+    for (const o of ['ok', 'cancelled', 'expired', 'missing_scope', 'no_refresh_token', 'failed'] as const) {
+      const html = await renderCallbackPage(o, TEST_LIFF_ID).text()
+      expect(html).toContain(`<a class="back" href="${href}">กลับไปที่ LINE</a>`)
+    }
+  })
+})
+
+describe('google status', () => {
+  const status = (h: ReturnType<typeof setup>, body: unknown = { idToken: OWNER_TOKEN }) => googleStatus(h.deps, body)
+
+  it('12. a bad or missing token gives 401', async () => {
+    const h = setup()
+    for (const body of [{ idToken: 'nope' }, {}, { idToken: 42 }, null]) {
+      expect(await status(h, body)).toEqual({ status: 401, body: { error: 'unauthorized' } })
+    }
+  })
+
+  it('13. no Google account gives connected false', async () => {
+    const h = setup()
+    expect(await status(h)).toEqual({ status: 200, body: { connected: false } })
+  })
+
+  it('14. after a successful sign-in gives connected true', async () => {
+    const h = setup()
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }))).toBe('ok')
+    expect(await status(h)).toEqual({ status: 200, body: { connected: true } })
+  })
+
+  it('15. a revoked account gives connected false', async () => {
+    const h = setup()
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }))).toBe('ok')
+    h.store.tables.google_accounts[0].tokenStatus = 'revoked'
+    expect(await status(h)).toEqual({ status: 200, body: { connected: false } })
+  })
+
+  it('16. another user sees only their own status (client lineUserId ignored)', async () => {
+    const h = setup()
+    h.line.idTokens.set('idtok-other', { lineUserId: 'Uother', displayName: null })
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }))).toBe('ok')
+    expect(await status(h, { idToken: 'idtok-other', lineUserId: OWNER })).toEqual({ status: 200, body: { connected: false } })
   })
 })

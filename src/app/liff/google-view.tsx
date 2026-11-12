@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { fetchGoogleStatus as fetchStatus, phaseOnReturn } from './google-status'
 import type { LiffViewProps } from './liff-sdk'
 
 type Phase = 'starting' | 'checking' | 'opened' | 'connected' | 'not_connected' | 'unauthorized' | 'failed'
@@ -15,24 +16,6 @@ const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected'>, string
 /** The id the OAuth callback page links back with: sign-in already happened in
  *  the external browser, so only the status is checked. */
 const RETURN_ID = 'done'
-
-type Status = 'connected' | 'not_connected' | 'unauthorized' | 'failed'
-
-async function fetchStatus(idToken: string): Promise<Status> {
-  try {
-    const res = await fetch('/api/google/status', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ idToken }),
-    })
-    if (res.status === 401) return 'unauthorized'
-    if (res.status !== 200) return 'failed'
-    const { connected } = (await res.json()) as { connected?: unknown }
-    return connected === true ? 'connected' : 'not_connected'
-  } catch {
-    return 'failed'
-  }
-}
 
 export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   const returning = id === RETURN_ID
@@ -94,7 +77,8 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
       if (inFlight || document.visibilityState !== 'visible') return
       inFlight = true
       try {
-        if ((await fetchStatus(idToken)) === 'connected') setPhase('connected')
+        const next = phaseOnReturn(await fetchStatus(idToken))
+        if (next) setPhase(next)
       } finally {
         inFlight = false
       }

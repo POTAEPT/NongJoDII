@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 import { loadConfig } from './config'
+import { GoogleHttpClient } from './google/client'
 import { LineHttpClient } from './line/client'
-import type { Deps, GooglePort, LlmPort } from './ports'
+import type { Deps, LlmPort } from './ports'
 import { SupabaseStore } from './store/supabase-store'
 
 // Composition root. Built lazily on the first call inside a handler (never at
@@ -11,9 +12,8 @@ function notWired(): never {
   throw new Error('not wired yet')
 }
 
-// TEMP: Task 4 (OpenRouter) and Task 6 (Google) replace these stubs.
+// TEMP: the OpenRouter task replaces this stub.
 const llmStub: LlmPort = { complete: async () => notWired() }
-const googleStub: GooglePort = { buildAuthUrl: () => notWired(), exchangeCode: async () => notWired() }
 
 let cached: Deps | null = null
 
@@ -26,7 +26,11 @@ export function getDeps(): Deps {
       loginChannelId: config.lineLoginChannelId,
     }),
     llm: llmStub,
-    google: googleStub,
+    google: new GoogleHttpClient({
+      clientId: config.googleClientId,
+      clientSecret: config.googleClientSecret,
+      redirectUri: `${config.appBaseUrl}/api/google/callback`,
+    }),
     store: new SupabaseStore(
       createClient(config.supabaseUrl, config.supabaseSecretKey, {
         auth: { persistSession: false, autoRefreshToken: false },

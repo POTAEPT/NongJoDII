@@ -10,9 +10,12 @@ export function Clarity() {
   // NEXT_PUBLIC_* is inlined at build time; without it the tag would load ".../tag/undefined".
   if (!CLARITY_ID) return null;
 
+  // The LIFF URL carries access_token (and code/state after liff.login); LINE says never send it to logging
+  // tools, so the snippet below skips every /liff page.
   return (
     <Script id="ms-clarity" strategy="beforeInteractive">
       {`(function(c,l,a,r,i,t,y){
+        if(l.location.pathname.indexOf("/liff")===0)return;
         c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
         t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
         y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);

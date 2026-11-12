@@ -1,15 +1,14 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from 'vitest/config'
 
-// test รันใน Node ผ่าน event seam และ Dashboard read seam (ดู docs/PROJECT.md)
-// ใช้ fake แทน LINE, OpenRouter, Google Drive และ Supabase จึงไม่ต้องมี DOM ของเบราว์เซอร์
+// Tests run in Node through the event seam and fakes (LINE, OpenRouter, Google, Supabase), so no browser DOM.
 export default defineConfig({
-  // ให้ใช้ alias "@/*" ตามที่ตั้งไว้ใน tsconfig.json ได้
+  // Use the "@/*" alias from tsconfig.json.
   resolve: { tsconfigPaths: true },
   test: {
-    environment: "node",
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    // ให้ test ใช้เขตเวลาเดียวกับ server จริง (UTC)
-    // เวลากรุงเทพฯ ต้องคำนวณในโค้ดเองเสมอ ห้ามพึ่งเขตเวลาของเครื่อง
-    env: { TZ: "UTC" },
+    environment: 'node',
+    include: ['test/**/*.test.ts', 'src/**/*.test.ts', 'src/**/*.test.tsx'],
+    setupFiles: ['test/setup.ts'],
+    // Same time zone as the real server (UTC). Bangkok time is always computed in code.
+    env: { TZ: 'UTC' },
   },
-});
+})

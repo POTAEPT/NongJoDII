@@ -1,5 +1,6 @@
 import { openState, seal } from '../crypto/secretbox'
 import { log } from '../log'
+import { liffUrl } from '../liff-links'
 import type { Deps } from '../ports'
 import { DRIVE_FILE_SCOPE } from './client'
 
@@ -64,13 +65,26 @@ const COPY: Record<CallbackOutcome, { h1: string; p: string }> = {
   failed: { h1: 'เชื่อม Google Drive ไม่สำเร็จ', p: 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้งจากแชทกับน้องจดดี' },
 }
 
-/** A minimal Thai page with fixed copy only: no user data. */
-export function renderCallbackPage(outcome: CallbackOutcome): Response {
+/** The LIFF link the callback page sends the user back to. On a phone a
+ *  liff.line.me link opens the LINE app, where GoogleView checks the status. */
+export function googleReturnUrl(liffId: string): string {
+  return liffUrl(liffId, 'google', 'done')
+}
+
+/** A minimal Thai page with fixed copy only: no user data. liffId comes from
+ *  server config, not from the request. */
+export function renderCallbackPage(outcome: CallbackOutcome, liffId: string): Response {
   const { h1, p } = COPY[outcome]
+  const href = googleReturnUrl(liffId).replace(/&/g, '&amp;')
   const html =
     '<!doctype html><html lang="th"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-    `<title>NongJoDII</title></head><body><h1>${h1}</h1><p>${p}</p></body></html>`
+    '<title>NongJoDII</title>' +
+    '<style>body{font-family:sans-serif;padding:24px;text-align:center}' +
+    'a.back{display:block;margin:32px auto 0;max-width:320px;padding:16px;border-radius:12px;' +
+    'background:#06C755;color:#fff;font-size:20px;font-weight:bold;text-decoration:none}</style>' +
+    `</head><body><h1>${h1}</h1><p>${p}</p>` +
+    `<a class="back" href="${href}">กลับไปที่ LINE</a></body></html>`
   return new Response(html, {
     status: outcome === 'ok' ? 200 : 400,
     headers: { 'Content-Type': 'text/html; charset=utf-8' },

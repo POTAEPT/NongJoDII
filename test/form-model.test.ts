@@ -3,6 +3,7 @@ import type { ReviewView } from '@/server/review/types'
 import {
   countDecisions,
   initialForms,
+  needsDeclineConfirm,
   splitBangkokIso,
   toBangkokIso,
   toDecisions,
@@ -95,6 +96,15 @@ describe('countDecisions', () => {
   it('counts what toDecisions would send', () => {
     const forms = [form(), form(), form({ selected: false }), form({ editable: false })]
     expect(countDecisions(forms)).toEqual({ confirm: 2, decline: 1 })
+  })
+})
+
+describe('needsDeclineConfirm', () => {
+  it('is true only when nothing is confirmed and something is declined', () => {
+    expect(needsDeclineConfirm({ confirm: 0, decline: 2 })).toBe(true)
+    expect(needsDeclineConfirm({ confirm: 1, decline: 2 })).toBe(false)
+    expect(needsDeclineConfirm({ confirm: 2, decline: 0 })).toBe(false)
+    expect(needsDeclineConfirm({ confirm: 0, decline: 0 })).toBe(false)
   })
 })
 

@@ -73,3 +73,8 @@ export function countDecisions(forms: CandidateForm[]): { confirm: number; decli
   const confirm = decisions.filter((d) => d.action === 'confirm').length
   return { confirm, decline: decisions.length - confirm }
 }
+
+// Declines are final: a submit that would only decline must be confirmed first.
+export function needsDeclineConfirm(counts: { confirm: number; decline: number }): boolean {
+  return counts.confirm === 0 && counts.decline > 0
+}

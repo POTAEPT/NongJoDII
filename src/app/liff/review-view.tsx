@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import type { ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
-import { countDecisions, initialForms, toDecisions, validateForms, type CandidateForm } from './form-model'
+import { countDecisions, initialForms, needsDeclineConfirm, toDecisions, validateForms, type CandidateForm } from './form-model'
 import type { LiffViewProps } from './liff-sdk'
 
 const ERR_401 = 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
@@ -42,6 +42,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [formError, setFormError] = useState<string | null>(null)
   const [done, setDone] = useState<SubmitResult | null>(null)
   const started = useRef(false)
+  const inFlight = useRef(false) // blocks a double submit before state re-renders
 
   const fetchReview = useCallback(async () => {
     setLoad({ kind: 'loading' })
@@ -64,9 +65,14 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
   }, [fetchReview])
 
   const submit = useCallback(
-    async (next: CandidateForm[]) => {
+    async (next: CandidateForm[], onProceed?: () => void) => {
+      if (inFlight.current) return
       const invalid = validateForms(next)
       if (invalid) return setFormError(invalid)
+      const counts = countDecisions(next)
+      if (needsDeclineConfirm(counts) && !window.confirm(`ยืนยันไม่สร้างงานทั้งหมด ${counts.decline} งาน? ยกเลิกภายหลังไม่ได้`)) return
+      inFlight.current = true
+      onProceed?.()
       setFormError(null)
       setSubmitting(true)
       try {
@@ -80,6 +86,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
       } catch {
         setFormError(ERR_SUBMIT)
       } finally {
+        inFlight.current = false
         setSubmitting(false)
       }
     },
@@ -241,10 +248,8 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
           className="w-full rounded border px-4 py-2"
           disabled={disabled}
           onClick={() => {
-            if (!window.confirm('ไม่สร้างงานจากสรุปนี้เลยใช่ไหม')) return
             const none = forms.map((f) => ({ ...f, selected: false }))
-            setForms(none)
-            void submit(none)
+            void submit(none, () => setForms(none))
           }}
         >
           ไม่สร้างงานทั้งหมด

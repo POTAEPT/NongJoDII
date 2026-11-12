@@ -89,6 +89,18 @@ export type NewAiUsage = {
 /** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
+/** A set-up group (attached to a Project, bot still in it) with the weekly summary on,
+ *  and its chosen slot: ISO weekday 1..7, Bangkok time 'HH:MM:SS', last sent Bangkok date. */
+export type WeeklySummaryGroup = {
+  groupId: string; lineGroupId: string; weekday: number; time: string; lastSentOn: string | null
+}
+/** Live (not soft-deleted) Tasks of one group by status. "Awaiting an owner" = Not Assigned. */
+export type TaskCounts = { done: number; inProcess: number; awaitingOwner: number }
+export type UnownedTask = { id: string; title: string; dueAt: Date | null }
+export type NewWeeklyInsight = {
+  groupId: string; weekStart: string   // Monday, 'YYYY-MM-DD' Bangkok
+  counts: TaskCounts; createdAt: Date
+}
 // #7 Track progress: a mark_done card (task_prompts row) asks whether a Task moved
 // to In Process or Done. Only a person's Yes moves the Task.
 export type ProgressTarget = 'in_process' | 'done'
@@ -153,6 +165,22 @@ export interface StorePort {
    *  PostgREST max_rows limit (1000, supabase/config.toml) can never truncate the sum. */
   sumOwnerMonthUsage(ownerLineUserId: string, monthStartBkk: string): Promise<{ tokens: number; costMicroUsd: number }> // monthStartBkk 'YYYY-MM-01'; integer micro-dollars
   claimFairUseNotice(n: { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }): Promise<{ inserted: boolean }> // ON CONFLICT (PK) DO NOTHING
+  // #20 weekly insight
+  /** groups where project_id is not null, left_at is null, feature_weekly_summary and
+   *  weekly_summary_weekday = `weekday` (ISO 1..7). Every page, ordered by id. */
+  listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]>
+  /** One statement: sets weekly_summary_last_sent_on = todayBkk where it is null or before
+   *  todayBkk. claimed false = another tick already took today's slot. */
+  claimWeeklySummary(groupId: string, todayBkk: string): Promise<{ claimed: boolean }>
+  /** Undoes a claim after a failure, so a later tick retries: puts back `previous` only
+   *  while the column still holds todayBkk. */
+  releaseWeeklySummary(groupId: string, todayBkk: string, previous: string | null): Promise<void>
+  countTasksByStatus(groupId: string): Promise<TaskCounts>                          // deleted_at is null
+  /** Live Not Assigned Tasks, oldest first, at most `limit`. */
+  listUnownedTasks(groupId: string, limit: number): Promise<UnownedTask[]>
+  /** ON CONFLICT (group_id, week_start) DO NOTHING; inserted false = this week already has one. */
+  saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }>
+  hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>

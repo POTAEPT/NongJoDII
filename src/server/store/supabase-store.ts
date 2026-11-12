@@ -16,13 +16,18 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  NewWeeklyInsight,
   ProgressAnswer,
   ProgressPromptRow,
   StorePort,
   StoredMessage,
   SummaryRow,
+  TaskCounts,
   TaskPatch,
   TaskRow,
+  TaskStatus,
+  UnownedTask,
+  WeeklySummaryGroup,
   ProgressYes,
   ProgressYesOutcome,
 } from '../ports'
@@ -69,6 +74,9 @@ function toPromptRow(r: DbPrompt): ProgressPromptRow {
     answer: r.answer, answeredByLineUserId: r.answered_by_line_user_id, answeredAt: toDate(r.answered_at),
   }
 }
+
+/** Page size for listWeeklySummaryGroups; equal to PostgREST max_rows in supabase/config.toml. */
+export const WEEKLY_PAGE = 1000
 
 type PgError = { code: string } | null
 
@@ -479,6 +487,115 @@ export class SupabaseStore implements StorePort {
       .select('kind')
     check('claimFairUseNotice', error)
     return { inserted: (data ?? []).length === 1 }
+  }
+
+  // ---- #20 weekly insight ----
+  /** Pages of WEEKLY_PAGE rows ordered by id, so PostgREST max_rows (1000) never hides
+   *  the groups after the first page. */
+  async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
+    type Row = {
+      id: string; line_group_id: string; weekly_summary_weekday: number
+      weekly_summary_time: string; weekly_summary_last_sent_on: string | null
+    }
+    const out: WeeklySummaryGroup[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .eq('feature_weekly_summary', true)
+        .eq('weekly_summary_weekday', weekday)
+        .order('id')
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listWeeklySummaryGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({
+          groupId: r.id, lineGroupId: r.line_group_id, weekday: r.weekly_summary_weekday,
+          time: r.weekly_summary_time, lastSentOn: r.weekly_summary_last_sent_on,
+        })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
+  }
+
+  async claimWeeklySummary(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ weekly_summary_last_sent_on: todayBkk })
+      .eq('id', groupId)
+      .or(`weekly_summary_last_sent_on.is.null,weekly_summary_last_sent_on.lt.${todayBkk}`)
+      .select('id')
+    check('claimWeeklySummary', error)
+    return { claimed: (data?.length ?? 0) > 0 }
+  }
+
+  async releaseWeeklySummary(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ weekly_summary_last_sent_on: previous })
+      .eq('id', groupId)
+      .eq('weekly_summary_last_sent_on', todayBkk)
+    check('releaseWeeklySummary', error)
+  }
+
+  /** One head-only count per status: no rows travel, so max_rows (1000) cannot cut the count. */
+  async countTasksByStatus(groupId: string): Promise<TaskCounts> {
+    const count = async (status: TaskStatus): Promise<number> => {
+      const { count: n, error } = await this.db
+        .from('tasks')
+        .select('id', { count: 'exact', head: true })
+        .eq('group_id', groupId)
+        .eq('status', status)
+        .is('deleted_at', null)
+      check('countTasksByStatus', error)
+      return n ?? 0
+    }
+    const [done, inProcess, awaitingOwner] = await Promise.all([count('done'), count('in_process'), count('not_assigned')])
+    return { done, inProcess, awaitingOwner }
+  }
+
+  async listUnownedTasks(groupId: string, limit: number): Promise<UnownedTask[]> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .select('id, title, due_at')
+      .eq('group_id', groupId)
+      .eq('status', 'not_assigned')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(limit)
+    check('listUnownedTasks', error)
+    const rows = (data ?? []) as { id: string; title: string; due_at: string | null }[]
+    return rows.map((r) => ({ id: r.id, title: r.title, dueAt: toDate(r.due_at) }))
+  }
+
+  async saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }> {
+    const { data, error } = await this.db
+      .from('weekly_insights')
+      .upsert(
+        {
+          group_id: i.groupId, week_start: i.weekStart, tasks_done: i.counts.done,
+          tasks_in_process: i.counts.inProcess, tasks_awaiting_owner: i.counts.awaitingOwner,
+          created_at: i.createdAt.toISOString(),
+        },
+        { onConflict: 'group_id,week_start', ignoreDuplicates: true },
+      )
+      .select('id')
+    check('saveWeeklyInsight', error)
+    return { inserted: (data ?? []).length === 1 }
+  }
+
+  async hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from('weekly_insights')
+      .select('id')
+      .eq('group_id', groupId)
+      .eq('week_start', weekStart)
+      .maybeSingle()
+    check('hasWeeklyInsight', error)
+    return data !== null
   }
 
   // ---- #12 Google ----

@@ -13,12 +13,17 @@ import type {
   NewMessage,
   NewSummary,
   NewTask,
+  NewProgressPrompt,
   NewWebhookEvent,
+  MessageRef,
+  ProgressAnswer,
+  ProgressPromptRow,
   StorePort,
   StoredMessage,
   SummaryRow,
   TaskPatch,
   TaskRow,
+  TaskStatusMove,
 } from '@/server/ports'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
@@ -38,8 +43,10 @@ export type CandidateRecord = CandidateRow & {
   decidedByLineUserId: string | null; decidedAt: Date | null; createdAt: Date
 }
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
-  lastEditedByLineUserId: string | null; lastActivityAt: Date | null
+  lastEditedByLineUserId: string | null; lastActivityAt: Date | null; doneAt: Date | null
 }
+/** task_prompts, kind mark_done only (the kind #7 writes). */
+export type ProgressPromptRecord = ProgressPromptRow
 export type AiUsageRecord = NewAiUsage & { id: string; settledAt: Date | null } // settledAt null = open claim
 export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }
 export type GoogleAccountRecord = {
@@ -56,6 +63,7 @@ export type FakeTables = {
   summaries: SummaryRecord[]
   task_candidates: CandidateRecord[]
   tasks: TaskRecord[]
+  task_prompts: ProgressPromptRecord[]
   ai_usage: AiUsageRecord[]
   fair_use_notices: FairUseNoticeRecord[]
   google_accounts: GoogleAccountRecord[]
@@ -81,6 +89,7 @@ export class FakeStore implements StorePort {
     summaries: [],
     task_candidates: [],
     tasks: [],
+    task_prompts: [],
     ai_usage: [],
     fair_use_notices: [],
     google_accounts: [],
@@ -157,7 +166,7 @@ export class FakeStore implements StorePort {
       row = {
         id: randomUUID(), lineGroupId, projectId: null, name: null,
         nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
-        featureSummarize: true, featureDraftTasks: true, workDescription: null,
+        featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
       }
       this.tables.groups.push(row)
     }
@@ -299,7 +308,7 @@ export class FakeStore implements StorePort {
     if (!taskId) {
       taskId = randomUUID()
       this.tables.tasks.push({
-        ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null,
+        ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       })
     }
     if (c.state === 'proposed') {
@@ -338,6 +347,68 @@ export class FakeStore implements StorePort {
     fk(this.hasLineUser(patch.assigneeLineUserId), 'tasks.assignee_line_user_id')
     fk(this.hasLineUser(patch.lastEditedByLineUserId), 'tasks.last_edited_by_line_user_id')
     Object.assign(t, patch)
+    return { updated: true }
+  }
+
+  // ---- #7 Track progress ----
+  async listOpenTasks(groupId: string): Promise<TaskRow[]> {
+    this.fault('listOpenTasks')
+    return this.tables.tasks
+      .filter((t) => t.groupId === groupId && t.deletedAt === null && t.status !== 'done')
+      .map((t) => this.toTaskRow(t))
+  }
+
+  async getMessageRef(messageId: string): Promise<MessageRef | null> {
+    this.fault('getMessageRef')
+    const m = this.tables.messages.find((row) => row.id === messageId)
+    return m ? { id: m.id, groupId: m.groupId, senderLineUserId: m.senderLineUserId, sentAt: m.sentAt } : null
+  }
+
+  async findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null> {
+    this.fault('findOpenProgressPrompt')
+    const p = this.tables.task_prompts.find((row) => row.taskId === taskId && row.answer === null)
+    return p ? { ...p } : null
+  }
+
+  async createProgressPrompt(n: NewProgressPrompt): Promise<{ prompt: ProgressPromptRow | null }> {
+    this.fault('createProgressPrompt')
+    // Unique index task_prompts_one_open_mark_done.
+    if (this.tables.task_prompts.some((row) => row.taskId === n.taskId && row.answer === null)) return { prompt: null }
+    fk(this.hasGroup(n.groupId), 'task_prompts.group_id')
+    fk(this.tables.tasks.some((t) => t.id === n.taskId), 'task_prompts.task_id')
+    fk(this.hasLineUser(n.subjectLineUserId), 'task_prompts.subject_line_user_id')
+    fk(n.triggerMessageId === null || this.tables.messages.some((m) => m.id === n.triggerMessageId), 'task_prompts.trigger_message_id')
+    const row: ProgressPromptRecord = { ...n, id: randomUUID(), answer: null, answeredByLineUserId: null, answeredAt: null }
+    this.tables.task_prompts.push(row)
+    return { prompt: { ...row } }
+  }
+
+  async getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null> {
+    this.fault('getProgressPrompt')
+    const p = this.tables.task_prompts.find((row) => row.id === promptId)
+    return p ? { ...p } : null
+  }
+
+  async answerProgressPrompt(promptId: string, answer: ProgressAnswer, byLineUserId: string, at: Date): Promise<{ updated: boolean }> {
+    this.fault('answerProgressPrompt')
+    const p = this.tables.task_prompts.find((row) => row.id === promptId && row.answer === null)
+    if (!p) return { updated: false }
+    fk(this.hasLineUser(byLineUserId), 'task_prompts.answered_by_line_user_id')
+    Object.assign(p, { answer, answeredByLineUserId: byLineUserId, answeredAt: at })
+    return { updated: true }
+  }
+
+  async moveTaskStatus(m: TaskStatusMove): Promise<{ updated: boolean }> {
+    this.fault('moveTaskStatus')
+    const t = this.tables.tasks.find((row) => row.id === m.taskId && row.deletedAt === null && row.status === m.fromStatus)
+    if (!t) return { updated: false }
+    fk(this.hasLineUser(m.byLineUserId), 'tasks.last_edited_by_line_user_id')
+    fk(this.hasLineUser(m.assignTo), 'tasks.assignee_line_user_id')
+    t.status = m.toStatus
+    if (m.toStatus === 'done') t.doneAt = m.at
+    if (m.assignTo !== null) t.assigneeLineUserId = m.assignTo
+    t.lastEditedByLineUserId = m.byLineUserId
+    t.lastActivityAt = m.at
     return { updated: true }
   }
 
@@ -421,7 +492,7 @@ export class FakeStore implements StorePort {
     const row: GroupRow = {
       id: randomUUID(), lineGroupId: 'Cgroup1', projectId: null, name: null,
       nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
-      featureSummarize: true, featureDraftTasks: true, workDescription: null,
+      featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
       ...partial,
     }
     unique(this.tables.groups.some((g) => g.id === row.id), 'groups.id')
@@ -466,7 +537,7 @@ export class FakeStore implements StorePort {
     const row: TaskRecord = {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
       assigneeLineUserId: null, dueAt: null, deletedAt: null,
-      lastEditedByLineUserId: null, lastActivityAt: null,
+      lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,
     }
     unique(row.candidateId !== null && this.tables.tasks.some((t) => t.candidateId === row.candidateId), 'tasks.candidate_id')

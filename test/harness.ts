@@ -93,6 +93,7 @@ export const ev: {
   groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number } }): LineEvent
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
+  groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string }): LineEvent
 } = {
   groupText(p) {
     const userId = p.userId === undefined ? DEFAULT_USER : p.userId
@@ -135,6 +136,21 @@ export const ev: {
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: false },
       message: { id: next('msg'), type: 'text', text: p.text },
+    }
+  },
+  groupPostback(p) {
+    const userId = p.userId === undefined ? DEFAULT_USER : p.userId
+    return {
+      type: 'postback',
+      mode: 'active',
+      timestamp: TEST_NOW.getTime(),
+      source: userId === null
+        ? { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP }
+        : { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP, userId },
+      replyToken: p.replyToken ?? next('rt'),
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: false },
+      postback: { data: p.data },
     }
   },
   follow(p) {

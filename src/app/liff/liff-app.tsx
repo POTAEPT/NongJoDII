@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { GoogleView } from './google-view'
+import { ProgressView } from './progress-view'
 import { ReviewView } from './review-view'
 import { TaskView } from './task-view'
 import { initLiff, type LiffViewProps } from './liff-sdk'
@@ -45,5 +46,6 @@ export function LiffApp({ liffId }: { liffId: string }) {
   if (params.view === 'google') return <GoogleView {...viewProps} />
   if (params.view === 'review') return <ReviewView {...viewProps} />
   if (params.view === 'task') return <TaskView {...viewProps} />
+  if (params.view === 'progress') return <ProgressView {...viewProps} />
   return <p className="p-4 text-base">{OPEN_FAILED}</p>
 }

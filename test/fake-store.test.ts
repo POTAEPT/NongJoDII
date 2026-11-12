@@ -98,7 +98,7 @@ describe('FakeStore', () => {
     ).rejects.toThrow('FK violation: messages.sender_line_user_id')
   })
 
-  test('createTask twice for one candidate returns the same Task', async () => {
+  test('confirmCandidate twice for one candidate returns the same Task', async () => {
     const store = new FakeStore()
     const group = await store.ensureGroup('Cgroup1')
     await store.upsertLineUser({ lineUserId: 'Uowner1', displayName: 'Owner' })
@@ -123,12 +123,31 @@ describe('FakeStore', () => {
       createdByLineUserId: 'Uowner1',
       dueAt: null,
     }
-    const first = await store.createTask(task)
-    expect(first.created).toBe(true)
-    const second = await store.createTask({ ...task, title: 'other' })
-    expect(second).toEqual({ created: false, taskId: first.taskId })
+    const first = await store.confirmCandidate(task, SENT_AT)
+    expect(first.outcome).toBe('created')
+    expect(store.tables.task_candidates[0]).toMatchObject({ state: 'confirmed', decidedByLineUserId: 'Uowner1' })
+    const second = await store.confirmCandidate({ ...task, title: 'other' }, SENT_AT)
+    expect(second).toEqual({ outcome: 'already_decided', taskId: first.taskId })
     expect(store.tables.tasks).toHaveLength(1)
-    expect((await store.getTask(first.taskId))?.title).toBe('t')
+    expect((await store.getTask(first.taskId!))?.title).toBe('t')
+  })
+
+  test('confirmCandidate on a declined candidate creates no Task', async () => {
+    const store = new FakeStore()
+    const group = await store.ensureGroup('Cgroup1')
+    await store.upsertLineUser({ lineUserId: 'Uowner1', displayName: 'Owner' })
+    const { candidateIds } = await store.createSummary(
+      { groupId: group.id, requestedByLineUserId: null, summaryText: 's', firstMessageAt: null, lastMessageAt: null, createdAt: SENT_AT },
+      [{ title: 't', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null }],
+    )
+    await store.decideCandidate(candidateIds[0], 'declined', 'Uowner1', SENT_AT)
+    const res = await store.confirmCandidate({
+      groupId: group.id, candidateId: candidateIds[0], title: 't', details: null, status: 'not_assigned',
+      assigneeLineUserId: null, createdByLineUserId: 'Uowner1', dueAt: null,
+    }, SENT_AT)
+    expect(res).toEqual({ outcome: 'already_decided', taskId: null })
+    expect(store.tables.tasks).toHaveLength(0)
+    expect(store.tables.task_candidates[0].state).toBe('declined')
   })
 
   test('decideCandidate only moves a proposed candidate', async () => {

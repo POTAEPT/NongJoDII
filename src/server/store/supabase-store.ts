@@ -265,24 +265,20 @@ export class SupabaseStore implements StorePort {
     return { updated: (data ?? []).length === 1 }
   }
 
-  async createTask(t: NewTask): Promise<{ created: boolean; taskId: string }> {
-    const { data, error } = await this.db
-      .from('tasks')
-      .upsert(
-        {
-          group_id: t.groupId, candidate_id: t.candidateId, title: t.title, details: t.details, status: t.status,
-          assignee_line_user_id: t.assigneeLineUserId, created_by_line_user_id: t.createdByLineUserId,
-          due_at: iso(t.dueAt),
-        },
-        { onConflict: 'candidate_id', ignoreDuplicates: true },
-      )
-      .select('id')
-    check('createTask', error)
-    const rows = (data ?? []) as { id: string }[]
-    if (rows.length === 1) return { created: true, taskId: rows[0].id }
-    const existing = await this.db.from('tasks').select('id').eq('candidate_id', t.candidateId).single()
-    check('createTask', existing.error)
-    return { created: false, taskId: (existing.data as { id: string }).id }
+  async confirmCandidate(
+    t: NewTask, decidedAt: Date,
+  ): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }> {
+    const { data, error } = await this.db.rpc('confirm_candidate', {
+      p_candidate_id: t.candidateId, p_group_id: t.groupId, p_title: t.title, p_details: t.details,
+      p_status: t.status, p_assignee: t.assigneeLineUserId, p_created_by: t.createdByLineUserId,
+      p_due_at: iso(t.dueAt), p_decided_at: decidedAt.toISOString(),
+    })
+    check('confirmCandidate', error)
+    const row = ((data ?? []) as { outcome: string; task_id: string | null }[])[0]
+    if (!row || (row.outcome !== 'created' && row.outcome !== 'already_decided')) {
+      throw new Error('confirmCandidate: unexpected result from confirm_candidate')
+    }
+    return { outcome: row.outcome, taskId: row.task_id }
   }
 
   async getTask(taskId: string): Promise<TaskRow | null> {

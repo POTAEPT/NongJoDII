@@ -283,6 +283,22 @@ describe('submitReview', () => {
     expect(t.store.tables.tasks).toHaveLength(1)
   })
 
+  it('15b. a decline by another Member after this submit loaded the candidate wins', async () => {
+    const t = await setup()
+    // Another Member declines c1 between this submit's read and its confirm.
+    const list = t.store.listCandidates.bind(t.store)
+    vi.spyOn(t.store, 'listCandidates').mockImplementation(async (summaryId) => {
+      const rows = await list(summaryId)
+      await t.store.decideCandidate(t.c1, 'declined', 'Ubank', t.deps.now())
+      return rows
+    })
+    const res = await t.submit([t.confirm(t.c1)])
+    expect(res.status).toBe(200)
+    expect(results(res.body)).toEqual([{ candidateId: t.c1, outcome: 'already_decided' }])
+    expect(t.store.tables.tasks).toHaveLength(0)
+    expect(t.candidate(t.c1)).toMatchObject({ state: 'declined', decidedByLineUserId: 'Ubank' })
+  })
+
   it('16. a client-sent user ID is ignored', async () => {
     const t = await setup()
     await t.submit([t.confirm(t.c1)], { lineUserId: 'Uowner1', userId: 'Uowner1' })

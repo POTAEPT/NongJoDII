@@ -1,5 +1,5 @@
 import { log } from '../log'
-import type { ApiResult, CandidateState, Deps } from '../ports'
+import type { ApiResult, Deps } from '../ports'
 import { statusFor, type TaskFields, validateTaskFields } from '../tasks/fields'
 import { badRequest, field, openSummary } from './load'
 import type { SubmitResult } from './types'
@@ -7,13 +7,14 @@ import type { SubmitResult } from './types'
 const MAX_DECISIONS = 10
 
 type Planned =
-  | { candidateId: string; state: CandidateState; action: 'decline' }
-  | { candidateId: string; state: CandidateState; action: 'confirm'; fields: TaskFields }
+  | { candidateId: string; action: 'decline' }
+  | { candidateId: string; action: 'confirm'; fields: TaskFields }
 
 /** POST /api/review/submit. Confirms (with edits) or declines several candidates.
- *  Everything is validated before anything is written. A Task is created first,
- *  then its candidate is marked confirmed, so a retry after a crash in between
- *  heals instead of duplicating (tasks.candidate_id is unique). */
+ *  Everything is validated before anything is written. A confirm locks the
+ *  candidate, creates its Task and marks it confirmed in one transaction, so a
+ *  decline that won the race is respected and a retry never duplicates
+ *  (tasks.candidate_id is unique). */
 export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult> {
   const gate = await openSummary(deps, body)
   if (!gate.ok) return gate.result
@@ -34,14 +35,14 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
     seen.add(candidateId)
     const action = field(d, 'action')
     if (action === 'decline') {
-      plan.push({ candidateId, state: candidate.state, action })
+      plan.push({ candidateId, action })
     } else if (action === 'confirm') {
       const v = await validateTaskFields(deps.store, summary.groupId, {
         title: field(d, 'title'), details: field(d, 'details'),
         assigneeLineUserId: field(d, 'assigneeLineUserId'), dueAt: field(d, 'dueAt'),
       })
       if (!v.ok) return badRequest(v.field)
-      plan.push({ candidateId, state: candidate.state, action, fields: v.fields })
+      plan.push({ candidateId, action, fields: v.fields })
     } else {
       return badRequest('action')
     }
@@ -56,17 +57,13 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
       results.push({ candidateId: p.candidateId, outcome: updated ? 'declined' : 'already_decided' })
       continue
     }
-    if (p.state === 'declined') {
-      results.push({ candidateId: p.candidateId, outcome: 'already_decided' })
-      continue
-    }
-    const { created, taskId } = await deps.store.createTask({
+    // The candidate state read above may be stale: the store re-reads it under a lock.
+    // L3: a proposed candidate is marked confirmed even when its Task already existed.
+    const { outcome, taskId } = await deps.store.confirmCandidate({
       groupId: summary.groupId, candidateId: p.candidateId, ...p.fields,
       status: statusFor(p.fields.assigneeLineUserId, null), createdByLineUserId: requester,
-    })
-    // L3: always mark a proposed candidate confirmed, even when its Task already existed.
-    if (p.state === 'proposed') await deps.store.decideCandidate(p.candidateId, 'confirmed', requester, now)
-    results.push({ candidateId: p.candidateId, outcome: created ? 'created' : 'already_decided', taskId })
+    }, now)
+    results.push(taskId ? { candidateId: p.candidateId, outcome, taskId } : { candidateId: p.candidateId, outcome })
   }
   log('review_submitted', {
     summaryId: summary.id,

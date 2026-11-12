@@ -281,16 +281,30 @@ export class FakeStore implements StorePort {
     return { updated: true }
   }
 
-  async createTask(t: NewTask): Promise<{ created: boolean; taskId: string }> {
-    this.fault('createTask')
+  async confirmCandidate(
+    t: NewTask, decidedAt: Date,
+  ): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }> {
+    this.fault('confirmCandidate')
+    // Same rules as the confirm_candidate function, applied as one step.
+    const c = this.tables.task_candidates.find((row) => row.id === t.candidateId)
+    if (!c) throw new Error(`FakeStore: unknown candidate ${t.candidateId}`)
+    if (c.state === 'declined') return { outcome: 'already_decided', taskId: null }
     const existing = this.tables.tasks.find((row) => row.candidateId === t.candidateId)
-    if (existing) return { created: false, taskId: existing.id }
-    this.checkTaskFks(t)
-    const taskId = randomUUID()
-    this.tables.tasks.push({
-      ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null,
-    })
-    return { created: true, taskId }
+    if (!existing) this.checkTaskFks(t)
+    if (c.state === 'proposed') fk(this.hasLineUser(t.createdByLineUserId), 'task_candidates.decided_by_line_user_id')
+    let taskId = existing?.id
+    if (!taskId) {
+      taskId = randomUUID()
+      this.tables.tasks.push({
+        ...t, id: taskId, deletedAt: null, lastEditedByLineUserId: null, lastActivityAt: null,
+      })
+    }
+    if (c.state === 'proposed') {
+      c.state = 'confirmed'
+      c.decidedByLineUserId = t.createdByLineUserId
+      c.decidedAt = decidedAt
+    }
+    return { outcome: existing ? 'already_decided' : 'created', taskId }
   }
 
   private checkTaskFks(t: Pick<TaskRecord, 'groupId' | 'candidateId' | 'assigneeLineUserId' | 'createdByLineUserId'>): void {

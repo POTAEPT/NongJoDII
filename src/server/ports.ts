@@ -98,7 +98,11 @@ export interface StorePort {
   getSummary(summaryId: string): Promise<SummaryRow | null>
   listCandidates(summaryId: string): Promise<CandidateRow[]>                         // ordered by created_at, then id
   decideCandidate(candidateId: string, state: 'confirmed' | 'declined', decidedBy: string, decidedAt: Date): Promise<{ updated: boolean }> // only from 'proposed'
-  createTask(t: NewTask): Promise<{ created: boolean; taskId: string }>              // ON CONFLICT (candidate_id) DO NOTHING; duplicate -> existing id, created false
+  /** One transaction (rpc confirm_candidate): locks the candidate, then creates its Task
+   *  (ON CONFLICT (candidate_id) DO NOTHING; duplicate -> existing id) and marks a proposed
+   *  candidate confirmed, decided by t.createdByLineUserId. A candidate already declined
+   *  wins: no Task, outcome already_decided, taskId null. */
+  confirmCandidate(t: NewTask, decidedAt: Date): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }>
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
   // #5 / #6 usage

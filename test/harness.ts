@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto'
-import type { LineEvent } from '@/server/line/types'
+import type { LineEvent, LineMention } from '@/server/line/types'
 import type { Defer, Deps, GroupRow } from '@/server/ports'
 import { FakeGoogle } from './fakes/fake-google'
 import { FakeLine } from './fakes/fake-line'
@@ -74,7 +74,7 @@ function next(prefix: string): string {
 }
 
 export const ev: {
-  groupText(p: { text: string; groupId?: string; userId?: string | null; eventId?: string; messageId?: string; timestamp?: number; replyToken?: string; redelivery?: boolean }): LineEvent
+  groupText(p: { text: string; groupId?: string; userId?: string | null; eventId?: string; messageId?: string; timestamp?: number; replyToken?: string; redelivery?: boolean; mentionees?: LineMention[] }): LineEvent
   groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number } }): LineEvent
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
@@ -91,7 +91,9 @@ export const ev: {
       replyToken: p.replyToken ?? next('rt'),
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },
-      message: { id: p.messageId ?? next('msg'), type: 'text', text: p.text },
+      message: p.mentionees
+        ? { id: p.messageId ?? next('msg'), type: 'text', text: p.text, mention: { mentionees: p.mentionees } }
+        : { id: p.messageId ?? next('msg'), type: 'text', text: p.text },
     }
   },
   groupImage(p) {

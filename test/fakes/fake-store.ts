@@ -213,6 +213,7 @@ export class FakeStore implements StorePort {
           this.tables.line_users.find((u) => u.lineUserId === m.senderLineUserId)?.displayName ?? null,
         text: m.text as string,
         sentAt: m.sentAt,
+        mentions: m.mentions,
       }))
   }
 

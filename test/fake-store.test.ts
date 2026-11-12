@@ -38,6 +38,7 @@ function message(groupId: string, webhookEventId: string, lineMessageId: string)
     imageSetId: null,
     imageSetIndex: null,
     imageSetTotal: null,
+    mentions: null,
   }
 }
 

@@ -1,6 +1,6 @@
 // Pure conversions from PostgREST rows (snake_case, timestamps as ISO strings)
 // to the domain types of src/server/ports.ts.
-import type { CandidateRow, CandidateState, GroupRow, Member, StoredMessage, TaskRow, TaskStatus } from '../ports'
+import type { CandidateRow, CandidateState, GroupRow, Member, MessageMention, StoredMessage, TaskRow, TaskStatus } from '../ports'
 
 type Ts = string
 type NameEmbed = { display_name: string | null } | null
@@ -12,6 +12,7 @@ export type DbGroup = {
 }
 export type DbMessage = {
   id: string; sender_line_user_id: string | null; text: string; sent_at: Ts; line_users: NameEmbed
+  mentions: MessageMention[] | null   // jsonb, stored in the same shape
 }
 export type DbMember = { line_user_id: string; nicknames: string[] | null; role: string | null; line_users: NameEmbed }
 export type DbCandidate = {
@@ -42,7 +43,7 @@ export function toGroupRow(r: DbGroup): GroupRow {
 export function toStoredMessage(r: DbMessage): StoredMessage {
   return {
     id: r.id, senderLineUserId: r.sender_line_user_id, senderDisplayName: r.line_users?.display_name ?? null,
-    text: r.text, sentAt: toDate(r.sent_at),
+    text: r.text, sentAt: toDate(r.sent_at), mentions: r.mentions ?? null,
   }
 }
 

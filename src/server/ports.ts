@@ -34,13 +34,19 @@ export type NewWebhookEvent = {
   webhookEventId: string; eventType: string; lineGroupId: string | null
   eventTimestamp: Date; isRedelivery: boolean
 }
+/** One LINE `message.mention.mentionees[]` entry. index and length count UTF-16 code
+ *  units of `text` (the Messaging API's character unit), like JS string indices.
+ *  userId is null when LINE left it out (type 'all', or no profile consent). */
+export type MessageMention = { index: number; length: number; type: 'user' | 'all'; userId: string | null }
 export type NewMessage = {
   groupId: string; webhookEventId: string; lineMessageId: string
   senderLineUserId: string | null; messageType: string; text: string | null; sentAt: Date
   imageSetId: string | null; imageSetIndex: number | null; imageSetTotal: number | null
+  mentions: MessageMention[] | null   // null when the message tags nobody
 }
 export type StoredMessage = {
   id: string; senderLineUserId: string | null; senderDisplayName: string | null; text: string; sentAt: Date
+  mentions: MessageMention[] | null
 }
 export type Member = { lineUserId: string; displayName: string | null; nicknames: string[]; role: string | null }
 export type Membership = 'live' | 'left' | 'none'

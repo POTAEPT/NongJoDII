@@ -151,7 +151,7 @@ export class SupabaseStore implements StorePort {
           group_id: m.groupId, webhook_event_id: m.webhookEventId, line_message_id: m.lineMessageId,
           sender_line_user_id: m.senderLineUserId, message_type: m.messageType, text: m.text,
           sent_at: m.sentAt.toISOString(), image_set_id: m.imageSetId, image_set_index: m.imageSetIndex,
-          image_set_total: m.imageSetTotal,
+          image_set_total: m.imageSetTotal, mentions: m.mentions,
         },
         { onConflict: 'webhook_event_id', ignoreDuplicates: true },
       )
@@ -165,7 +165,7 @@ export class SupabaseStore implements StorePort {
   async listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]> {
     const { data, error } = await this.db
       .from('messages')
-      .select('id, sender_line_user_id, text, sent_at, line_users(display_name)')
+      .select('id, sender_line_user_id, text, sent_at, mentions, line_users(display_name)')
       .eq('group_id', groupId)
       .eq('message_type', 'text')
       .not('text', 'is', null)

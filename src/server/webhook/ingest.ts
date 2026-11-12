@@ -1,5 +1,5 @@
 import type { LineEvent } from '@/server/line/types'
-import type { Deps } from '@/server/ports'
+import type { Deps, MessageMention } from '@/server/ports'
 
 export type Job =
   | {
@@ -44,6 +44,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
       groupId: group.id, webhookEventId: event.webhookEventId, lineMessageId: message.id,
       senderLineUserId: userId, messageType: message.type, text, sentAt: eventTimestamp,
       imageSetId: imageSet?.id ?? null, imageSetIndex: imageSet?.index ?? null, imageSetTotal: imageSet?.total ?? null,
+      mentions: text === null ? null : readMentions((message as { mention?: unknown }).mention),
     })
     // Gate on the message row, not the ledger row: a half-failed first delivery is
     // retried, and a redelivery never runs twice.
@@ -65,4 +66,22 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   // Every other event (join, leave, memberJoined, unsend, postback, room...) is only
   // recorded; handling belongs to #2, #7 and #11.
   return null
+}
+
+/** Keeps LINE's mention entries in the stored shape. The body passed the signature
+ *  check but is still parsed JSON, so malformed entries are dropped, not trusted. */
+function readMentions(mention: unknown): MessageMention[] | null {
+  const mentionees = (mention as { mentionees?: unknown } | null | undefined)?.mentionees
+  if (!Array.isArray(mentionees)) return null
+  const out: MessageMention[] = []
+  for (const raw of mentionees) {
+    const m = raw as { index?: unknown; length?: unknown; type?: unknown; userId?: unknown } | null
+    if (!m || (m.type !== 'user' && m.type !== 'all')) continue
+    if (!Number.isInteger(m.index) || !Number.isInteger(m.length)) continue
+    out.push({
+      index: m.index as number, length: m.length as number, type: m.type,
+      userId: m.type === 'user' && typeof m.userId === 'string' ? m.userId : null,
+    })
+  }
+  return out.length > 0 ? out : null
 }

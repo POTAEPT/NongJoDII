@@ -1,0 +1,8 @@
+{
+  "files": [
+    {
+      "path": "docs/PROJECT.md",
+      "description": "Project overview: what NongJoDII is, the domain terms, the five features with their GitHub issues, the stack, the test seams and the open decisions. Read it before reviewing any change."
+    }
+  ]
+}

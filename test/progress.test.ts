@@ -413,6 +413,25 @@ describe('answers', () => {
     expect(t.task(t.slides.id).status).toBe('done')
   })
 
+  it('a Yes from someone who lost the right to answer mid-press is refused by the write', async () => {
+    const t = setup()
+    t.answer({ kind: 'match', task: 1, status: 'done' })
+    await t.say(TON, 'สไลด์คู่แข่งเสร็จละ')              // card on Task 1 (assignee BIW), sent by TON
+    const yes = buttons(lastReply(t))['ใช่ เสร็จแล้ว']
+
+    // Between the handler's check and the write, someone reassigns the Task to JEFF.
+    const original = t.store.confirmProgressYes.bind(t.store)
+    t.store.confirmProgressYes = async (y) => {
+      t.task(t.slides.id).assigneeLineUserId = JEFF
+      return original(y)
+    }
+    await t.press(BIW, yes, 'ev-race')
+
+    expect(json(lastReply(t))).toContain('ถูกลบหรือเปลี่ยนไปแล้ว')
+    expect(t.task(t.slides.id)).toMatchObject({ status: 'in_process', assigneeLineUserId: JEFF })
+    expect(t.store.tables.task_prompts[0].answer).toBeNull()
+  })
+
   it('a press whose group write failed still runs when LINE redelivers it', async () => {
     const t = setup()
     const b = await askDone(t)

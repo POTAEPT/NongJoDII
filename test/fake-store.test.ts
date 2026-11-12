@@ -235,6 +235,26 @@ describe('FakeStore', () => {
     expect(store.tables.tasks).toHaveLength(2)
   })
 
+  test('confirmProgressYes from someone who is neither assignee nor subject is task_changed and writes nothing', async () => {
+    const store = new FakeStore()
+    const group = store.seedGroup({ lineGroupId: 'Cgroup1' })
+    for (const id of ['Uowner1', 'Uassignee', 'Usubject', 'Uother']) store.seedMember({ groupId: group.id, lineUserId: id, displayName: id })
+    const task = store.seedTask({
+      groupId: group.id, title: 'T', createdByLineUserId: 'Uowner1', status: 'in_process', assigneeLineUserId: 'Uassignee',
+    })
+    const { prompt } = await store.createProgressPrompt({
+      groupId: group.id, taskId: task.id, targetStatus: 'done', subjectLineUserId: 'Usubject', triggerMessageId: null, askedAt: SENT_AT,
+    })
+    const yes = (by: string) => ({
+      promptId: prompt!.id, taskId: task.id, fromStatus: 'in_process' as const, toStatus: 'done' as const,
+      byLineUserId: by, assignTo: null, at: SENT_AT,
+    })
+    expect(await store.confirmProgressYes(yes('Uother'))).toEqual({ outcome: 'task_changed' })
+    expect(store.tables.tasks[0]).toMatchObject({ status: 'in_process', doneAt: null, assigneeLineUserId: 'Uassignee' })
+    expect(store.tables.task_prompts[0].answer).toBeNull()
+    expect(await store.confirmProgressYes(yes('Usubject'))).toEqual({ outcome: 'updated' })
+  })
+
   test('sumOwnerMonthUsage buckets by Bangkok month', async () => {
     const store = new FakeStore()
     store.seedAiUsage({ inputTokens: 100, outputTokens: 50, costUsd: 0.000123, createdAt: new Date('2026-11-01T00:00:00Z') })

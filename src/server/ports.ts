@@ -214,6 +214,8 @@ export interface StorePort {
   /** Yes, in one transaction (rpc answer_progress_yes): locks the card; if it is open and the
    *  live Task is still in fromStatus, moves the Task (done sets done_at; assignTo, when set,
    *  becomes the assignee; bumps last_activity_at and last_edited_by) and records the answer.
+   *  The presser must still be the Task's assignee or the card's subject at write time, else
+   *  task_changed (a reassignment can land between the handler's check and this write).
    *  task_changed leaves the card open and the Task untouched. */
   confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }>
   /** Deletes a card only while it is unanswered: its reply never reached the group, or it went stale. */

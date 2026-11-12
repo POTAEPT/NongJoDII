@@ -466,7 +466,9 @@ export class FakeStore implements StorePort {
     const p = this.tables.task_prompts.find((row) => row.id === y.promptId && row.taskId === y.taskId)
     if (!p) return { outcome: 'task_changed' }
     if (p.answer !== null) return { outcome: 'already_answered' }
-    const t = this.tables.tasks.find((row) => row.id === y.taskId && row.deletedAt === null && row.status === y.fromStatus)
+    // The presser must still be the Task's assignee or the card's subject at write time.
+    const t = this.tables.tasks.find((row) => row.id === y.taskId && row.deletedAt === null && row.status === y.fromStatus
+      && (row.assigneeLineUserId === y.byLineUserId || p.subjectLineUserId === y.byLineUserId))
     if (!t) return { outcome: 'task_changed' }
     fk(this.hasLineUser(y.byLineUserId), 'tasks.last_edited_by_line_user_id')
     fk(this.hasLineUser(y.assignTo), 'tasks.assignee_line_user_id')

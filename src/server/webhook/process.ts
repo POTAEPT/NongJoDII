@@ -2,6 +2,8 @@ import { parseGroupCommand } from '@/server/commands/parse'
 import { sendConnectDriveCard } from '@/server/google/connect-card'
 import { log, logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
+import { handleProgressPostback } from '@/server/progress/handle-postback'
+import { handleProgressText } from '@/server/progress/handle-text'
 import { runSummaryCommand } from '@/server/summary/run-summary'
 import type { Job } from './ingest'
 
@@ -57,8 +59,11 @@ async function runAll(jobs: Job[], fn: (job: Job) => Promise<void>): Promise<voi
 
 /** Best effort: a LINE 5xx/429 here must not stop the job's command from running. */
 async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
-  if (job.kind !== 'group_message' || !job.senderLineUserId) return
-  const { senderLineUserId, lineGroupId } = job
+  // The sender of a group message, or the person who pressed a button in a group.
+  const senderLineUserId =
+    job.kind === 'group_message' ? job.senderLineUserId : job.kind === 'group_postback' ? job.userId : null
+  if (job.kind === 'user_chat' || !senderLineUserId) return
+  const { lineGroupId } = job
   try {
     const user = await deps.store.findLineUser(senderLineUserId)
     if (!user?.displayName) {
@@ -72,10 +77,25 @@ async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
 
 async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<void> {
   if (job.kind === 'group_message') {
-    const { senderLineUserId, lineGroupId, groupId, replyToken } = job
-    if (parseGroupCommand(job.text) === 'summarize') {
+    const { senderLineUserId, lineGroupId, groupId, replyToken, text } = job
+    if (parseGroupCommand(text) === 'summarize') {
       await namesReady
       await runSummaryCommand(deps, { groupId, lineGroupId, replyToken, requesterLineUserId: senderLineUserId })
+      return
+    }
+    // Any other text line may report progress on a Task (#7). Its card shows the sender's name.
+    if (text && replyToken && senderLineUserId) {
+      await namesReady
+      await handleProgressText(deps, {
+        groupId, storedMessageId: job.storedMessageId, senderLineUserId, text, sentAt: job.sentAt, replyToken,
+      })
+    }
+    return
+  }
+  if (job.kind === 'group_postback') {
+    if (job.replyToken) {
+      await namesReady
+      await handleProgressPostback(deps, { groupId: job.groupId, userId: job.userId, data: job.data, replyToken: job.replyToken })
     }
     return
   }

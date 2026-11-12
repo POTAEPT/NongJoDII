@@ -9,6 +9,7 @@ export type DbGroup = {
   id: string; line_group_id: string; project_id: string | null; name: string | null
   nominated_owner_line_user_id: string | null; owner_confirmed_at: Ts | null
   feature_summarize: boolean; feature_draft_tasks: boolean; work_description: string | null
+  feature_track_remind: boolean
 }
 export type DbMessage = {
   id: string; sender_line_user_id: string | null; text: string; sent_at: Ts; line_users: NameEmbed
@@ -36,7 +37,7 @@ export function toGroupRow(r: DbGroup): GroupRow {
     id: r.id, lineGroupId: r.line_group_id, projectId: r.project_id, name: r.name,
     nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
     featureSummarize: r.feature_summarize, featureDraftTasks: r.feature_draft_tasks,
-    workDescription: r.work_description,
+    workDescription: r.work_description, featureTrackRemind: r.feature_track_remind,
   }
 }
 

@@ -4,7 +4,13 @@ import type { Deps, MessageMention } from '@/server/ports'
 export type Job =
   | {
       kind: 'group_message'; groupId: string; lineGroupId: string; messageId: string
+      storedMessageId: string; sentAt: Date   // messages.id and send time (#7 progress cards)
       senderLineUserId: string | null; text: string | null; replyToken: string | null
+    }
+  | {
+      // A button press in a group (#7 progress cards). userId is optional on postbacks.
+      kind: 'group_postback'; groupId: string; lineGroupId: string
+      userId: string | null; data: string; replyToken: string | null
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
 
@@ -40,7 +46,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     })
     const text = message.type === 'text' && typeof message.text === 'string' ? message.text : null
     const imageSet = message.type === 'image' ? (message.imageSet as { id: string; index?: number; total?: number } | undefined) : undefined
-    const { inserted } = await store.insertMessage({
+    const { inserted, id: storedMessageId } = await store.insertMessage({
       groupId: group.id, webhookEventId: event.webhookEventId, lineMessageId: message.id,
       senderLineUserId: userId, messageType: message.type, text, sentAt: eventTimestamp,
       imageSetId: imageSet?.id ?? null, imageSetIndex: imageSet?.index ?? null, imageSetTotal: imageSet?.total ?? null,
@@ -48,10 +54,30 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     })
     // Gate on the message row, not the ledger row: a half-failed first delivery is
     // retried, and a redelivery never runs twice.
-    if (!inserted) return null
+    if (!inserted || storedMessageId === null) return null
     return {
       kind: 'group_message', groupId: group.id, lineGroupId: source.groupId, messageId: message.id,
+      storedMessageId, sentAt: eventTimestamp,
       senderLineUserId: userId, text, replyToken: event.replyToken ?? null,
+    }
+  }
+
+  if (source.type === 'group' && event.type === 'postback' && typeof event.postback?.data === 'string') {
+    // Prerequisite writes first (both idempotent), the ledger claim last: if a write
+    // fails, the event is not claimed yet, so LINE's redelivery still runs the press.
+    const userId = source.userId ?? null
+    // The presser is stored as a LINE user, so answered_by can point at them.
+    if (userId) await store.upsertLineUser({ lineUserId: userId, displayName: null })
+    const group = await store.ensureGroup(source.groupId)
+    // The ledger row is the store-once gate: a redelivered press runs once.
+    const { inserted } = await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'postback', lineGroupId: source.groupId,
+      eventTimestamp, isRedelivery,
+    })
+    if (!inserted) return null
+    return {
+      kind: 'group_postback', groupId: group.id, lineGroupId: source.groupId,
+      userId, data: event.postback.data, replyToken: event.replyToken ?? null,
     }
   }
 
@@ -63,8 +89,8 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (join, leave, memberJoined, unsend, postback, room...) is only
-  // recorded; handling belongs to #2, #7 and #11.
+  // Every other event (join, leave, memberJoined, unsend, room...) is only
+  // recorded; handling belongs to #2 and #11.
   return null
 }
 

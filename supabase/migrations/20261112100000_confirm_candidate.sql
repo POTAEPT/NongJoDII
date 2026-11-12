@@ -78,3 +78,8 @@ $$;
 revoke all on function public.confirm_candidate(
   uuid, uuid, text, text, public.task_status, text, text, timestamptz, timestamptz
 ) from public, anon, authenticated;
+
+-- Explicit, like the ai_usage claim functions: only the server (service_role) calls it.
+grant execute on function public.confirm_candidate(
+  uuid, uuid, text, text, public.task_status, text, text, timestamptz, timestamptz
+) to service_role;

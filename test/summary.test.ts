@@ -6,6 +6,7 @@ import type { LlmRequest, LlmUsage } from '@/server/ports'
 import { runSummaryCommand } from '@/server/summary/run-summary'
 import { TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
+import { chatLines, refMentioning, refOf, taggedRefs, todayOf } from './fakes/prompt-reader'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, TEST_LIFF_ID, webhookBody } from './harness'
 
 const T0 = Date.UTC(2026, 10, 12, 2, 0, 0) // 09:00 Bangkok
@@ -17,13 +18,6 @@ const MEMBERS = [
 ]
 
 type Refs = (lineName: string) => string
-
-/** The member ref the prompt gave to the person with this LINE name. */
-function refOf(user: string, lineName: string): string {
-  const m = new RegExp(`^(m\\d+): LINE name "${lineName.replace(/[.]/g, '\\.')}"`, 'm').exec(user)
-  if (!m) throw new Error(`no ref for ${lineName}`)
-  return m[1]
-}
 
 beforeEach(() => {
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -42,9 +36,9 @@ function setup(opts?: { lineGroupId?: string }) {
     await h.runDeferred()
   }
   /** Queues a model answer built from the refs in the request's prompt. */
-  const respond = (build: (ref: Refs) => unknown, usage: LlmUsage = USAGE) => {
+  const respond = (build: (ref: Refs, req: LlmRequest) => unknown, usage: LlmUsage = USAGE) => {
     h.llm.respond((req: LlmRequest) => ({
-      content: JSON.stringify(build((name) => refOf(req.user, name))), model: TEXT_MODEL, usage,
+      content: JSON.stringify(build((name) => refOf(req, name), req)), model: TEXT_MODEL, usage,
     }))
   }
   const command = (text = 'NongJoDII summarize', p?: { replyToken?: string; groupId?: string; timestamp?: number }) =>
@@ -69,6 +63,13 @@ const standardAnswer = (ref: Refs) => ({
     { title: 'จองห้อง', assignee: null },
   ],
 })
+
+function addDays(isoDate: string | null, days: number): string {
+  if (isoDate === null) return 'no-date'
+  const d = new Date(`${isoDate}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
 
 function textOf(messages: LineMessage[]): string {
   const m = messages[0]
@@ -95,19 +96,19 @@ describe('Summary command', () => {
     expect(t.line.replies).toHaveLength(0)
   })
 
-  it('3. reads the last messages with sender and Bangkok time, without the command', async () => {
+  it('3. the AI reads the last messages with sender and Bangkok time, without the command, and knows today', async () => {
     const t = setup()
     await seedChat(t)
-    t.respond(standardAnswer)
+    // The fake model retells each chat line it read, and dates a task "tomorrow" from its idea of today.
+    t.respond((_, req) => ({
+      summary: chatLines(req).map((c) => `${c.time} {${c.senderRef}} ${c.text}`).join(' | '),
+      tasks: [{ title: 'ทำสไลด์', due: `${addDays(todayOf(req), 1)}T17:00:00+07:00` }],
+    }))
     await t.command()
-    const { user } = t.llm.requests[0]
-    const mP = refOf(user, 'Pim Sirin')
-    const mB = refOf(user, 'Bank T.')
-    expect(user).toContain(`#1 [2026-11-12 09:00] ${mP}: สวัสดีทุกคน`)
-    expect(user).toContain(`#2 [2026-11-12 09:01] ${mB}: ใครทำสไลด์ได้บ้าง ด่วนนะ`)
-    expect(user).toContain(`#3 [2026-11-12 09:02] ${mP}: เดี๋ยวทำสไลด์เอง`)
-    expect(user).not.toContain('NongJoDII')
-    expect(t.llm.requests[0].system).toContain('Today is 2026-11-12 (Asia/Bangkok)')
+    expect(t.store.tables.summaries[0].summaryText).toBe(
+      '09:00 Pim Sirin สวัสดีทุกคน | 09:01 Bank T. ใครทำสไลด์ได้บ้าง ด่วนนะ | 09:02 Pim Sirin เดี๋ยวทำสไลด์เอง',
+    )
+    expect(t.store.tables.task_candidates[0].suggestedDueAt).toEqual(new Date('2026-11-13T10:00:00Z'))
   })
 
   it('4. sends only the newest 100 texts (M1)', async () => {
@@ -115,14 +116,15 @@ describe('Summary command', () => {
     const events = Array.from({ length: 120 }, (_, i) =>
       ev.groupText({ text: `msg-${String(i + 1).padStart(3, '0')}`, userId: 'Ubank', timestamp: T0 + i * 1000 }))
     await t.send(...events)
-    t.respond(() => ({ summary: 'สรุป', tasks: [] }))
+    // The fake model reports how many messages it read and the first and last.
+    t.respond((_, req) => {
+      const chat = chatLines(req)
+      return { summary: `${chat.length} ${chat[0].text} ${chat[chat.length - 1].text}`, tasks: [] }
+    })
     await t.command()
-    const { user } = t.llm.requests[0]
-    expect(user).toContain('msg-021')
-    expect(user).toContain('msg-120')
-    expect(user).not.toContain('msg-020')
-    expect(user).not.toContain('NongJoDII')
-    expect(user.match(/^#\d+ \[/gm)).toHaveLength(100)
+    expect(t.store.tables.summaries[0]).toMatchObject({
+      summaryText: '100 msg-021 msg-120', firstMessageAt: new Date(T0 + 20 * 1000), lastMessageAt: new Date(T0 + 119 * 1000),
+    })
   })
 
   it('5. the reply uses LINE names, never refs or nicknames (H1)', async () => {
@@ -166,13 +168,22 @@ describe('Summary command', () => {
     expect(t.store.tables.task_candidates[0].suggestedAssigneeLineUserId).toBe('Unoname')
   })
 
-  it('6. nicknames go to the AI', async () => {
+  it('6. the AI can match a nickname in the chat to the Member (rule 9)', async () => {
     const t = setup()
     await seedChat(t)
-    t.respond(standardAnswer)
+    await t.send(ev.groupText({ text: 'ฝากแบงค์จองห้องด้วย', userId: 'Upim', timestamp: T0 + 3 * MIN }))
+    // The fake model assigns the booking to whichever member the prompt ties to the nickname
+    // "แบงค์"; that word is in no LINE name, so only the Member's nickname can tie it.
+    t.respond((_, req) => ({
+      summary: 'สรุป',
+      tasks: chatLines(req).filter((c) => c.text.includes('แบงค์')).map((c) => ({
+        title: 'จองห้อง', assignee: refMentioning(req, 'แบงค์'), source: c.ref,
+      })),
+    }))
     await t.command()
-    expect(t.llm.requests[0].user).toContain('nicknames: พิม, Pim')
-    expect(t.llm.requests[0].user).toContain('พิม')
+    expect(t.store.tables.task_candidates).toHaveLength(1)
+    expect(t.store.tables.task_candidates[0].suggestedAssigneeLineUserId).toBe('Ubank')
+    expect(textOf(t.line.replies[0].messages)).toContain('ผู้รับ: Bank T.')
   })
 
   it('7. the button opens the LIFF confirm form for this Summary', async () => {
@@ -199,13 +210,12 @@ describe('Summary command', () => {
       ev.groupText({ text: 'a-text-1', groupId: 'Cgroup1', userId: 'Upim', timestamp: T0 }),
       ev.groupText({ text: 'b-text-1', groupId: 'Cgroup2', userId: 'Uowner1', timestamp: T0 + MIN }),
     )
-    t.respond(() => ({ summary: 'สรุป', tasks: [] }))
+    // The fake model retells every chat text it read.
+    t.respond((_, req) => ({ summary: chatLines(req).map((c) => c.text).join(' | '), tasks: [] }))
     await t.send(ev.groupText({ text: 'NongJoDII summarize', groupId: 'Cgroup2', userId: 'Uowner1', replyToken: 'rt-B', timestamp: T0 + 2 * MIN }))
     expect(t.line.replies).toHaveLength(1)
     expect(t.line.replies[0].replyToken).toBe('rt-B')
-    expect(t.llm.requests[0].user).toContain('b-text-1')
-    expect(t.llm.requests[0].user).not.toContain('a-text-1')
-    expect(t.store.tables.summaries[0].groupId).toBe(groupB.id)
+    expect(t.store.tables.summaries[0]).toMatchObject({ groupId: groupB.id, summaryText: 'b-text-1' })
   })
 
   it('9. stores candidates as proposals and creates no Task', async () => {
@@ -345,5 +355,117 @@ describe('Summary command', () => {
     expect(t.line.replies).toHaveLength(1)
     expect(t.store.tables.summaries).toHaveLength(1)
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('summary_reply_failed'))
+  })
+})
+
+describe('Summary with tagged Members (@mention)', () => {
+  // Two live Members share the LINE name "Pim"; Bank tags one of them.
+  const TWINS = [
+    { lineUserId: 'Upim1', displayName: 'Pim' },
+    { lineUserId: 'Upim2', displayName: 'Pim' },
+    { lineUserId: 'Ubank', displayName: 'Bank T.' },
+  ]
+
+  function twinSetup() {
+    const h = makeTestDeps()
+    seedOwnedGroup(h.store, { members: TWINS })
+    const send = async (...events: LineEvent[]) => {
+      const res = await handleWebhookRequest(signedRequest(webhookBody(...events)), h.deps, h.defer)
+      expect(res.status).toBe(200)
+      await h.runDeferred()
+    }
+    return { ...h, send }
+  }
+
+  it.each(['Upim1', 'Upim2'])('the tagged person (%s) is the suggested assignee, not a namesake', async (tagged) => {
+    const t = twinSetup()
+    await t.send(ev.groupText({
+      text: '@Pim ช่วยทำสไลด์หน่อย', userId: 'Ubank', timestamp: T0,
+      mentionees: [{ index: 0, length: 4, type: 'user', userId: tagged }],
+    }))
+    // The fake model takes the person tagged in the slides message; with no tag it falls
+    // back to the first member named "Pim", as a model guessing from names would.
+    t.llm.respond((req: LlmRequest) => {
+      const line = chatLines(req).find((c) => c.text.includes('สไลด์'))
+      const assignee = (line && taggedRefs(line.text)[0]) ?? refMentioning(req, '"Pim"')
+      return {
+        content: JSON.stringify({ summary: 'สรุป', tasks: [{ title: 'ทำสไลด์', assignee, source: line?.ref ?? null }] }),
+        model: TEXT_MODEL, usage: USAGE,
+      }
+    })
+    await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Ubank', timestamp: T0 + MIN }))
+    expect(t.store.tables.task_candidates).toHaveLength(1)
+    expect(t.store.tables.task_candidates[0].suggestedAssigneeLineUserId).toBe(tagged)
+    // The reply still shows the LINE name, never a ref.
+    const text = textOf(t.line.replies[0].messages)
+    expect(text).toContain('ผู้รับ: Pim')
+    expect(text).not.toContain('{m')
+  })
+})
+
+describe('Summary commands in one webhook', () => {
+  /** A model call that finishes only once `count` calls are running at the same time,
+   *  and fails after 300 ms otherwise (jobs run one after another). */
+  function barrier(count: number) {
+    let started = 0
+    let release!: () => void
+    const all = new Promise<void>((resolve) => { release = resolve })
+    return async () => {
+      started += 1
+      if (started === count) release()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new AdapterError('openrouter timeout')), 300)
+      })
+      try {
+        await Promise.race([all, timeout])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+  }
+
+  it('two slow Summaries run together and both reply', async () => {
+    const t = setup()
+    await seedChat(t)
+    const wait = barrier(2)
+    for (let i = 0; i < 2; i++) {
+      t.llm.respond(async () => {
+        await wait()
+        return { content: JSON.stringify({ summary: 'คุยกันทั่วไป', tasks: [] }), model: TEXT_MODEL, usage: USAGE }
+      })
+    }
+    await t.send(
+      ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', replyToken: 'rt-1', timestamp: T0 + 10 * MIN }),
+      ev.groupText({ text: 'NongJoDII สรุปหน่อย', userId: 'Ubank', replyToken: 'rt-2', timestamp: T0 + 11 * MIN }),
+    )
+    expect(t.line.replies.map((r) => r.replyToken).sort()).toEqual(['rt-1', 'rt-2'])
+    for (const r of t.line.replies) expect(textOf(r.messages)).toContain('คุยกันทั่วไป')
+    expect(t.store.tables.summaries).toHaveLength(2)
+  })
+
+  it('a failing Summary does not hold up or stop the other', async () => {
+    const t = setup()
+    await seedChat(t)
+    const wait = barrier(2)
+    // FIFO queue: which command draws which answer depends on timing, so assert on the set.
+    t.llm.respond(async () => {
+      await wait()
+      throw new AdapterError('openrouter 500')
+    })
+    t.llm.respond(async () => {
+      await wait()
+      return { content: JSON.stringify({ summary: 'คุยกันทั่วไป', tasks: [] }), model: TEXT_MODEL, usage: USAGE }
+    })
+    await t.send(
+      ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', replyToken: 'rt-1', timestamp: T0 + 10 * MIN }),
+      ev.groupText({ text: 'NongJoDII summarize', userId: 'Ubank', replyToken: 'rt-2', timestamp: T0 + 11 * MIN }),
+    )
+    expect(t.line.replies).toHaveLength(2)
+    expect(t.line.replies.map((r) => textOf(r.messages)).sort()).toEqual([
+      'ขอโทษนะ ตอนนี้สรุปแชทไม่สำเร็จ ลองใหม่อีกครั้ง',
+      'สรุปแชทล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชทช่วงนี้',
+    ])
+    expect(t.store.tables.summaries).toHaveLength(1)
   })
 })

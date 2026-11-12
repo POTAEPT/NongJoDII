@@ -7,6 +7,7 @@ import type { ReviewView, SubmitResult } from '@/server/review/types'
 import { formatThaiShort } from '@/server/time/bangkok'
 import { TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
+import { chatLines, refMentioning, refOf } from './fakes/prompt-reader'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 // #5 acceptance: every checkbox, driven through signed webhooks and the review seam.
@@ -29,12 +30,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
 })
-
-function refOf(user: string, lineName: string): string {
-  const m = new RegExp(`^(m\\d+): LINE name "${lineName.replace(/[.]/g, '\\.')}"`, 'm').exec(user)
-  if (!m) throw new Error(`no ref for ${lineName}`)
-  return m[1]
-}
 
 function textOf(messages: LineMessage[]): string {
   const m = messages[0]
@@ -59,14 +54,14 @@ async function setup() {
     ev.groupText({ text: 'ให้พิมทำสไลด์', userId: REQUESTER, timestamp: T0 + MIN }),
     ev.groupText({ text: 'โอเค', userId: 'Upim', timestamp: T0 + 2 * MIN }),
   )
-  const respond = (build: (ref: (lineName: string) => string) => Answer) => {
+  const respond = (build: (ref: (lineName: string) => string, req: LlmRequest) => Answer) => {
     h.llm.respond((req: LlmRequest) => ({
-      content: JSON.stringify(build((name) => refOf(req.user, name))), model: TEXT_MODEL, usage: USAGE,
+      content: JSON.stringify(build((name) => refOf(req, name), req)), model: TEXT_MODEL, usage: USAGE,
     }))
   }
   /** The Pim-slides answer the model gives under the H1 rule: people only as {mP}. */
-  const slides = (ref: (lineName: string) => string): Answer => {
-    const mP = ref('Pim Sirin')
+  const slides = (ref: (lineName: string) => string): Answer => slidesFor(ref('Pim Sirin'))
+  const slidesFor = (mP: string | null): Answer => {
     return {
       summary: `{${mP}} รับทำสไลด์`,
       tasks: [
@@ -82,7 +77,7 @@ async function setup() {
     await send(ev.groupText({ text, userId: REQUESTER, timestamp: T0 + minute * MIN }))
   }
   /** One Summary from the webhook; returns its id and candidate ids. */
-  const summarize = async (build = slides) => {
+  const summarize = async (build: Parameters<typeof respond>[0] = slides) => {
     respond(build)
     await command()
     const s = h.store.tables.summaries[h.store.tables.summaries.length - 1]
@@ -96,7 +91,7 @@ async function setup() {
   const decline = (candidateId: string) => ({ candidateId, action: 'decline' })
   const submit = (summaryId: string, decisions: unknown[], idToken = 'tok-pim') =>
     submitReview(h.deps, { idToken, summaryId, decisions })
-  return { ...h, group, send, respond, slides, command, summarize, candidate, confirm, decline, submit }
+  return { ...h, group, send, respond, slides, slidesFor, command, summarize, candidate, confirm, decline, submit }
 }
 
 const results = (body: unknown) => (body as SubmitResult).results
@@ -136,10 +131,15 @@ describe('#5.2 candidates carry sender and time context', () => {
 })
 
 describe('#5.3 nicknames match people, screens show LINE names', () => {
-  it('prompt has the nickname; reply, candidates and review show only the LINE name', async () => {
+  it('the AI ties the nickname in the chat to the Member; reply, candidates and review show only the LINE name', async () => {
     const t = await setup()
-    const { summaryId } = await t.summarize()
-    expect(t.llm.requests[0].user).toMatch(/^m\d+: LINE name "Pim Sirin"; nicknames: พิม, Pim;/m)
+    // The chat says "ให้พิมทำสไลด์". The fake model gives the slides to the member the
+    // prompt ties to "พิม", a word in no LINE name, so only the nickname can tie it.
+    const { summaryId, cands: [c1] } = await t.summarize((_, req) => {
+      const asked = chatLines(req).some((c) => c.text.includes('พิม'))
+      return t.slidesFor(asked ? refMentioning(req, 'พิม') : null)
+    })
+    expect(t.candidate(c1).suggestedAssigneeLineUserId).toBe('Upim')
 
     const text = t.line.replies[0].messages
       .map((m) => (m.type === 'text' ? m.text : JSON.stringify(m)))

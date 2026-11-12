@@ -60,7 +60,7 @@ async function seedChat(t: ReturnType<typeof setup>) {
 const standardAnswer = (ref: Refs) => ({
   summary: `{${ref('Pim Sirin')}} จะทำสไลด์ ส่วน {${ref('Bank T.')}} ดูเรื่องห้อง`,
   tasks: [
-    { title: 'ทำสไลด์', details: `{${ref('Pim Sirin')}} ทำ 10 หน้า`, assignee: ref('Pim Sirin'), due: '2026-11-20T17:00:00+07:00', source: '#2' },
+    { title: 'ทำสไลด์', details: `{${ref('Pim Sirin')}} ทำ 10 หน้า`, assignee: ref('Pim Sirin'), due: '2026-11-20T17:00:00+07:00', source: 's2' },
     { title: 'จองห้อง', assignee: null },
   ],
 })
@@ -87,6 +87,22 @@ describe('Summary command', () => {
     expect(t.llm.requests).toHaveLength(1)
     expect(t.line.replies).toHaveLength(1)
     expect(t.line.replies[0].replyToken).toBe('rt-phrase')
+  })
+
+  it('a message ref the model leaks never reaches the reply or the stored rows', async () => {
+    const t = setup()
+    await seedChat(t)
+    t.respond((ref) => ({
+      summary: `{${ref('Pim Sirin')}} รับทำสไลด์ตามที่ตกลงในข้อความ s3`,
+      tasks: [{ title: 'ทำสไลด์ (s3)', details: 'ดูข้อความ #2', assignee: ref('Pim Sirin'), source: 's3' }],
+    }))
+    await t.command()
+    const reply = textOf(t.line.replies[0].messages)
+    expect(reply).not.toMatch(/\bs\d+\b|#\d+/)
+    expect(t.store.tables.summaries[0].summaryText).toBe('Pim Sirin รับทำสไลด์ตามที่ตกลง')
+    expect(t.store.tables.task_candidates[0]).toMatchObject({ title: 'ทำสไลด์', details: 'ดู' })
+    // The source ref still resolves to the message it names.
+    expect(reply).toContain('จาก Pim Sirin เวลา')
   })
 
   it('2. a non-command text makes no AI call and no reply', async () => {

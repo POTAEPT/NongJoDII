@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { substituteMemberRefs } from '@/server/summary/prompt'
+import { stripMessageRefs, substituteMemberRefs } from '@/server/summary/prompt'
 
 describe('substituteMemberRefs', () => {
   const names = new Map<string, string | null>([
@@ -18,5 +18,27 @@ describe('substituteMemberRefs', () => {
   it('leaves text without braced refs unchanged', () => {
     expect(substituteMemberRefs('ไม่มีชื่อ', names)).toBe('ไม่มีชื่อ')
     expect(substituteMemberRefs('m1 ทำ', names)).toBe('m1 ทำ')
+  })
+})
+
+describe('stripMessageRefs', () => {
+  it('removes a leaked message ref with its Thai lead-in', () => {
+    expect(stripMessageRefs('Nont แจ้งในข้อความ s37 ที่ขอให้ส่งงาน')).toBe('Nont แจ้ง ที่ขอให้ส่งงาน')
+    expect(stripMessageRefs('Nont แจ้งในข้อความ #37 ที่ขอให้ส่งงาน')).toBe('Nont แจ้ง ที่ขอให้ส่งงาน')
+  })
+
+  it('removes bracketed and bare refs', () => {
+    expect(stripMessageRefs('ทำสไลด์ (s2) ให้เสร็จ')).toBe('ทำสไลด์ ให้เสร็จ')
+    expect(stripMessageRefs('ทำสไลด์ {s2}.')).toBe('ทำสไลด์.')
+    expect(stripMessageRefs('ตามที่คุยกันใน s3, s4 แล้ว')).toBe('ตามที่คุยกันใน, แล้ว')
+  })
+
+  it('keeps hash numbers and words that only look like refs', () => {
+    expect(stripMessageRefs('รีวิว PR #36 ก่อนพรุ่งนี้')).toBe('รีวิว PR #36 ก่อนพรุ่งนี้')
+    expect(stripMessageRefs('ใช้ items3 กับ Galaxy S23')).toBe('ใช้ items3 กับ Galaxy S23')
+  })
+
+  it('keeps line breaks', () => {
+    expect(stripMessageRefs('บรรทัดแรก s1\nบรรทัดสอง')).toBe('บรรทัดแรก\nบรรทัดสอง')
   })
 })

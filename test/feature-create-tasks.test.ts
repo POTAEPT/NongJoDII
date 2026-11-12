@@ -65,7 +65,7 @@ async function setup() {
     return {
       summary: `{${mP}} รับทำสไลด์`,
       tasks: [
-        { title: 'ทำสไลด์', details: `{${mP}} ทำ 10 หน้า`, assignee: mP, due: '2026-11-20T17:00:00+07:00', source: '#1' },
+        { title: 'ทำสไลด์', details: `{${mP}} ทำ 10 หน้า`, assignee: mP, due: '2026-11-20T17:00:00+07:00', source: 's1' },
         { title: 'จองห้อง', assignee: null },
         { title: 'ซื้อของ', assignee: null },
       ],

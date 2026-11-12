@@ -1,4 +1,4 @@
-import { log } from '../log'
+import { log, logError } from '../log'
 import type { ApiResult, Deps } from '../ports'
 import { statusFor, type TaskFields, validateTaskFields } from '../tasks/fields'
 import { buildTaskFeedback, type CreatedTask } from './feedback'
@@ -78,7 +78,14 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
   })
   let feedback: SubmitResult['feedback'] = null
   if (created.length > 0) {
-    const names = new Map((await deps.store.listLiveMembers(summary.groupId)).map((m) => [m.lineUserId, m.displayName]))
+    // The Tasks are saved: a failed name lookup must not turn this into an error,
+    // or the retry finds nothing new and the group is never told.
+    let names = new Map<string, string | null>()
+    try {
+      names = new Map((await deps.store.listLiveMembers(summary.groupId)).map((m) => [m.lineUserId, m.displayName]))
+    } catch (err) {
+      logError('review_feedback_names_failed', { summaryId: summary.id }, err)
+    }
     feedback = {
       text: buildTaskFeedback(created.map((c) => ({
         ...c.task, assigneeName: c.assigneeLineUserId ? (names.get(c.assigneeLineUserId) ?? null) : null,

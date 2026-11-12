@@ -2,7 +2,7 @@ import type { Member, MessageMention, StoredMessage } from '../ports'
 import { bangkokTodayLabel, formatPromptTime } from '../time/bangkok'
 
 export type PromptRef = { ref: string; lineUserId: string }          // 'm1', 'm2', ...
-export type MessageRef = { ref: string; message: StoredMessage }     // 's1', 's2', ...
+export type MessageRef = { ref: string; message: StoredMessage }     // 'msg1', 'msg2', ...
 
 const MESSAGE_TEXT_MAX = 500
 
@@ -36,7 +36,7 @@ export function buildSummaryPrompt(p: {
     lines.push(memberLine(ref, msg.senderDisplayName, [], null))
   }
 
-  const messageRefs: MessageRef[] = p.messages.map((message, i) => ({ ref: `s${i + 1}`, message }))
+  const messageRefs: MessageRef[] = p.messages.map((message, i) => ({ ref: `msg${i + 1}`, message }))
   const chat = messageRefs.map(({ ref, message }) => {
     const sender = message.senderLineUserId === null ? '?' : refByUser.get(message.senderLineUserId)
     // Tags first: their offsets point into the raw stored text.
@@ -62,11 +62,11 @@ export function buildSummaryPrompt(p: {
     '- Write summary, title and details in Thai. summary: at most 800 characters.',
     '- A task is concrete work that someone should still do according to the chat. Skip work the chat marks as finished. At most 10 tasks. Never invent tasks.',
     '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname in those fields.',
-    '- Never write a message ref (such as s14) in summary, title or details; readers never see message refs. Use message refs only in source.',
+    '- Never write a message ref (such as msg14) in summary, title or details; readers never see message refs. Use message refs only in source.',
     '- In the chat, @{m2} means the sender tagged that member; trust a tag over a name, since two members can share a LINE name.',
     '- assignee: the member ref (such as "m2") of the person who should do it. Match people by tag, LINE name or nickname. null when unclear.',
     `- due: ISO 8601 date-time with +07:00 offset when the chat states a deadline, else null. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok).`,
-    '- source: the message ref (such as "s14") where the task was asked for or agreed.',
+    '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
   ].join('\n')
 
   return { system, user, memberRefs, messageRefs }
@@ -108,10 +108,11 @@ export function substituteMemberRefs(text: string, nameByRef: Map<string, string
 }
 
 // A message ref the model wrote into reader-facing text despite the rule, with an
-// optional Thai lead-in ("ในข้อความ s37", "(s37)", "{s37}"). The old "#37" form is
-// removed only after such a lead-in, so "PR #36" from the chat stays.
+// optional Thai lead-in ("ในข้อความ msg37", "(msg37)", "{msg37}"). The "msg" prefix
+// keeps real words such as "s3" safe. The old "#37" form is removed only after such
+// a lead-in, so "PR #36" from the chat stays.
 const LEAD_IN = String.raw`(?:(?:ใน|จาก|ตาม)?ข้อความ(?:ที่)?[ \t]*)`
-const LEAKED_REF = String.raw`[ \t]*(?:${LEAD_IN}?[({]?\bs\d+\b[)}]?|${LEAD_IN}#\d+\b)`
+const LEAKED_REF = String.raw`[ \t]*(?:${LEAD_IN}?[({]?\bmsg\d+\b[)}]?|${LEAD_IN}#\d+\b)`
 
 /** Removes leaked message refs from text shown to people, then tidies the spaces
  *  left behind. Text without a ref is returned unchanged. */

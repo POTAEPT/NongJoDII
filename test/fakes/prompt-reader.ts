@@ -3,7 +3,7 @@ import type { LlmRequest } from '@/server/ports'
 // What a fake model "reads" from a Summary request. Tests build model answers from
 // these facts instead of asserting on prompt wording, so a layout change touches only
 // this file. People appear as member refs (m1, m2...) on member lines; chat lines
-// start with a message ref (s1, s2...).
+// start with a message ref (msg1, msg2...).
 
 export type ChatLine = { ref: string; time: string | null; senderRef: string | null; text: string }
 
@@ -30,7 +30,7 @@ export function refOf(req: LlmRequest, needle: string): string {
 /** The chat lines, oldest first. */
 export function chatLines(req: LlmRequest): ChatLine[] {
   return req.user.split('\n').flatMap((line) => {
-    const m = /^(s\d+)\b/.exec(line)
+    const m = /^(msg\d+)\b/.exec(line)
     if (!m) return []
     const split = line.indexOf(': ')
     const head = split === -1 ? line : line.slice(0, split)

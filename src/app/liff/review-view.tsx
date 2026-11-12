@@ -47,14 +47,15 @@ const ANNOUNCE_COPY: Record<Exclude<Announce, 'idle'>, string> = {
 
 /** Tells the group which Tasks were created: first as the member's own message from
  *  this LIFF page (free), else by asking the server to push it (counts against the
- *  LINE quota). sendMessages works only inside LINE, opened from a chat, with the
- *  chat_message.write scope; anywhere else it throws and the push takes over. */
+ *  LINE quota). sendMessages posts to whichever chat opened the page, so it is used
+ *  only when that chat is a group (the Summary link lives there); it also needs the
+ *  chat_message.write scope. Anywhere else the push takes over. */
 async function announce(
   liff: LiffViewProps['liff'], idToken: string, summaryId: string, result: SubmitResult,
 ): Promise<Exclude<Announce, 'idle' | 'working'>> {
   if (!result.feedback) return 'posted'
   try {
-    if (liff.isInClient() && liff.isApiAvailable('sendMessages')) {
+    if (liff.isInClient() && liff.getContext()?.type === 'group' && liff.isApiAvailable('sendMessages')) {
       await liff.sendMessages([{ type: 'text', text: result.feedback.text }])
       return 'posted'
     }

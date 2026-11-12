@@ -337,6 +337,14 @@ describe('Tasks created feedback', () => {
     expect((await t.submit([t.confirm(t.c2)])).body).toMatchObject({ feedback: null })
   })
 
+  it('17c. a failed name lookup still returns 200 with the saved Tasks', async () => {
+    const t = await setup()
+    t.store.failNext('listLiveMembers')
+    const res = await t.submit([t.confirm(t.c1)])
+    expect(res.status).toBe(200)
+    expect((res.body as SubmitResult).feedback?.text).toContain('ผู้รับ: สมาชิก')
+  })
+
   it('18. notify pushes once to the group and logs one message per live Member', async () => {
     const t = await setup()
     const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)

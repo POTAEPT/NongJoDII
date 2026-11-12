@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ModelOutputError, parseSummaryOutput } from '@/server/summary/parse-output'
 
 const task = (over: Record<string, unknown> = {}) => ({
-  title: 'ทำสไลด์', details: null, assignee: 'm1', due: null, source: 's1', ...over,
+  title: 'ทำสไลด์', details: null, assignee: 'm1', due: null, source: 'msg1', ...over,
 })
 const json = (tasks: unknown[], summary: unknown = 'สรุป') => JSON.stringify({ summary, tasks })
 
@@ -11,7 +11,7 @@ describe('parseSummaryOutput', () => {
     const out = parseSummaryOutput(json([task({ details: 'รายละเอียด' })]))
     expect(out).toEqual({
       summary: 'สรุป',
-      tasks: [{ title: 'ทำสไลด์', details: 'รายละเอียด', assigneeRef: 'm1', due: null, sourceRef: 's1' }],
+      tasks: [{ title: 'ทำสไลด์', details: 'รายละเอียด', assigneeRef: 'm1', due: null, sourceRef: 'msg1' }],
     })
   })
 
@@ -59,9 +59,9 @@ describe('parseSummaryOutput', () => {
     expect(parseSummaryOutput(JSON.stringify({ summary: 'x' })).tasks).toEqual([])
   })
 
-  it('reads a source ref written as s14, {s14} or the older #14', () => {
-    for (const source of ['s14', '{s14}', '#14']) {
-      expect(parseSummaryOutput(json([task({ source })])).tasks[0].sourceRef).toBe('s14')
+  it('reads a source ref written as msg14, {msg14} or the older #14', () => {
+    for (const source of ['msg14', '{msg14}', '#14']) {
+      expect(parseSummaryOutput(json([task({ source })])).tasks[0].sourceRef).toBe('msg14')
     }
   })
 })

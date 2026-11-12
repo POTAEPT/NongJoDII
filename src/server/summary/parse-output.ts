@@ -56,9 +56,9 @@ function parseTask(item: unknown): ParsedTask | null {
   return { title, details, assigneeRef, due, sourceRef }
 }
 
-/** "s14" is the prompt's form; "{s14}" and the older "#14" are accepted and
- *  normalized to "s14". Anything else is no source. */
+/** "msg14" is the prompt's form; "{msg14}" and the older "#14" are accepted and
+ *  normalized to "msg14". Anything else is no source. */
 function readSourceRef(source: string): string | null {
-  const m = /^(?:\{s(\d+)\}|s(\d+)|#(\d+))$/.exec(source.trim())
-  return m ? `s${m[1] ?? m[2] ?? m[3]}` : null
+  const m = /^(?:\{msg(\d+)\}|msg(\d+)|#(\d+))$/.exec(source.trim())
+  return m ? `msg${m[1] ?? m[2] ?? m[3]}` : null
 }

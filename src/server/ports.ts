@@ -8,6 +8,9 @@ export interface LinePort {
   push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
+  /** People in the group per LINE (GET /v2/bot/group/{id}/members/count). Excludes the
+   *  bot. LINE charges a group push once per member, so this is the push's real cost. */
+  getGroupMemberCount(lineGroupId: string): Promise<number>
   /** null when LINE rejects the ID token. */
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */

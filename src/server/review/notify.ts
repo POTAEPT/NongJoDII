@@ -48,8 +48,12 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
   let pushLogId: string | null = null
   try {
     const members = await deps.store.listLiveMembers(summary.groupId)
-    // LINE counts a group push once per person in the group.
-    const recipients = Math.max(members.length, 1)
+    // LINE counts a group push once per person in the group. Its count includes
+    // members the bot never stored (silent ones); the stored list can still hold
+    // someone who left without a leave event. The larger number errs toward
+    // skipping, never toward spending the reserve.
+    const lineCount = await deps.line.getGroupMemberCount(summary.lineGroupId)
+    const recipients = Math.max(lineCount, members.length, 1)
     const quota = await deps.line.getMessageQuota()
     if (quota.limit !== null) {
       // Claimed under a lock with the pushes still in flight, so two announces

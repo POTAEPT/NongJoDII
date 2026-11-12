@@ -386,6 +386,30 @@ describe('Tasks created feedback', () => {
     expect((await t.notify(ids)).body).toEqual({ posted: true })
   })
 
+  it('19d. the budget uses LINE\'s member count, not just the stored Members', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.groupMemberCounts.set(t.group.lineGroupId, 10) // 7 silent Members the bot never stored
+    t.line.quota = { limit: 300, used: 265 } // 265 + 10 > 270, though 265 + 3 stored would pass
+    expect((await t.notify(ids)).body).toEqual({ posted: false, reason: 'quota' })
+    expect(t.line.pushes).toHaveLength(0)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.quota = { limit: 300, used: 0 }
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.store.tables.push_log[0].messageCount).toBe(10)
+  })
+
+  it('19e. a failed member count gives 502, pushes nothing, and a retry posts', async () => {
+    const t = await setup()
+    const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    t.line.failMemberCount = true
+    expect((await t.notify(ids)).status).toBe(502)
+    expect(t.line.pushes).toHaveLength(0)
+    expect(t.store.tables.push_log).toHaveLength(0)
+    t.line.failMemberCount = false
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+  })
+
   it('19c. two announces at once cannot together spend the reserve', async () => {
     const t = await setup()
     const [a, b] = [t.c1, t.c2]

@@ -41,6 +41,29 @@ describe('LineHttpClient.reply', () => {
   })
 })
 
+describe('LineHttpClient.push', () => {
+  it('posts the group ID and messages with a Bearer token', async () => {
+    const { client, calls } = stubFetch(200)
+    await client.push('Cgroup1', [{ type: 'text', text: 'x' }])
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/message/push')
+    expect(calls[0].init.method).toBe('POST')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+    expect(headersOf(calls[0]).get('Content-Type')).toBe('application/json')
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      to: 'Cgroup1',
+      messages: [{ type: 'text', text: 'x' }],
+    })
+  })
+
+  it('throws AdapterError "line push 429" without the response body', async () => {
+    const { client } = stubFetch(429, { message: 'secret detail' })
+    const err = await client.push('Cgroup1', [{ type: 'text', text: 'x' }]).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as Error).message).toBe('line push 429')
+  })
+})
+
 describe('LineHttpClient.getGroupMemberProfile', () => {
   it('returns the display name on 200', async () => {
     const { client, calls } = stubFetch(200, { displayName: 'Pim', userId: 'U1' })

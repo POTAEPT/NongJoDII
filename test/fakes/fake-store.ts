@@ -18,6 +18,7 @@ import type {
   TaskPatch,
   TaskRow,
 } from '@/server/ports'
+import { bangkokMonthRange } from '@/server/time/bangkok'
 
 // In-memory StorePort. Tables mirror supabase/migrations/ (camelCase columns,
 // only the columns the app uses) and enforce the same unique keys and FKs.
@@ -56,11 +57,6 @@ export type FakeTables = {
   ai_usage: AiUsageRecord[]
   fair_use_notices: FairUseNoticeRecord[]
   google_accounts: GoogleAccountRecord[]
-}
-
-// TEMP: Task 7 replaces with bangkokMonthRange from src/server/time/bangkok.ts
-function monthStartBkk(d: Date): string {
-  return new Date(d.getTime() + 7 * 3600_000).toISOString().slice(0, 7) + '-01'
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -338,7 +334,7 @@ export class FakeStore implements StorePort {
   async sumOwnerMonthUsage(ownerLineUserId: string, monthStart: string): Promise<{ tokens: number; costMicroUsd: number }> {
     this.fault('sumOwnerMonthUsage')
     const rows = this.tables.ai_usage.filter(
-      (u) => u.ownerLineUserId === ownerLineUserId && monthStartBkk(u.createdAt) === monthStart,
+      (u) => u.ownerLineUserId === ownerLineUserId && bangkokMonthRange(u.createdAt).monthStartBkk === monthStart,
     )
     const tokens = rows.reduce((sum, u) => sum + u.inputTokens + u.outputTokens, 0)
     const costUsd = rows.reduce((sum, u) => sum + u.costUsd, 0)

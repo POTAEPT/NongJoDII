@@ -1,6 +1,8 @@
+import { parseGroupCommand } from '@/server/commands/parse'
 import { sendConnectDriveCard } from '@/server/google/connect-card'
 import { logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
+import { runSummaryCommand } from '@/server/summary/run-summary'
 import type { Job } from './ingest'
 
 export async function processJobs(deps: Deps, jobs: Job[]): Promise<void> {
@@ -15,7 +17,7 @@ export async function processJobs(deps: Deps, jobs: Job[]): Promise<void> {
 
 async function processJob(deps: Deps, job: Job): Promise<void> {
   if (job.kind === 'group_message') {
-    const { senderLineUserId, lineGroupId } = job
+    const { senderLineUserId, lineGroupId, groupId, replyToken } = job
     if (senderLineUserId) {
       const user = await deps.store.findLineUser(senderLineUserId)
       if (!user?.displayName) {
@@ -23,7 +25,9 @@ async function processJob(deps: Deps, job: Job): Promise<void> {
         if (profile) await deps.store.upsertLineUser({ lineUserId: senderLineUserId, displayName: profile.displayName })
       }
     }
-    // Task 7: Summary command
+    if (parseGroupCommand(job.text) === 'summarize') {
+      await runSummaryCommand(deps, { groupId, lineGroupId, replyToken, requesterLineUserId: senderLineUserId })
+    }
     return
   }
   await sendConnectDriveCard(deps, job)

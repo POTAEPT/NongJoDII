@@ -22,8 +22,9 @@ export type ReminderReason = 'overdue' | 'due_today' | 'due_tomorrow' | 'no_assi
 
 export type ReminderItem = { task: ReminderTask; reasons: ReminderReason[] }
 
-/** LINE allows up to 12 bubbles in one Flex carousel, so one post holds at most this many. */
-export const MAX_REMINDER_ITEMS = 12
+/** LINE allows up to 12 bubbles in one Flex carousel; the post's first bubble is the
+ *  summary, so it names at most 11 Tasks. */
+export const MAX_REMINDER_ITEMS = 11
 export const NO_UPDATE_DAYS = 5
 const DAY_MS = 86_400_000
 

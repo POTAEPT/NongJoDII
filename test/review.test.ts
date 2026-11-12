@@ -543,6 +543,29 @@ describe('Tasks created feedback', () => {
     expect(t.store.tables.tasks[0]).toMatchObject({ announcePendingToken: null, announcePendingAt: null })
   })
 
+  it('20i. a stalled request cannot abandon a batch another request took over and pushed', async () => {
+    const t = await setup()
+    const [a] = createdIds((await t.submit([t.confirm(t.c1)])).body)
+    // Request A claims, then stalls before its push.
+    const tokenA = randomUUID()
+    const atA = t.deps.now()
+    await t.store.claimTaskAnnouncements({ taskIds: [a], token: tokenA, at: atA, staleBefore: new Date(atA.getTime() - 2 * MIN) })
+    // Request B takes the stale claim over; LINE accepts its push but the answer is lost.
+    t.setNow(new Date(atA.getTime() + STALE))
+    t.line.timeoutAfterAccept = true
+    expect((await t.notify([a])).status).toBe(502)
+    t.line.timeoutAfterAccept = false
+    // A wakes up, hits quota or a pre-push failure, and lets its claim go.
+    await t.store.abandonTaskAnnouncements(tokenA, atA)
+    await t.store.releaseTaskAnnouncements(tokenA, atA)
+    expect(t.store.tables.tasks.find((r) => r.id === a)!.announcePendingToken).toBe(tokenA)
+    // The next notify resends under the same key: LINE answers 409, nothing new delivered.
+    expect((await t.notify([a])).body).toEqual({ posted: true })
+    expect(t.line.delivered).toHaveLength(1)
+    expect(t.line.delivered[0].retryKey).toBe(tokenA)
+    expect((await t.submit([t.confirm(t.c1)])).body).toMatchObject({ feedback: null })
+  })
+
   it('21. only the confirmer can announce Tasks of this Summary', async () => {
     const t = await setup()
     const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)

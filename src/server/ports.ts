@@ -180,11 +180,14 @@ export interface StorePort {
    *  cleared (rows with announced_at null only). */
   confirmTaskAnnouncements(token: string, at: Date): Promise<void>
   /** The push of batch `token` failed or its outcome is unknown: pending_at = null,
-   *  token kept, so the next claim retries the same batch with the same retry key. */
-  releaseTaskAnnouncements(token: string): Promise<void>
+   *  token kept, so the next claim retries the same batch with the same retry key.
+   *  Only rows still held by this claim (announce_pending_at = claimedAt, the `at` it
+   *  wrote): a stale re-claim by another request rewrote pending_at and is left alone. */
+  releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void>
   /** Batch `token` was never pushed under its token: token and pending_at cleared
-   *  (rows with announced_at null only), so its Tasks are claimed fresh next time. */
-  abandonTaskAnnouncements(token: string): Promise<void>
+   *  (rows with announced_at null only), so its Tasks are claimed fresh next time.
+   *  Scoped to this claim by claimedAt, like release. */
+  abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void>
   /** rpc claim_push_budget: serialized; counts recent push_log rows on top of
    *  lineUsed and inserts this push's row when the total stays within `allowed`.
    *  null = no budget, nothing inserted. */

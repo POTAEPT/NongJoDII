@@ -54,9 +54,9 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
   // fresh next time, together with any newer ones.
   const pending: Batch[] = []
   const free = (b: Batch) => b.token === token
-    ? deps.store.abandonTaskAnnouncements(b.token)
+    ? deps.store.abandonTaskAnnouncements(b.token, now)
         .catch((e) => logError('task_feedback_abandon_failed', { summaryId: summary.id }, e))
-    : deps.store.releaseTaskAnnouncements(b.token)
+    : deps.store.releaseTaskAnnouncements(b.token, now)
         .catch((e) => logError('task_feedback_release_failed', { summaryId: summary.id }, e))
   const releaseRest = async () => {
     for (const b of pending.splice(0)) await free(b)
@@ -134,7 +134,7 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
         logError('task_feedback_failed', { summaryId: summary.id }, err)
         await deps.store.releasePushBudget(pushLogId)
           .catch((e) => logError('task_feedback_budget_release_failed', { summaryId: summary.id }, e))
-        await deps.store.releaseTaskAnnouncements(batch.token)
+        await deps.store.releaseTaskAnnouncements(batch.token, now)
           .catch((e) => logError('task_feedback_release_failed', { summaryId: summary.id }, e))
         await releaseRest()
         return { status: 502, body: { error: 'line_failed' } }

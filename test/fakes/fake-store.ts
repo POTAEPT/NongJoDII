@@ -398,15 +398,19 @@ export class FakeStore implements StorePort {
     }
   }
 
-  async releaseTaskAnnouncements(token: string): Promise<void> {
-    this.fault('releaseTaskAnnouncements')
-    for (const t of this.tables.tasks) if (t.announcePendingToken === token && t.announcedAt === null) t.announcePendingAt = null
+  private heldBy(t: TaskRecord, token: string, claimedAt: Date): boolean {
+    return t.announcePendingToken === token && t.announcePendingAt?.getTime() === claimedAt.getTime() && t.announcedAt === null
   }
 
-  async abandonTaskAnnouncements(token: string): Promise<void> {
+  async releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    this.fault('releaseTaskAnnouncements')
+    for (const t of this.tables.tasks) if (this.heldBy(t, token, claimedAt)) t.announcePendingAt = null
+  }
+
+  async abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
     this.fault('abandonTaskAnnouncements')
     for (const t of this.tables.tasks) {
-      if (t.announcePendingToken !== token || t.announcedAt !== null) continue
+      if (!this.heldBy(t, token, claimedAt)) continue
       t.announcePendingToken = null
       t.announcePendingAt = null
     }

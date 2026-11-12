@@ -126,27 +126,29 @@ describe('SupabaseStore announce claims', () => {
     }])
   })
 
-  it('release clears pending_at and keeps the token', async () => {
+  it('release clears pending_at of this claim only and keeps the token', async () => {
     const { store, statements } = stubDb([ok(null)])
-    await store.releaseTaskAnnouncements(TOKEN)
+    await store.releaseTaskAnnouncements(TOKEN, AT)
     expect(statements).toEqual([{
       table: 'tasks',
       calls: [
         { method: 'update', args: [{ announce_pending_at: null }] },
         { method: 'eq', args: ['announce_pending_token', TOKEN] },
+        { method: 'eq', args: ['announce_pending_at', AT.toISOString()] },
         { method: 'is', args: ['announced_at', null] },
       ],
     }])
   })
 
-  it('abandon clears the token and pending_at of that batch', async () => {
+  it('abandon clears the token and pending_at of this claim only', async () => {
     const { store, statements } = stubDb([ok(null)])
-    await store.abandonTaskAnnouncements(TOKEN)
+    await store.abandonTaskAnnouncements(TOKEN, AT)
     expect(statements).toEqual([{
       table: 'tasks',
       calls: [
         { method: 'update', args: [{ announce_pending_token: null, announce_pending_at: null }] },
         { method: 'eq', args: ['announce_pending_token', TOKEN] },
+        { method: 'eq', args: ['announce_pending_at', AT.toISOString()] },
         { method: 'is', args: ['announced_at', null] },
       ],
     }])
@@ -155,8 +157,8 @@ describe('SupabaseStore announce claims', () => {
   it('confirm and release throw on an error', async () => {
     const { store } = stubDb([{ data: null, error: { code: 'X1' } }, { data: null, error: { code: 'X2' } }])
     await expect(store.confirmTaskAnnouncements(TOKEN, AT)).rejects.toThrow('supabase confirmTaskAnnouncements: X1')
-    await expect(store.releaseTaskAnnouncements(TOKEN)).rejects.toThrow('supabase releaseTaskAnnouncements: X2')
+    await expect(store.releaseTaskAnnouncements(TOKEN, AT)).rejects.toThrow('supabase releaseTaskAnnouncements: X2')
     const { store: s2 } = stubDb([{ data: null, error: { code: 'X3' } }])
-    await expect(s2.abandonTaskAnnouncements(TOKEN)).rejects.toThrow('supabase abandonTaskAnnouncements: X3')
+    await expect(s2.abandonTaskAnnouncements(TOKEN, AT)).rejects.toThrow('supabase abandonTaskAnnouncements: X3')
   })
 })

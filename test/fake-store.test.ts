@@ -216,7 +216,7 @@ describe('FakeStore', () => {
       const x = task('x')
       const b = task('b')
       await claim([a, x], TOK(1))
-      await store.releaseTaskAnnouncements(TOK(1))
+      await store.releaseTaskAnnouncements(TOK(1), T)
       expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: null })
       const later = new Date(T.getTime() + 10_000)
       const got = await claim([a, b], TOK(2), later)
@@ -258,18 +258,29 @@ describe('FakeStore', () => {
       const a = task('a')
       const done = task('done', { announcedAt: STALE })
       await claim([a], TOK(1))
-      row(done).announcePendingToken = TOK(1)
-      await store.abandonTaskAnnouncements(TOK(1))
+      Object.assign(row(done), { announcePendingToken: TOK(1), announcePendingAt: T })
+      await store.abandonTaskAnnouncements(TOK(1), T)
       expect(row(a)).toMatchObject({ announcedAt: null, announcePendingToken: null, announcePendingAt: null })
       expect(row(done).announcePendingToken).toBe(TOK(1)) // announced rows are left alone
       expect(await claim([a], TOK(2))).toEqual([{ taskId: a, token: TOK(2) }])
+    })
+
+    test('abandon and release with another claim time leave the rows alone', async () => {
+      const { store, task, row, claim } = setup()
+      const a = task('a')
+      const later = new Date(T.getTime() + 2 * 60_000 + 1000)
+      await claim([a], TOK(1))
+      expect(await claim([a], TOK(2), later)).toEqual([{ taskId: a, token: TOK(1) }]) // stale take-over
+      await store.abandonTaskAnnouncements(TOK(1), T)
+      await store.releaseTaskAnnouncements(TOK(1), T)
+      expect(row(a)).toMatchObject({ announcePendingToken: TOK(1), announcePendingAt: later })
     })
 
     test('release keeps the token and clears only pending_at', async () => {
       const { store, task, row, claim } = setup()
       const a = task('a')
       await claim([a], TOK(1))
-      await store.releaseTaskAnnouncements(TOK(1))
+      await store.releaseTaskAnnouncements(TOK(1), T)
       expect(row(a)).toMatchObject({ announcedAt: null, announcePendingToken: TOK(1), announcePendingAt: null })
     })
   })

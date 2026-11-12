@@ -384,20 +384,22 @@ export class SupabaseStore implements StorePort {
     check('confirmTaskAnnouncements', error)
   }
 
-  async releaseTaskAnnouncements(token: string): Promise<void> {
+  async releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
     const { error } = await this.db
       .from('tasks')
       .update({ announce_pending_at: null })
       .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
       .is('announced_at', null)
     check('releaseTaskAnnouncements', error)
   }
 
-  async abandonTaskAnnouncements(token: string): Promise<void> {
+  async abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
     const { error } = await this.db
       .from('tasks')
       .update({ announce_pending_token: null, announce_pending_at: null })
       .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
       .is('announced_at', null)
     check('abandonTaskAnnouncements', error)
   }

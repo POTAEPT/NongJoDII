@@ -26,4 +26,4 @@ export type SubmitResult = {
   feedbackFailed: boolean
 }
 
-export type NotifyResult = { posted: true } | { posted: false; reason: 'already_announced' | 'quota' }
+export type NotifyResult = { posted: true } | { posted: false; reason: 'already_announced' | 'nothing_to_announce' | 'quota' }

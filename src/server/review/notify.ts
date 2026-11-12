@@ -30,17 +30,19 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
   ) {
     return badRequest('taskIds')
   }
-  // Only Tasks this requester created from this Summary can be announced.
+  // Every Task must come from this Summary. Only the requester's own live Tasks are
+  // announced; others are skipped, so the page can send every Task ID its submit
+  // returned (a retry after a lost response sees them as already_decided).
   const candidateIds = new Set((await deps.store.listCandidates(summary.id)).map((c) => c.id))
   const tasks: TaskRow[] = []
   for (const id of taskIds as string[]) {
     const t = await deps.store.getTask(id)
-    if (!t || t.deletedAt !== null || t.groupId !== summary.groupId || t.candidateId === null ||
-        !candidateIds.has(t.candidateId) || t.createdByLineUserId !== requester) {
+    if (!t || t.groupId !== summary.groupId || t.candidateId === null || !candidateIds.has(t.candidateId)) {
       return badRequest('taskIds')
     }
-    tasks.push(t)
+    if (t.deletedAt === null && t.createdByLineUserId === requester) tasks.push(t)
   }
+  if (tasks.length === 0) return ok({ posted: false, reason: 'nothing_to_announce' })
 
   const claimed = new Set(await deps.store.claimTaskAnnouncements(tasks.map((t) => t.id), deps.now()))
   const toAnnounce = tasks.filter((t) => claimed.has(t.id))

@@ -373,6 +373,19 @@ describe('Tasks created feedback', () => {
     expect((await t.notify(createdIds(body))).body).toEqual({ posted: true })
   })
 
+  it('17g. after a lost response and a failed lookup, the retry still announces the saved Tasks', async () => {
+    const t = await setup()
+    await t.submit([t.confirm(t.c1)]) // the response is lost
+    t.store.failNext('listTasksByCandidates')
+    const retry = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
+    expect(retry).toMatchObject({ feedback: null, feedbackFailed: true })
+    expect(results(retry)[0].outcome).toBe('already_decided')
+    // The page sends every Task ID from results.
+    const ids = results(retry).flatMap((r) => (r.taskId ? [r.taskId] : []))
+    expect((await t.notify(ids)).body).toEqual({ posted: true })
+    expect(t.line.pushes).toHaveLength(1)
+  })
+
   it('18. notify pushes once to the group and logs one message per live Member', async () => {
     const t = await setup()
     const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
@@ -442,7 +455,8 @@ describe('Tasks created feedback', () => {
   it('21. only the confirmer can announce Tasks of this Summary', async () => {
     const t = await setup()
     const ids = createdIds((await t.submit([t.confirm(t.c1)])).body)
-    expect((await t.notify(ids, 'tok-bank')).status).toBe(400)
+    // Another Member's call announces nothing of Pim's.
+    expect((await t.notify(ids, 'tok-bank')).body).toEqual({ posted: false, reason: 'nothing_to_announce' })
     expect((await t.notify([randomUUID()])).status).toBe(400)
     expect((await t.notify([])).status).toBe(400)
     expect((await t.notify(['not-a-uuid'])).status).toBe(400)

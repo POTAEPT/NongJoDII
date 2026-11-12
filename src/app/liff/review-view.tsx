@@ -73,7 +73,7 @@ async function announce(
     const { status, json } = await post('/api/review/notify', { idToken, summaryId, taskIds, mode: 'push' })
     if (status !== 200) return 'failed'
     const n = json as NotifyResult
-    return n.posted || n.reason === 'already_announced' ? 'posted' : 'quota'
+    return n.posted || n.reason !== 'quota' ? 'posted' : 'quota'
   } catch {
     return 'failed'
   }
@@ -201,7 +201,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
               // Only the notification is retried; the Tasks are already saved. The
               // server rebuilds the message, so this also works when submit could not.
               const taskIds = done.feedback?.taskIds ??
-                done.results.flatMap((r) => (r.outcome === 'created' && r.taskId ? [r.taskId] : []))
+                done.results.flatMap((r) => (r.taskId ? [r.taskId] : []))
               setAnnounced('working')
               void announce(liff, idToken, id, { text: null, taskIds }, false).then(setAnnounced)
             }}

@@ -24,3 +24,10 @@ Run the app from the repo root:
 - `infisical run --env=dev -- npm run dev`.
 - Wrap `npm run build` the same way: Next.js inlines `NEXT_PUBLIC_*` values (the LIFF ID, the Clarity project ID) at build time.
 - Infisical values override `.env` files for the same key.
+
+## Database migrations (Supabase)
+
+- A migration file's name starts with its version, and that version must equal the version recorded in the live database (`supabase_migrations.schema_migrations`, or `list_migrations` in the Supabase MCP). If they differ, `supabase db push` refuses to run, and a forced run tries to apply every file again.
+- Apply migrations with `supabase db push`, which records the file's own version. The Supabase MCP `apply_migration` tool stamps the time it ran instead: right after using it, rename the file (`git mv`) to the version it recorded.
+- A file that is not applied yet keeps a version later than every applied one (for example `20261112180000_scheduler_ticks.sql`), so it never sorts before applied history.
+- Do not run `supabase migration repair` on the shared database without the team agreeing: it rewrites the live history table.

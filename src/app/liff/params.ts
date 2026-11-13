@@ -1,6 +1,6 @@
-export type LiffParams = { view: 'google' | 'review' | 'task' | 'progress' | null; id: string | null }
+const VIEWS = ['google', 'review', 'task', 'progress', 'setup', 'owner'] as const
 
-const VIEWS = ['google', 'review', 'task', 'progress'] as const
+export type LiffParams = { view: (typeof VIEWS)[number] | null; id: string | null }
 
 function pick(p: URLSearchParams): LiffParams {
   const view = p.get('view')

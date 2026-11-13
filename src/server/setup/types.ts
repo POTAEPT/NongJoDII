@@ -48,7 +48,8 @@ export type SetupSubmitBody = {
   ownerLineUserId: string
 }
 
-/** The #2e card's push result: skipped or failed still means the setup is saved. */
-export type SetupSubmitResult = { state: 'confirmed' | 'pending_owner'; posted: GroupPushResult }
+/** The #2e card's push result: skipped or failed still means the setup is saved.
+ *  'unchanged': a resend kept the same pending nominee, so no new card was posted. */
+export type SetupSubmitResult = { state: 'confirmed' | 'pending_owner'; posted: GroupPushResult | 'unchanged' }
 
 export type OwnerConfirmResult = { state: 'confirmed'; alreadyConfirmed: boolean }

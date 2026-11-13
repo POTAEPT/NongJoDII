@@ -3,10 +3,10 @@ import { log } from '../log'
 import type { ApiResult, Deps, SetupMemberWrite } from '../ports'
 import { badRequest, field } from '../review/load'
 import { setupDoneCard } from './card'
-import { lineNameOf, openSetupGroup, setupState } from './load'
+import { lineNameOf, openSetupGroup } from './load'
 import {
-  cleanNicknames, isIsoWeekday, isQuarterHour, MEMBERS_MAX, NICKNAME_MAX, NICKNAMES_PER_MEMBER_MAX, ROLE_MAX,
-  WORK_DESCRIPTION_MAX,
+  cleanNicknames, isIsoWeekday, isQuarterHour, isSetupOpen, MEMBERS_MAX, NICKNAME_MAX, NICKNAMES_PER_MEMBER_MAX,
+  ROLE_MAX, setupState, WORK_DESCRIPTION_MAX,
 } from './rules'
 import type { SetupFeatures, SetupSubmitResult } from './types'
 
@@ -88,17 +88,18 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
   const gate = await openSetupGroup(deps, body)
   if (!gate.ok) return gate.result
   const { group, requester } = gate
-  const state = setupState(group)
-  if (state === 'confirmed' || state === 'in_project') return closed
+  if (!isSetupOpen(setupState(group))) return closed
 
   const parsed = parse(body)
   if (!parsed.ok) return badRequest(parsed.field)
   const v = parsed.value
-  // Only live Members of this group: the form edits them, it never adds anyone.
+  // Only live Members of this group: the form edits them, it never adds anyone. A listed
+  // person who left since the page loaded is dropped (setup_group writes live rows only
+  // too), so the rest of the form still goes through. The Owner must still be here.
   const live = await deps.store.listLiveMembers(group.groupId)
   const liveIds = new Set(live.map((m) => m.lineUserId))
-  if (!v.members.every((m) => liveIds.has(m.lineUserId))) return badRequest('members')
   if (!liveIds.has(v.ownerLineUserId)) return badRequest('ownerLineUserId')
+  const members = v.members.filter((m) => liveIds.has(m.lineUserId))
 
   const at = deps.now()
   const { outcome } = await deps.store.saveGroupSetup({
@@ -108,13 +109,21 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
       trackRemind: v.features.trackRemind, weeklySummary: v.features.weeklySummary,
     },
     dailyReminderTime: v.dailyReminderTime, weeklySummaryWeekday: v.weeklySummaryWeekday,
-    weeklySummaryTime: v.weeklySummaryTime, members: v.members, ownerLineUserId: v.ownerLineUserId, at,
+    weeklySummaryTime: v.weeklySummaryTime, members, ownerLineUserId: v.ownerLineUserId, at,
   })
   // Rechecked under the row lock: another form or a confirm got in first, or the Owner left.
   if (outcome === 'closed') return closed
   if (outcome === 'owner_not_member') return badRequest('ownerLineUserId')
   const confirmed = outcome === 'confirmed'
   log('setup_saved', { groupId: group.groupId, ownerConfirmed: confirmed })
+  const state = confirmed ? 'confirmed' : 'pending_owner'
+
+  // A plain resend while the same nominee is still pending: the group's newest card
+  // already names them, so no new card (no budget claim, no push).
+  if (!confirmed && group.nominatedOwnerLineUserId === v.ownerLineUserId) {
+    log('setup_done_not_posted', { groupId: group.groupId, reason: 'unchanged' })
+    return ok({ state, posted: 'unchanged' })
+  }
 
   const pendingOwnerName = confirmed ? null : await lineNameOf(deps, v.ownerLineUserId, live)
   const posted = await pushToGroupWithinBudget(deps, {
@@ -123,10 +132,13 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
     lineGroupId: group.lineGroupId,
     messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName })],
     reserve: SETUP_PUSH_RESERVE,
-    // One card per group, nominee and Owner state: a re-nomination gets its own card,
-    // a retried send of the same outcome is delivered once.
-    retryKey: retryKeyFrom(`setup_done:${group.groupId}:${v.ownerLineUserId}:${outcome}`),
+    // Seeded with the nomination time as well: every real change gets its own key, so a
+    // nomination back to an earlier nominee within LINE's 24 h is still delivered.
+    retryKey: retryKeyFrom(`setup_done:${group.groupId}:${v.ownerLineUserId}:${outcome}:${at.toISOString()}`),
   })
-  const result: SetupSubmitResult = { state: confirmed ? 'confirmed' : 'pending_owner', posted }
+  return ok({ state, posted })
+}
+
+function ok(result: SetupSubmitResult): ApiResult {
   return { status: 200, body: result }
 }

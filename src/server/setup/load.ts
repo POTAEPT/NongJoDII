@@ -1,7 +1,8 @@
 import { ensureGroupAccess, requireLiffUser } from '../liff-auth'
 import type { ApiResult, Deps, GroupSetup, Member } from '../ports'
 import { badRequest, field } from '../review/load'
-import type { SetupLoad, SetupMember, SetupState } from './types'
+import { isSetupOpen, setupState } from './rules'
+import type { SetupLoad, SetupMember } from './types'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export const FALLBACK_NAME = 'สมาชิก LINE'
@@ -25,12 +26,6 @@ export async function openSetupGroup(
   return { ok: true, requester: user.lineUserId, group }
 }
 
-export function setupState(g: Pick<GroupSetup, 'ownerConfirmedAt' | 'projectId' | 'nominatedOwnerLineUserId'>): SetupState {
-  if (g.ownerConfirmedAt !== null) return 'confirmed'
-  if (g.projectId !== null) return 'in_project'
-  return g.nominatedOwnerLineUserId !== null ? 'pending_owner' : 'open'
-}
-
 /** The LINE name of a person, or the fallback when LINE never gave one. */
 export async function lineNameOf(deps: Deps, lineUserId: string, members?: Member[]): Promise<string> {
   const known = members?.find((m) => m.lineUserId === lineUserId)?.displayName
@@ -46,7 +41,7 @@ export async function loadSetup(deps: Deps, body: unknown): Promise<ApiResult> {
   // After the access check, which adds a requester LINE knows but we had not stored.
   const live = await deps.store.listLiveMembers(group.groupId)
   const state = setupState(group)
-  const editable = state === 'open' || state === 'pending_owner'
+  const editable = isSetupOpen(state)
   // The setup form is where nicknames are edited, so they come back to it while it takes
   // changes (a resent form must not wipe them), and never once it is closed. Every other
   // screen shows LINE names only.

@@ -1,5 +1,20 @@
-// Limits and defaults of the setup form (#52, Figma v4 #2b-#2d2). Pure: the LIFF form
-// (src/app/liff/setup-model.ts) and the server checks (submit.ts) share them.
+import type { GroupSetup } from '../ports'
+import type { SetupState } from './types'
+
+// Limits, defaults and state of the setup form (#52, Figma v4 #2b-#2d2). Pure: the LIFF
+// form (src/app/liff/setup-model.ts) and the server (submit.ts, the Summary reply) share them.
+
+/** Where a group's setup stands; see SetupState. */
+export function setupState(g: Pick<GroupSetup, 'ownerConfirmedAt' | 'projectId' | 'nominatedOwnerLineUserId'>): SetupState {
+  if (g.ownerConfirmedAt !== null) return 'confirmed'
+  if (g.projectId !== null) return 'in_project'
+  return g.nominatedOwnerLineUserId !== null ? 'pending_owner' : 'open'
+}
+
+/** The setup form takes changes only while no Owner is confirmed and no Project exists. */
+export function isSetupOpen(state: SetupState): boolean {
+  return state === 'open' || state === 'pending_owner'
+}
 
 /** groups.work_description CHECK (char_length <= 2000). */
 export const WORK_DESCRIPTION_MAX = 2000

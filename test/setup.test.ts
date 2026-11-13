@@ -12,6 +12,7 @@ import { ev, makeTestDeps, signedRequest, TEST_LIFF_ID, TEST_NOW, webhookBody } 
 // refusals, through the webhook and the setup endpoints.
 
 const LINE_GROUP = 'Cgroup1'
+const MIN = 60_000
 
 beforeEach(() => {
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -70,6 +71,32 @@ async function setup() {
   return { ...h, group, send, load, form, submit, confirm, row, member }
 }
 
+type Setup = Awaited<ReturnType<typeof setup>>
+
+/** The messages of the newest reply. */
+function lastReply(t: Pick<Setup, 'line'>): LineMessage[] {
+  return t.line.replies[t.line.replies.length - 1].messages
+}
+
+// The two helpers below run `between` after the endpoint's own checks and right before the
+// store's write: a concurrent request or a leave that only the row lock in setup_group or
+// confirm_group_owner can catch. The tests assert the answer and the stored rows.
+function beforeSave(t: Setup, between: () => Promise<unknown> | void): void {
+  const real = t.store.saveGroupSetup.bind(t.store)
+  t.store.saveGroupSetup = async (w) => {
+    await between()
+    return real(w)
+  }
+}
+
+function beforeConfirm(t: Setup, between: () => Promise<unknown> | void): void {
+  const real = t.store.confirmGroupOwner.bind(t.store)
+  t.store.confirmGroupOwner = async (groupId, lineUserId, at) => {
+    await between()
+    return real(groupId, lineUserId, at)
+  }
+}
+
 describe('#2a join', () => {
   it('replies with the setup card whose button opens the form for this group, and stores the group name', async () => {
     const t = await setup()
@@ -100,6 +127,16 @@ describe('#2a join', () => {
     await h.runDeferred()
     expect(h.line.replies).toHaveLength(1)
     expect(h.store.tables.groups[0].name).toBeNull()
+  })
+
+  it('a failed join reply still stores the group name', async () => {
+    const h = makeTestDeps()
+    h.line.failReply = true
+    h.line.groupNames.set(LINE_GROUP, 'ทีมแอป')
+    await handleWebhookRequest(signedRequest(webhookBody(ev.join({}))), h.deps, h.defer)
+    await h.runDeferred()
+    expect(h.line.replies).toHaveLength(1) // attempted once, rejected by LINE
+    expect(h.store.tables.groups[0].name).toBe('ทีมแอป')
   })
 
   it('a re-invite to a set-up group posts the card again and keeps the setup', async () => {
@@ -257,6 +294,41 @@ describe('setup send, another Owner', () => {
     expect(t.store.tables.projects).toEqual([{ id: t.row().projectId, ownerLineUserId: 'Ume' }])
   })
 
+  it('a plain resend with the same pending nominee posts no new card and claims no budget', async () => {
+    const t = await setup()
+    await t.submit({ ownerLineUserId: 'Upim' })
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    const res = await t.submit({ ownerLineUserId: 'Upim', workDescription: 'แก้คำอธิบาย' })
+    expect(res.body).toEqual({ state: 'pending_owner', posted: 'unchanged' } satisfies SetupSubmitResult)
+    expect(t.row().workDescription).toBe('แก้คำอธิบาย')
+    expect(t.line.pushes).toHaveLength(1)
+    expect(t.store.tables.push_log).toHaveLength(1)
+  })
+
+  it('a nomination back to an earlier nominee posts a card naming them again', async () => {
+    const t = await setup()
+    t.store.seedMember({ groupId: t.group.id, lineUserId: 'Ucarol', displayName: 'Carol K.' })
+    for (const [i, owner] of ['Upim', 'Ucarol', 'Upim'].entries()) {
+      t.setNow(new Date(TEST_NOW.getTime() + i * MIN))
+      expect((await t.submit({ ownerLineUserId: owner })).body).toEqual({ state: 'pending_owner', posted: 'pushed' })
+    }
+    // LINE delivered all three: the newest card in the group names Pim again.
+    expect(t.line.delivered).toHaveLength(3)
+    expect(flexJson(t.line.delivered[1].messages)).toContain('รอ Carol K. ยืนยันเป็นเจ้าของบอท')
+    expect(flexJson(t.line.delivered[2].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
+    expect(t.store.tables.push_log).toHaveLength(3)
+  })
+
+  it('a failed push still saves the setup and gives the budget back', async () => {
+    const t = await setup()
+    t.line.failPush = true
+    const res = await t.submit({ ownerLineUserId: 'Upim' })
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ state: 'pending_owner', posted: 'failed' })
+    expect(t.row().nominatedOwnerLineUserId).toBe('Upim')
+    expect(t.store.tables.push_log).toHaveLength(0)
+  })
+
   it('a push skipped for quota still saves the setup', async () => {
     const t = await setup()
     t.line.quota = { limit: 300, used: 299 }
@@ -295,7 +367,7 @@ describe('setup send refusals', () => {
       [{ members: [{ lineUserId: 'Ume', nicknames: ['x'.repeat(51)], role: '' }] }, 'members'],
       [{ members: [{ lineUserId: 'Ume', nicknames: [], role: 'x'.repeat(101) }] }, 'members'],
       [{ members: [{ lineUserId: 'Ume', nicknames: [], role: '' }, { lineUserId: 'Ume', nicknames: [], role: '' }] }, 'members'],
-      [{ members: [{ lineUserId: 'Uout', nicknames: [], role: '' }] }, 'members'],
+      [{ members: [{ lineUserId: 'Ume', nicknames: 'มี่', role: '' }] }, 'members'],
       [{ ownerLineUserId: 'Uout' }, 'ownerLineUserId'],
       [{ ownerLineUserId: null }, 'ownerLineUserId'],
     ]
@@ -312,5 +384,136 @@ describe('setup send refusals', () => {
     t.store.seedMember({ groupId: t.group.id, lineUserId: 'Uleft', displayName: 'Left', leftAt: TEST_NOW })
     const res = await t.submit({ ownerLineUserId: 'Uleft' })
     expect(res).toMatchObject({ status: 400, body: { field: 'ownerLineUserId' } })
+  })
+})
+
+describe('a listed person who is no longer a Member', () => {
+  it('is dropped and the rest of the form is saved', async () => {
+    const t = await setup()
+    await t.load() // the page loaded while Pim was still here
+    t.member('Upim')!.leftAt = TEST_NOW
+    const res = await submitSetup(t.deps, t.form({
+      members: [
+        { lineUserId: 'Ume', nicknames: ['มี่'], role: 'PM' },
+        { lineUserId: 'Upim', nicknames: ['พิม'], role: 'ออกแบบ' },
+        { lineUserId: 'Uout', nicknames: ['เอาท์'], role: 'แขก' },
+      ],
+    }))
+    expect(res.body).toEqual({ state: 'confirmed', posted: 'pushed' })
+    expect(t.member('Ume')).toMatchObject({ nicknames: ['มี่'], role: 'PM' })
+    expect(t.member('Upim')).toMatchObject({ nicknames: [], role: null, leftAt: TEST_NOW })
+    expect(t.member('Uout')).toBeUndefined()
+  })
+})
+
+describe('rechecks under the row lock', () => {
+  it('the named Owner leaves between the checks and the write: 400 and nothing is saved', async () => {
+    const t = await setup()
+    beforeSave(t, () => {
+      t.member('Upim')!.leftAt = TEST_NOW
+    })
+    const res = await t.submit({ ownerLineUserId: 'Upim' })
+    expect(res).toMatchObject({ status: 400, body: { error: 'bad_request', field: 'ownerLineUserId' } })
+    expect(t.row()).toMatchObject({ nominatedOwnerLineUserId: null, workDescription: null })
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('the nominee confirms between the checks and the write: the send is refused (409)', async () => {
+    const t = await setup()
+    await t.submit({ ownerLineUserId: 'Upim' })
+    beforeSave(t, () => t.store.confirmGroupOwner(t.group.id, 'Upim', TEST_NOW))
+    const res = await t.submit({ ownerLineUserId: 'Ume', workDescription: 'อย่างอื่น' })
+    expect(res).toMatchObject({ status: 409, body: { error: 'setup_closed' } })
+    expect(t.row()).toMatchObject({ nominatedOwnerLineUserId: 'Upim', ownerConfirmedAt: TEST_NOW, workDescription: 'ทำแอปส่งอาจารย์' })
+    expect(t.store.tables.projects).toEqual([{ id: t.row().projectId, ownerLineUserId: 'Upim' }])
+    expect(t.line.pushes).toHaveLength(1)
+  })
+
+  it('the nominee leaves between the checks and the confirm: 403 and no Project', async () => {
+    const t = await setup()
+    await t.submit({ ownerLineUserId: 'Upim' })
+    beforeConfirm(t, () => {
+      t.member('Upim')!.leftAt = TEST_NOW
+    })
+    const res = await t.confirm('tok-pim')
+    expect(res).toMatchObject({ status: 403, body: { error: 'forbidden' } })
+    expect(t.row().ownerConfirmedAt).toBeNull()
+    expect(t.store.tables.projects).toHaveLength(0)
+  })
+})
+
+describe('a group with a Project but no confirmed Owner (in_project)', () => {
+  /** The confirmed Owner (Me) left, and the group named Pim, who has not confirmed: an
+   *  Owner change of the Project, which goes through change_project_owner, not setup. */
+  async function ownerLeft(): Promise<Setup> {
+    const t = await setup()
+    await t.submit()
+    t.member('Ume')!.leftAt = TEST_NOW
+    Object.assign(t.row(), { ownerConfirmedAt: null, nominatedOwnerLineUserId: 'Upim' })
+    return t
+  }
+
+  it('load says in_project and hands out no nicknames or roles', async () => {
+    const t = await ownerLeft()
+    const body = (await t.load('tok-pim')).body as SetupLoad
+    expect(body.state).toBe('in_project')
+    expect(body.members).toEqual([{ lineUserId: 'Upim', displayName: 'Pim Sirin', nicknames: [], role: null }])
+  })
+
+  it('send and confirm are refused (409) and the Project keeps its owner', async () => {
+    const t = await ownerLeft()
+    const before = { ...t.row() }
+    expect(await t.submit({ idToken: 'tok-pim', ownerLineUserId: 'Upim', members: [] }))
+      .toMatchObject({ status: 409, body: { error: 'setup_closed' } })
+    expect(await t.confirm('tok-pim')).toMatchObject({ status: 409, body: { error: 'setup_closed' } })
+    expect(t.row()).toEqual(before)
+    expect(t.store.tables.projects).toEqual([{ id: before.projectId, ownerLineUserId: 'Ume' }])
+    expect(t.line.pushes).toHaveLength(1)
+  })
+
+  it('a summarize request gets the no-Owner text only, without the setup card', async () => {
+    const t = await ownerLeft()
+    await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim' }))
+    expect(lastReply(t)).toHaveLength(1)
+    expect(lastReply(t)[0].type).toBe('text')
+    expect(t.llm.requests).toHaveLength(0)
+  })
+})
+
+describe('second way to the setup card: the no-Owner Summary reply', () => {
+  function expectSetupCard(messages: LineMessage[], groupId: string): void {
+    expect(messages).toHaveLength(2)
+    const [text, card] = messages
+    expect(text.type === 'text' && text.text).toContain('กรุณาตั้งค่ากลุ่มให้เสร็จก่อน')
+    expect(card.type).toBe('flex')
+    expect(flexJson([card])).toContain('สวัสดี น้องจดดีมาแล้วนะ 👋')
+    expect(uris([card])).toEqual([liffUrl(TEST_LIFF_ID, 'setup', groupId)])
+  }
+
+  it('a group that is not set up gets the setup card with the reply', async () => {
+    const t = await setup()
+    await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim' }))
+    expectSetupCard(lastReply(t), t.group.id)
+    expect(t.llm.requests).toHaveLength(0)
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('so does a group whose Owner is still pending', async () => {
+    const t = await setup()
+    await t.submit({ ownerLineUserId: 'Upim' })
+    await t.send(ev.groupText({ text: 'NongJoDII สรุปหน่อย', userId: 'Upim' }))
+    expectSetupCard(lastReply(t), t.group.id)
+  })
+
+  it('so does a group the bot joined before onboarding existed (no join event)', async () => {
+    const h = makeTestDeps()
+    const group = h.store.seedGroup({ lineGroupId: 'Cold' })
+    await handleWebhookRequest(
+      signedRequest(webhookBody(ev.groupText({ text: 'NongJoDII summarize', groupId: 'Cold', userId: 'Upim' }))),
+      h.deps, h.defer,
+    )
+    await h.runDeferred()
+    expect(h.line.replies).toHaveLength(1)
+    expectSetupCard(h.line.replies[0].messages, group.id)
   })
 })

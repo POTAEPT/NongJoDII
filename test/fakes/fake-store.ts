@@ -816,6 +816,11 @@ export class FakeStore implements StorePort {
     }
     if (w.ownerLineUserId === w.byLineUserId) {
       const { outcome } = this.confirmOwner(w.groupId, w.ownerLineUserId, w.at)
+      // Cannot happen: the checks above (no confirmed Owner, no Project, the Owner a live
+      // Member) are the inner call's, made under the same row lock, and the sender was just
+      // named. Should the inner call answer not_nominee, already_confirmed or not_member,
+      // setup_group returns that answer and SupabaseStore.saveGroupSetup throws on it (it is
+      // not a setup_group outcome); the fake throws here instead, with the same result.
       if (outcome !== 'confirmed') throw new Error(`FakeStore: setup self-confirm ${outcome}`)
       return { outcome: 'confirmed' }
     }

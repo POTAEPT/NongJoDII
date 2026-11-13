@@ -752,23 +752,35 @@ export class SupabaseStore implements StorePort {
     }
   }
 
-  async claimDailyReminder(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+  async claimDailyReminder(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    // One logic tree, so both conditions hold: the day is not complete, and no live claim.
+    const notSent = `or(daily_reminder_last_sent_on.is.null,daily_reminder_last_sent_on.lt.${todayBkk})`
+    const noLiveClaim = `or(daily_reminder_claimed_at.is.null,daily_reminder_claimed_at.lt."${staleBefore.toISOString()}")`
     const { data, error } = await this.db
       .from('groups')
-      .update({ daily_reminder_last_sent_on: todayBkk })
+      .update({ daily_reminder_claimed_at: at.toISOString() })
       .eq('id', groupId)
-      .or(`daily_reminder_last_sent_on.is.null,daily_reminder_last_sent_on.lt.${todayBkk}`)
+      .or(`and(${notSent},${noLiveClaim})`)
       .select('id')
     check('claimDailyReminder', error)
     return { claimed: (data?.length ?? 0) > 0 }
   }
 
-  async releaseDailyReminder(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+  async finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void> {
     const { error } = await this.db
       .from('groups')
-      .update({ daily_reminder_last_sent_on: previous })
+      .update({ daily_reminder_last_sent_on: todayBkk, daily_reminder_claimed_at: null })
       .eq('id', groupId)
-      .eq('daily_reminder_last_sent_on', todayBkk)
+      .eq('daily_reminder_claimed_at', at.toISOString())
+    check('finishDailyReminder', error)
+  }
+
+  async releaseDailyReminder(groupId: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_claimed_at: null })
+      .eq('id', groupId)
+      .eq('daily_reminder_claimed_at', at.toISOString())
     check('releaseDailyReminder', error)
   }
 

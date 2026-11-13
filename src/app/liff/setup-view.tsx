@@ -146,13 +146,28 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
   }
   if (done) {
     const owner = form?.members.find((m) => m.lineUserId === form.ownerLineUserId)
+    // Only a pending nomination can be sent again: a confirmed group answers 409.
+    const retryCard = done.state === 'pending_owner' && done.posted === 'failed'
     return (
       <div className="p-4 text-base">
         <h1 className="text-lg font-bold">ตั้งค่าเสร็จแล้ว ✓</h1>
-        {done.state === 'pending_owner' && owner && (
+        {done.state === 'pending_owner' && owner && done.posted === 'pushed' && (
           <p className="mt-2">รอ {owner.displayName} ยืนยันเป็นเจ้าของบอท จากการ์ดในกลุ่ม</p>
         )}
         {POSTED_NOTE[done.posted] && <p className="mt-2 text-sm text-gray-600">{POSTED_NOTE[done.posted]}</p>}
+        {retryCard && (
+          // The server resends the saved nomination under the failed card's retry key, so
+          // this posts the confirm card once, without filling the four steps again.
+          <button
+            type="button"
+            className="mt-4 w-full rounded bg-[#1F5BAD] px-4 py-2 text-white disabled:opacity-50"
+            disabled={submitting}
+            onClick={() => void send()}
+          >
+            {submitting ? 'กำลังส่ง...' : 'ส่งการ์ดยืนยันอีกครั้ง'}
+          </button>
+        )}
+        {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
         {close}
       </div>
     )

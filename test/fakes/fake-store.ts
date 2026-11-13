@@ -75,6 +75,8 @@ export type GroupScheduleRecord = {
   groupId: string; leftAt: Date | null; featureWeeklySummary: boolean
   weeklySummaryWeekday: number; weeklySummaryTime: string; weeklySummaryLastSentOn: string | null
   dailyReminderTime: string; dailyReminderLastSentOn: string | null
+  /** groups.daily_reminder_claimed_at: the live attempt's claim, or null. */
+  dailyReminderClaimedAt?: Date | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 /** The other groups columns setup writes (#52). No row = schema defaults. */
@@ -721,19 +723,30 @@ export class FakeStore implements StorePort {
       .map(({ g, s }) => ({ groupId: g.id, lineGroupId: g.lineGroupId, time: s.dailyReminderTime, lastSentOn: s.dailyReminderLastSentOn }))
   }
 
-  async claimDailyReminder(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+  async claimDailyReminder(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
     this.fault('claimDailyReminder')
     if (!this.hasGroup(groupId)) return { claimed: false }
     const s = this.scheduleOf(groupId)
     if (s.dailyReminderLastSentOn !== null && s.dailyReminderLastSentOn >= todayBkk) return { claimed: false }
-    s.dailyReminderLastSentOn = todayBkk
+    const held = s.dailyReminderClaimedAt ?? null
+    if (held !== null && held.getTime() >= staleBefore.getTime()) return { claimed: false }
+    s.dailyReminderClaimedAt = new Date(at)
     return { claimed: true }
   }
 
-  async releaseDailyReminder(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+  async finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    this.fault('finishDailyReminder')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.dailyReminderClaimedAt?.getTime() === at.getTime()) {
+      s.dailyReminderLastSentOn = todayBkk
+      s.dailyReminderClaimedAt = null
+    }
+  }
+
+  async releaseDailyReminder(groupId: string, at: Date): Promise<void> {
     this.fault('releaseDailyReminder')
     const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
-    if (s && s.dailyReminderLastSentOn === todayBkk) s.dailyReminderLastSentOn = previous
+    if (s && s.dailyReminderClaimedAt?.getTime() === at.getTime()) s.dailyReminderClaimedAt = null
   }
 
   /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */

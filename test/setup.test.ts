@@ -349,6 +349,51 @@ describe('setup send, another Owner', () => {
     expect(flexJson(t.line.delivered[2].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
   })
 
+  it('a send whose loaded row is stale keys its card on the stored nomination time', async () => {
+    const t = await setup()
+    t.store.seedMember({ groupId: t.group.id, lineUserId: 'Ucarol', displayName: 'Carol K.' })
+    await t.submit({ ownerLineUserId: 'Upim' }) // Me names Pim at TEST_NOW: card 1
+    // Me resends Pim from a page loaded while Pim was the nominee. Between that load and the
+    // write, another send names Carol, so this write names Pim anew, at this send's time.
+    const save = t.store.saveGroupSetup.bind(t.store)
+    beforeSave(t, () => save({
+      groupId: t.group.id, byLineUserId: 'Upim', workDescription: null,
+      features: { summarize: true, draftTasks: true, saveFiles: true, trackRemind: true, weeklySummary: true },
+      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
+      members: [], ownerLineUserId: 'Ucarol', at: new Date(TEST_NOW.getTime() + MIN),
+    }))
+    const second = new Date(TEST_NOW.getTime() + 2 * MIN)
+    t.setNow(second)
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'pushed' })
+    expect((await t.store.getGroupSetup(t.group.id))?.ownerNominatedAt).toEqual(second)
+    // Not the loaded row's time (card 1's key): LINE delivers the card naming Pim again.
+    expect(t.line.pushes[1].retryKey).not.toBe(t.line.pushes[0].retryKey)
+    expect(t.line.delivered).toHaveLength(2)
+    expect(flexJson(t.line.delivered[1].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
+
+    // A plain resend now repeats card 2's key: that key came from the stored time.
+    t.store.saveGroupSetup = save
+    t.setNow(new Date(TEST_NOW.getTime() + 3 * MIN))
+    await t.submit({ ownerLineUserId: 'Upim' })
+    expect(t.line.pushes[2].retryKey).toBe(t.line.pushes[1].retryKey)
+    expect(t.line.delivered).toHaveLength(2)
+  })
+
+  it('a failed read after the write keys the card on this send\'s time: a repeat, never a loss', async () => {
+    const t = await setup()
+    await t.submit({ ownerLineUserId: 'Upim' })
+    const save = t.store.saveGroupSetup.bind(t.store)
+    t.store.saveGroupSetup = async (w) => {
+      const saved = await save(w)
+      t.store.failNext('getGroupSetup') // the read after this write
+      return saved
+    }
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'pushed' })
+    expect(t.line.pushes[1].retryKey).not.toBe(t.line.pushes[0].retryKey)
+    expect(t.line.delivered).toHaveLength(2)
+  })
+
   it('a resend keeps who nominated and when; a new nominee sets both', async () => {
     const t = await setup()
     t.store.seedMember({ groupId: t.group.id, lineUserId: 'Ucarol', displayName: 'Carol K.' })

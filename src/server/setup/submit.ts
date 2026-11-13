@@ -1,5 +1,5 @@
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
-import { log } from '../log'
+import { log, logError } from '../log'
 import type { ApiResult, Deps, SetupMemberWrite } from '../ports'
 import { badRequest, field } from '../review/load'
 import { setupDoneCard } from './card'
@@ -116,9 +116,7 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
   if (outcome === 'owner_not_member') return badRequest('ownerLineUserId')
   const confirmed = outcome === 'confirmed'
   log('setup_saved', { groupId: group.groupId, ownerConfirmed: confirmed })
-  // The nomination time the row now holds: setup_group keeps it while the nominee stays,
-  // and a new nominee (a self-confirm included) gets this send's time.
-  const nominatedAt = (group.nominatedOwnerLineUserId === v.ownerLineUserId ? group.ownerNominatedAt : null) ?? at
+  const nominatedAt = await storedNominationTime(deps, group.groupId, v.ownerLineUserId, at)
 
   // Every send pushes the #2e card, under a LINE retry key made from the nominee, the
   // outcome and the nomination time. A resend therefore repeats the earlier card's key:
@@ -137,4 +135,19 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
   })
   const result: SetupSubmitResult = { state: confirmed ? 'confirmed' : 'pending_owner', posted }
   return { status: 200, body: result }
+}
+
+/** When `owner` was named, as the row holds it after this send's write: setup_group keeps
+ *  the time while the nominee stays and sets this send's time for a new one. Read again
+ *  rather than taken from the row loaded at the start, which is stale when another send
+ *  changed the nominee in between. A failed read, or a row that already names someone
+ *  else, gives this send's time: a fresh key can only repeat a card, never lose one. */
+async function storedNominationTime(deps: Deps, groupId: string, owner: string, at: Date): Promise<Date> {
+  try {
+    const saved = await deps.store.getGroupSetup(groupId)
+    if (saved?.nominatedOwnerLineUserId === owner && saved.ownerNominatedAt) return saved.ownerNominatedAt
+  } catch (err) {
+    logError('setup_nomination_read_failed', { groupId }, err)
+  }
+  return at
 }

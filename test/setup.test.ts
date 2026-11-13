@@ -325,14 +325,17 @@ describe('setup send, another Owner', () => {
   it('a resend after a delivered card repeats its retry key, so LINE does not post it twice', async () => {
     const t = await setup()
     await t.submit({ ownerLineUserId: 'Upim' })
+    const firstClaim = t.store.tables.push_log.map((r) => r.id)
     t.setNow(new Date(TEST_NOW.getTime() + MIN))
     const res = await t.submit({ ownerLineUserId: 'Upim', workDescription: 'แก้คำอธิบาย' })
     expect(res.body).toEqual({ state: 'pending_owner', posted: 'pushed' })
     expect(t.row().workDescription).toBe('แก้คำอธิบาย')
     expect(t.line.pushes).toHaveLength(2)
     expect(t.line.pushes[1].retryKey).toBe(t.line.pushes[0].retryKey)
-    // FakeLine answers a repeated key as LINE does (409, success, nothing sent).
+    // FakeLine answers a repeated key as LINE does (409: duplicate, nothing sent) ...
     expect(t.line.delivered).toHaveLength(1)
+    // ... so the resend's budget claim is given back: only the first card's claim stays.
+    expect(t.store.tables.push_log.map((r) => r.id)).toEqual(firstClaim)
   })
 
   it('a nomination back to an earlier nominee posts a card naming them again, under a new key', async () => {
@@ -429,14 +432,39 @@ describe('setup send, another Owner', () => {
     expect(t.store.tables.projects).toEqual([{ id: t.row().projectId, ownerLineUserId: 'Upim' }])
   })
 
-  it('a failed push still saves the setup and gives the budget back', async () => {
+  it('a push LINE refuses (4xx) still saves the setup and gives the budget back', async () => {
+    const t = await setup()
+    t.line.rejectPush = true
+    const res = await t.submit({ ownerLineUserId: 'Upim' })
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ state: 'pending_owner', posted: 'failed' })
+    expect(t.row().nominatedOwnerLineUserId).toBe('Upim')
+    expect(t.store.tables.push_log).toHaveLength(0)
+  })
+
+  it('a failed push with an unknown outcome (5xx) still saves the setup and keeps the budget claim', async () => {
     const t = await setup()
     t.line.failPush = true
     const res = await t.submit({ ownerLineUserId: 'Upim' })
     expect(res.status).toBe(200)
     expect(res.body).toEqual({ state: 'pending_owner', posted: 'failed' })
     expect(t.row().nominatedOwnerLineUserId).toBe('Upim')
-    expect(t.store.tables.push_log).toHaveLength(0)
+    // LINE may have delivered the card, so its messages stay booked.
+    expect(t.store.tables.push_log).toHaveLength(1)
+  })
+
+  it('a card LINE accepted before the answer was lost keeps one claim through the resend', async () => {
+    const t = await setup()
+    t.line.timeoutAfterAccept = true
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'failed' })
+    t.line.timeoutAfterAccept = false
+    const first = t.store.tables.push_log.map((r) => r.id)
+    expect(first).toHaveLength(1)
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    // Same retry key: LINE answers 409, and only the resend's claim goes back.
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'pushed' })
+    expect(t.line.delivered).toHaveLength(1)
+    expect(t.store.tables.push_log.map((r) => r.id)).toEqual(first)
   })
 
   it('a push skipped for quota still saves the setup', async () => {

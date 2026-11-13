@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { log, logError } from '../log'
+import { LinePushRejected, log, logError } from '../log'
 import type { Deps, PushPurpose } from '../ports'
 import type { LineMessage } from './types'
 
@@ -7,8 +7,13 @@ import type { LineMessage } from './types'
 // stops pushing and the item shows on the Dashboard only). Same counting as the Tasks-created
 // announce (review/notify.ts): LINE counts a group push once per person in the group, so
 // the cost is the larger of LINE's member count and the stored live Members. The budget is
-// claimed under a database lock (claim_push_budget) before the push, and released if the
-// push fails.
+// claimed under a database lock (claim_push_budget) before the push, and released only when
+// that push certainly sent nothing: LINE refused it (a 4xx), or answered that it had already
+// accepted a push with the same retry key. When the outcome is unknown (a 5xx, a timeout, a
+// network error) LINE may have delivered the push, so the claim stays. A resend that LINE
+// then drops as a duplicate gives back only its own claim, and the first one still covers
+// the delivered post. If the push was in fact not delivered, the claim overcounts until
+// claim_push_budget stops counting it (10 minutes): that errs toward skipping, never toward the reserve.
 
 export type GroupPushResult = 'pushed' | 'skipped_quota' | 'failed'
 
@@ -53,15 +58,28 @@ export async function pushToGroupWithinBudget(deps: Deps, p: GroupPush): Promise
       log('group_push_skipped', { purpose: p.purpose, groupId: p.groupId, reason: 'quota' })
       return 'skipped_quota'
     }
-    await deps.line.push(p.lineGroupId, p.messages, { retryKey: p.retryKey })
+    const sent = await deps.line.push(p.lineGroupId, p.messages, { retryKey: p.retryKey })
+    if (sent === 'duplicate') {
+      // LINE had already accepted this post (same retry key) and sent nothing now. The post
+      // is in the group, so it counts as pushed, but this claim books messages that were
+      // never sent: give it back. The accepted push keeps its own claim.
+      log('group_push_duplicate', { purpose: p.purpose, groupId: p.groupId })
+      await deps.store.releasePushBudget(pushLogId)
+        .catch((e) => logError('group_push_budget_release_failed', { purpose: p.purpose, groupId: p.groupId }, e))
+    }
     return 'pushed'
   } catch (err) {
     logError('group_push_failed', { purpose: p.purpose, groupId: p.groupId }, err)
-    if (pushLogId !== null) {
-      // The push may still have reached LINE (a timeout); LINE's own count catches up, and
-      // a retry with the same key is not sent twice.
+    if (pushLogId === null) return 'failed' // failed before the push: nothing was claimed
+    if (err instanceof LinePushRejected) {
+      // LINE refused the push, so nothing was sent: give the claim back.
       await deps.store.releasePushBudget(pushLogId)
         .catch((e) => logError('group_push_budget_release_failed', { purpose: p.purpose, groupId: p.groupId }, e))
+    } else {
+      // The push may still have reached LINE (a 5xx, a timeout). The claim stays, so the
+      // quota is not spent twice while LINE's own count is behind, and a resend that LINE
+      // drops as a duplicate has this claim left to stand for the post.
+      log('group_push_outcome_unknown', { purpose: p.purpose, groupId: p.groupId })
     }
     return 'failed'
   }

@@ -704,6 +704,16 @@ export class SupabaseStore implements StorePort {
     return data !== null
   }
 
+  async markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('weekly_insights')
+      .update({ posted_at: at.toISOString() })
+      .eq('group_id', groupId)
+      .eq('week_start', weekStart)
+      .is('posted_at', null)
+    check('markWeeklyInsightPosted', error)
+  }
+
   // ---- #12 Google ----
   async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
     // refresh_token_ciphertext is text: the sealed 'v1.<iv>.<tag>.<ct>' string as-is.

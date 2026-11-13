@@ -685,6 +685,12 @@ export class FakeStore implements StorePort {
     return this.tables.weekly_insights.some((w) => w.groupId === groupId && w.weekStart === weekStart)
   }
 
+  async markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void> {
+    this.fault('markWeeklyInsightPosted')
+    const row = this.tables.weekly_insights.find((w) => w.groupId === groupId && w.weekStart === weekStart)
+    if (row && row.postedAt === null) row.postedAt = at
+  }
+
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
   /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
   seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {

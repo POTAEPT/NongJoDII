@@ -95,8 +95,10 @@ export type NewAiUsage = {
 /** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
+/** What a push is for; stored in push_log.purpose (free text in the schema). */
+export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder'
 export type PushBudgetClaim = {
-  purpose: 'task_created'; lineTargetId: string; messageCount: number
+  purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
   allowed: number    // most the month may reach with this push
 }
@@ -224,6 +226,8 @@ export interface StorePort {
   /** ON CONFLICT (group_id, week_start) DO NOTHING; inserted false = this week already has one. */
   saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }>
   hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean>
+  /** #21: sets posted_at once the group post went out (only while it is still null). */
+  markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>

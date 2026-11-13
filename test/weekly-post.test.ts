@@ -28,10 +28,13 @@ function setup() {
   return { ...h, tickAt, ticksBetween }
 }
 
-/** A set-up group with 5 people in LINE and some Tasks. */
+/** A set-up group with 5 people in LINE and some Tasks. Daily reminders (#44) are off so
+ *  every push here is the weekly post; how both share a tick is in daily-reminders.test.ts. */
 function seedGroup(store: FakeStore, line: ReturnType<typeof setup>['line'], lineGroupId = 'Cgroup1', name = 'ทีมอีเวนต์') {
   const group = seedOwnedGroup(store, { lineGroupId })
-  store.tables.groups.find((g) => g.id === group.id)!.name = name
+  const row = store.tables.groups.find((g) => g.id === group.id)!
+  row.name = name
+  row.featureTrackRemind = false
   line.groupMemberCounts.set(lineGroupId, 5)
   const base = { groupId: group.id, createdByLineUserId: 'Uowner1' }
   store.seedTask({ ...base, title: 'Logo', status: 'done', assigneeLineUserId: 'Uowner1' })

@@ -1,4 +1,4 @@
-import type { TaskStatus } from '../ports'
+import type { ReminderTask } from '../ports'
 import { bangkokTodayLabel } from '../time/bangkok'
 
 // #44 (8b) Daily reminders and gap flags: which of a group's Tasks go into today's post.
@@ -12,11 +12,7 @@ import { bangkokTodayLabel } from '../time/bangkok'
 //   - a Task that still matches is picked again every day (the post repeats daily)
 //   - a Task that matches several rules appears once, with every reason
 
-export type ReminderTask = {
-  id: string; title: string; status: TaskStatus
-  assigneeLineUserId: string | null; dueAt: Date | null
-  lastActivityAt: Date | null; deletedAt: Date | null
-}
+export type { ReminderTask }
 
 export type ReminderReason = 'overdue' | 'due_today' | 'due_tomorrow' | 'no_assignee' | 'no_update'
 

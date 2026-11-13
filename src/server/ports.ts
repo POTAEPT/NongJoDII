@@ -105,6 +105,15 @@ export type PushBudgetClaim = {
 /** One "Tasks created" push attempt: `token` is the new batch's id and LINE retry key;
  *  a claim whose announce_pending_at is before `staleBefore` belongs to a dead request. */
 export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleBefore: Date }
+/** A set-up group (attached to a Project, bot still in it) with reminders on, and its
+ *  daily slot: Bangkok time 'HH:MM:SS' and the Bangkok date it was last sent. */
+export type DailyReminderGroup = { groupId: string; lineGroupId: string; time: string; lastSentOn: string | null }
+/** A live Task as the daily reminder reads it (#44). */
+export type ReminderTask = {
+  id: string; title: string; status: TaskStatus
+  assigneeLineUserId: string | null; dueAt: Date | null
+  lastActivityAt: Date | null; deletedAt: Date | null
+}
 /** A set-up group (attached to a Project, bot still in it) with the weekly summary on,
  *  and its chosen slot: ISO weekday 1..7, Bangkok time 'HH:MM:SS', last sent Bangkok date. */
 export type WeeklySummaryGroup = {
@@ -228,6 +237,15 @@ export interface StorePort {
   hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean>
   /** #21: sets posted_at once the group post went out (only while it is still null). */
   markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void>
+  // #44 daily reminders and gap flags
+  /** groups where project_id is not null, left_at is null and feature_track_remind. Every page, by id. */
+  listDailyReminderGroups(): Promise<DailyReminderGroup[]>
+  /** One statement: sets daily_reminder_last_sent_on = todayBkk where it is null or before todayBkk. */
+  claimDailyReminder(groupId: string, todayBkk: string): Promise<{ claimed: boolean }>
+  /** Puts back `previous` only while the column still holds todayBkk, so a later tick retries. */
+  releaseDailyReminder(groupId: string, todayBkk: string, previous: string | null): Promise<void>
+  /** The group's live Tasks that are not Done, oldest first. */
+  listReminderTasks(groupId: string): Promise<ReminderTask[]>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>

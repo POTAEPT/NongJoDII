@@ -1,6 +1,6 @@
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import { log, logError } from '../log'
-import type { ApiResult, Deps, SetupMemberWrite } from '../ports'
+import type { ApiResult, Deps, GroupSetup, Member, SetupMemberWrite, SetupOutcome } from '../ports'
 import { badRequest, field } from '../review/load'
 import { setupDoneCard } from './card'
 import { lineNameOf, openSetupGroup } from './load'
@@ -8,7 +8,7 @@ import {
   cleanNicknames, isIsoWeekday, isQuarterHour, isSetupOpen, MEMBERS_MAX, NICKNAME_MAX, NICKNAMES_PER_MEMBER_MAX,
   ROLE_MAX, setupState, WORK_DESCRIPTION_MAX,
 } from './rules'
-import type { SetupFeatures, SetupSubmitResult } from './types'
+import type { SetupFeatures, SetupResendResult, SetupSubmitResult } from './types'
 
 /** Share of the monthly LINE quota left unspent by the #2e card. The Owner cards are what
  *  the 10% reserve of the Tasks-created announce is kept for (review/notify.ts), so this
@@ -125,15 +125,46 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
   // reaches the group. A new nominee, even one named before, has a new time, a new key
   // and a new card.
   const pendingOwnerName = confirmed ? null : await lineNameOf(deps, v.ownerLineUserId, live)
-  const posted = await pushToGroupWithinBudget(deps, {
+  const posted = await pushSetupCard(deps, group, { owner: v.ownerLineUserId, outcome, nominatedAt, pendingOwnerName })
+  const result: SetupSubmitResult = { state: confirmed ? 'confirmed' : 'pending_owner', posted }
+  return { status: 200, body: result }
+}
+
+/** The #2e card, under the key of its nomination (see submitSetup). */
+function pushSetupCard(
+  deps: Deps,
+  group: Pick<GroupSetup, 'groupId' | 'lineGroupId'>,
+  c: { owner: string; outcome: SetupOutcome; nominatedAt: Date; pendingOwnerName: string | null },
+) {
+  return pushToGroupWithinBudget(deps, {
     purpose: 'setup_done',
     groupId: group.groupId,
     lineGroupId: group.lineGroupId,
-    messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName })],
+    messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName: c.pendingOwnerName })],
     reserve: SETUP_PUSH_RESERVE,
-    retryKey: retryKeyFrom(`setup_done:${group.groupId}:${v.ownerLineUserId}:${outcome}:${nominatedAt.toISOString()}`),
+    retryKey: retryKeyFrom(`setup_done:${group.groupId}:${c.owner}:${c.outcome}:${c.nominatedAt.toISOString()}`),
   })
-  const result: SetupSubmitResult = { state: confirmed ? 'confirmed' : 'pending_owner', posted }
+}
+
+/** POST /api/setup/resend-card: pushes the #2e card again for the nomination the group
+ *  holds now. Saves nothing: the form on the page may be stale, and sending it again would
+ *  undo another Member's later changes. The key is the saved nomination's own key, so LINE
+ *  drops the repeat of a card it already delivered. 409 unless an Owner is pending. */
+export async function resendSetupCard(deps: Deps, body: unknown): Promise<ApiResult> {
+  const gate = await openSetupGroup(deps, body)
+  if (!gate.ok) return gate.result
+  const { group } = gate
+  const owner = group.nominatedOwnerLineUserId
+  if (setupState(group) !== 'pending_owner' || owner === null) return closed
+
+  const live: Member[] = await deps.store.listLiveMembers(group.groupId)
+  const ownerName = await lineNameOf(deps, owner, live)
+  // A row without a nomination time (written before the column) gets a fresh key: it can
+  // only repeat a card, never lose one.
+  const nominatedAt = group.ownerNominatedAt ?? deps.now()
+  const posted = await pushSetupCard(deps, group, { owner, outcome: 'pending', nominatedAt, pendingOwnerName: ownerName })
+  log('setup_card_resent', { groupId: group.groupId, posted })
+  const result: SetupResendResult = { state: 'pending_owner', posted, ownerName }
   return { status: 200, body: result }
 }
 

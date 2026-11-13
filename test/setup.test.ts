@@ -3,7 +3,7 @@ import type { LineEvent, LineMessage } from '@/server/line/types'
 import { liffUrl } from '@/server/liff-links'
 import { confirmOwner } from '@/server/setup/confirm'
 import { loadSetup } from '@/server/setup/load'
-import { submitSetup } from '@/server/setup/submit'
+import { resendSetupCard, submitSetup } from '@/server/setup/submit'
 import type { OwnerConfirmResult, SetupLoad, SetupSubmitResult } from '@/server/setup/types'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { ev, makeTestDeps, signedRequest, TEST_LIFF_ID, TEST_NOW, webhookBody } from './harness'
@@ -66,9 +66,10 @@ async function setup() {
     return submitSetup(h.deps, form(p))
   }
   const confirm = (idToken: string) => confirmOwner(h.deps, { idToken, groupId: group.id })
+  const resend = (idToken = 'tok-me') => resendSetupCard(h.deps, { idToken, groupId: group.id })
   const row = () => h.store.tables.groups.find((g) => g.id === group.id)!
   const member = (id: string) => h.store.tables.group_members.find((m) => m.groupId === group.id && m.lineUserId === id)
-  return { ...h, group, send, load, form, submit, confirm, row, member }
+  return { ...h, group, send, load, form, submit, confirm, resend, row, member }
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>
@@ -308,6 +309,44 @@ describe('setup send, another Owner', () => {
     expect(t.line.delivered).toHaveLength(1)
     expect(flexJson(t.line.delivered[0].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
     expect(uris(t.line.delivered[0].messages)).toEqual([liffUrl(TEST_LIFF_ID, 'owner', t.group.id)])
+  })
+
+  it('resend-card pushes the saved nomination\'s card again, under its key, without saving the form', async () => {
+    const t = await setup()
+    t.line.failPush = true
+    await t.submit({ ownerLineUserId: 'Upim' })
+    t.line.failPush = false
+    const before = structuredClone(t.row())
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    const res = await t.resend()
+    expect(res.body).toEqual({ state: 'pending_owner', posted: 'pushed', ownerName: 'Pim Sirin' })
+    expect(t.line.pushes[1].retryKey).toBe(t.line.pushes[0].retryKey)
+    expect(t.row()).toEqual(before)
+    expect(flexJson(t.line.delivered[0].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
+  })
+
+  it('resend-card keeps another Member\'s later change: it names the nominee saved now', async () => {
+    const t = await setup()
+    t.line.failPush = true
+    await t.submit({ ownerLineUserId: 'Upim' }) // Me's card fails
+    t.line.failPush = false
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    // Pim then sends a changed form naming Me (pending: only naming yourself confirms).
+    await submitSetup(t.deps, t.form({ idToken: 'tok-pim', workDescription: 'งานใหม่', ownerLineUserId: 'Ume' }))
+    const saved = structuredClone(t.row())
+    expect(saved.nominatedOwnerLineUserId).toBe('Ume')
+    // Me presses resend on the old page: Pim's changes and nominee stay.
+    const res = await t.resend()
+    expect(res.body).toMatchObject({ state: 'pending_owner', ownerName: 'Me Myself' })
+    expect(t.row()).toEqual(saved)
+  })
+
+  it('resend-card answers 409 when no Owner is pending', async () => {
+    const t = await setup()
+    await t.load()
+    expect((await t.resend()).status).toBe(409)
+    await t.submit() // Me names themself: confirmed
+    expect((await t.resend()).status).toBe(409)
   })
 
   it('a resend after a card skipped for quota delivers it once the quota allows', async () => {

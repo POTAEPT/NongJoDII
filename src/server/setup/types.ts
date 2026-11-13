@@ -51,5 +51,8 @@ export type SetupSubmitBody = {
 /** The #2e card's push result: skipped or failed still means the setup is saved, and a
  *  resend with the same nominee pushes the same card again under the same retry key. */
 export type SetupSubmitResult = { state: 'confirmed' | 'pending_owner'; posted: GroupPushResult }
+/** POST /api/setup/resend-card: the card pushed again for the saved nomination; ownerName
+ *  is the nominee the group holds now, which may differ from the page's form. */
+export type SetupResendResult = { state: 'pending_owner'; posted: GroupPushResult; ownerName: string }
 
 export type OwnerConfirmResult = { state: 'confirmed'; alreadyConfirmed: boolean }

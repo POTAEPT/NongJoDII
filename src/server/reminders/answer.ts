@@ -16,6 +16,8 @@ import { ISO_DATE, type ReminderAction, encodeReminderAction, parseReminderActio
 //   - Every answer is a reply (free), never a push.
 
 const DAY_MS = 86_400_000
+/** Task buttons in the typed-fallback picker; the rest are answered from the reminder card. */
+export const PICK_MAX = 10
 /** Time of day for a postponed Task that had no due time. */
 const DEFAULT_DUE_TIME = { hh: 18, mm: 0 }
 const THAI_WEEKDAY_SHORT = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'] // ISO 1..7
@@ -38,6 +40,7 @@ export const ANSWER_TEXT = {
   noOpenTasks: 'คุณไม่มีงานที่ยังไม่เสร็จในกลุ่มนี้',
   pickDone: 'งานไหนเสร็จแล้ว?',
   pickPostpone: 'ขอเลื่อนงานไหน?',
+  moreTasks: (n: number) => `และอีก ${n} งาน ตอบได้จากปุ่มบนการ์ดเตือนประจำวัน`,
 } as const
 
 export type ReminderResult =
@@ -106,7 +109,7 @@ export function postponeChoicesCard(task: TaskRow, now: Date): LineMessage {
 }
 
 /** "งานไหน…?": one button per Task, each carrying `kind` for that Task (typed fallbacks). */
-function pickTaskCard(tasks: TaskRow[], kind: 'done' | 'postpone'): LineMessage {
+function pickTaskCard(tasks: TaskRow[], kind: 'done' | 'postpone', more: number): LineMessage {
   const title = kind === 'done' ? ANSWER_TEXT.pickDone : ANSWER_TEXT.pickPostpone
   const clip = (s: string) => (s.length > 40 ? `${s.slice(0, 39)}…` : s)
   return {
@@ -118,6 +121,7 @@ function pickTaskCard(tasks: TaskRow[], kind: 'done' | 'postpone'): LineMessage 
         contents: [
           { type: 'text', text: title, wrap: true, weight: 'bold', size: 'md', color: '#14213D' },
           ...tasks.map((t) => postbackButton(clip(t.title), encodeReminderAction({ kind, taskId: t.id }), false)),
+          ...(more > 0 ? [{ type: 'text', text: ANSWER_TEXT.moreTasks(more), wrap: true, size: 'xs', color: '#6B7280' }] : []),
         ],
       },
     },
@@ -135,12 +139,20 @@ export async function resolveReminderAction(
   if (!task || task.groupId !== groupId || task.deletedAt !== null || task.status === 'done') {
     return { result: 'gone', message: text(ANSWER_TEXT.gone) }
   }
-  const members = await deps.store.listLiveMembers(groupId)
+  let members = await deps.store.listLiveMembers(groupId)
   const nameOf = (id: string) => members.find((m) => m.lineUserId === id)?.displayName ?? 'สมาชิก'
   const now = deps.now()
 
   if (action.kind === 'take') {
-    if ((await deps.store.getMembership(groupId, userId)) === 'left') return { result: 'left', message: text(ANSWER_TEXT.left) }
+    const membership = await deps.store.getMembership(groupId, userId)
+    if (membership === 'left') return { result: 'left', message: text(ANSWER_TEXT.left) }
+    if (membership === 'none') {
+      // A first-time presser: LINE sent the press from this group, so they are in it. Register
+      // them as a Member first, so the Task shows their name and stays editable (the edit
+      // endpoint accepts only a live Member as the assignee).
+      await deps.store.touchGroupMember(groupId, userId, 'message')
+      members = await deps.store.listLiveMembers(groupId)
+    }
     if (task.assigneeLineUserId !== null) {
       return { result: 'already_taken', message: text(ANSWER_TEXT.alreadyTaken(nameOf(task.assigneeLineUserId))) }
     }
@@ -158,15 +170,21 @@ export async function resolveReminderAction(
   }
 
   // Done and Postpone: the owner only.
+  /** The write found the Task changed since it was read: reassigned to someone else, or gone. */
+  const lostWrite = async (): Promise<ReminderOutcome> => {
+    const fresh = await deps.store.getTask(task.id)
+    const open = fresh && fresh.deletedAt === null && fresh.status !== 'done'
+    if (!open) return { result: 'gone', message: text(ANSWER_TEXT.gone) }
+    if (fresh.assigneeLineUserId === null) return { result: 'no_owner', message: text(ANSWER_TEXT.noOwner) }
+    return { result: 'not_allowed', message: text(ANSWER_TEXT.notAllowed(nameOf(fresh.assigneeLineUserId))) }
+  }
   if (task.assigneeLineUserId === null) return { result: 'no_owner', message: text(ANSWER_TEXT.noOwner) }
   if (task.assigneeLineUserId !== userId) {
     return { result: 'not_allowed', message: text(ANSWER_TEXT.notAllowed(nameOf(task.assigneeLineUserId))) }
   }
 
   if (action.kind === 'done') {
-    if (!(await deps.store.markTaskDone({ taskId: task.id, by: userId, at: now })).updated) {
-      return { result: 'gone', message: text(ANSWER_TEXT.gone) }
-    }
+    if (!(await deps.store.markTaskDone({ taskId: task.id, by: userId, at: now })).updated) return lostWrite()
     log('reminder_done', { groupId, taskId: task.id })
     return { result: 'done', message: resultCard({ task, status: 'done', confirmedByName: nameOf(userId), assigneeName: null, at: now }) }
   }
@@ -178,9 +196,7 @@ export async function resolveReminderAction(
   if (!date || !ISO_DATE.test(date)) return { result: 'asked_date', message: postponeChoicesCard(task, now) }
   if (date < bangkokTodayLabel(now)) return { result: 'past_date', message: text(ANSWER_TEXT.pastDate) }
   const dueAt = postponedDueAt(date, task.dueAt)
-  if (!(await deps.store.postponeTask({ taskId: task.id, dueAt, by: userId, at: now })).updated) {
-    return { result: 'gone', message: text(ANSWER_TEXT.gone) }
-  }
+  if (!(await deps.store.postponeTask({ taskId: task.id, dueAt, by: userId, at: now })).updated) return lostWrite()
   log('reminder_postponed', { groupId, taskId: task.id })
   return { result: 'postponed', message: text(ANSWER_TEXT.postponed(task.title, formatWhen(dueAt))) }
 }
@@ -218,7 +234,10 @@ export async function handleReminderCommand(
   deps: Deps,
   p: { groupId: string; userId: string; command: 'done' | 'need_time'; replyToken: string },
 ): Promise<ReminderResult> {
-  const mine = (await deps.store.listOpenTasks(p.groupId)).filter((t) => t.assigneeLineUserId === p.userId)
+  // Nearest due date first (no due date last), so the picker's first buttons are the most urgent.
+  const mine = (await deps.store.listOpenTasks(p.groupId))
+    .filter((t) => t.assigneeLineUserId === p.userId)
+    .sort((a, b) => (a.dueAt?.getTime() ?? Infinity) - (b.dueAt?.getTime() ?? Infinity))
   const kind = p.command === 'done' ? 'done' : 'postpone'
   let outcome: ReminderOutcome
   if (mine.length === 0) {
@@ -228,7 +247,7 @@ export async function handleReminderCommand(
       groupId: p.groupId, userId: p.userId, action: { kind, taskId: mine[0].id }, pickedDate: null,
     })
   } else {
-    outcome = { result: 'picker', message: pickTaskCard(mine.slice(0, 10), kind) }
+    outcome = { result: 'picker', message: pickTaskCard(mine.slice(0, PICK_MAX), kind, mine.length - PICK_MAX) }
   }
   await deps.line.reply(p.replyToken, [outcome.message])
   return outcome.result

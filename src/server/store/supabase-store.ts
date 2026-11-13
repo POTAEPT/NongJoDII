@@ -760,6 +760,8 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #45 reminder answers ----
+  // Done and Postpone also require `by` to still own the Task, so a reassignment between the
+  // check and the write is never overridden by the former owner.
   async markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
     const at = t.at.toISOString()
     const { data, error } = await this.db
@@ -767,6 +769,7 @@ export class SupabaseStore implements StorePort {
       .update({ status: 'done', done_at: at, last_activity_at: at, last_edited_by_line_user_id: t.by })
       .eq('id', t.taskId)
       .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
       .neq('status', 'done')
       .select('id')
     check('markTaskDone', error)
@@ -779,6 +782,7 @@ export class SupabaseStore implements StorePort {
       .update({ due_at: t.dueAt.toISOString(), last_activity_at: t.at.toISOString(), last_edited_by_line_user_id: t.by })
       .eq('id', t.taskId)
       .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
       .neq('status', 'done')
       .select('id')
     check('postponeTask', error)

@@ -48,4 +48,12 @@ describe('LIFF progress page state', () => {
     expect(page.sending).toBe(true)
     expect(page.body?.choices).toEqual(CHOICES)
   })
+
+  it('a reminder answer from the LIFF page (#45) is final: the old date choices go away', () => {
+    for (const result of ['done', 'postponed', 'taken']) {
+      const page = finishSend(startSend(picker), { ok: true, body: { result, text: 'บันทึกแล้ว', choices: [] } })
+      expect(page.body?.choices).toEqual([])
+      expect(page.notice).toBeNull()
+    }
+  })
 })

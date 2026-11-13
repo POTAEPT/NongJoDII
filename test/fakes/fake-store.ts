@@ -742,7 +742,7 @@ export class FakeStore implements StorePort {
     this.fault('markTaskDone')
     fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
     const row = this.openLiveTask(t.taskId)
-    if (!row) return { updated: false }
+    if (!row || row.assigneeLineUserId !== t.by) return { updated: false }
     Object.assign(row, { status: 'done', doneAt: t.at, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
     return { updated: true }
   }
@@ -751,7 +751,7 @@ export class FakeStore implements StorePort {
     this.fault('postponeTask')
     fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
     const row = this.openLiveTask(t.taskId)
-    if (!row) return { updated: false }
+    if (!row || row.assigneeLineUserId !== t.by) return { updated: false }
     Object.assign(row, { dueAt: t.dueAt, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
     return { updated: true }
   }

@@ -27,7 +27,9 @@ export function ProgressView({ idToken, id, liff }: LiffViewProps) {
   const started = useRef(false)
   const inFlight = useRef(false) // blocks a double press before state re-renders
 
-  const send = useCallback(async (data: string | null) => {
+  const [pickedDate, setPickedDate] = useState('')
+
+  const send = useCallback(async (data: string | null, date?: string) => {
     if (inFlight.current) return
     inFlight.current = true
     setPage(startSend)
@@ -39,7 +41,7 @@ export function ProgressView({ idToken, id, liff }: LiffViewProps) {
         const r = await fetch('/api/progress/answer', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ idToken, data }),
+          body: JSON.stringify({ idToken, data, ...(date ? { pickedDate: date } : {}) }),
         })
         res = r.status === 200
           ? { ok: true, body: (await r.json()) as ProgressLiffBody }
@@ -61,7 +63,7 @@ export function ProgressView({ idToken, id, liff }: LiffViewProps) {
   if (page.fatal) return <p className="p-4 text-base">{page.fatal}</p>
   if (!page.body) return <p className="p-4 text-base">กำลังบันทึก...</p>
 
-  const { text, choices } = page.body
+  const { text, choices, datePick } = page.body
   return (
     <main className="flex flex-col gap-3 p-4">
       <p className="text-base">{text}</p>
@@ -78,6 +80,27 @@ export function ProgressView({ idToken, id, liff }: LiffViewProps) {
           {c.label}
         </button>
       ))}
+      {datePick && (
+        // #45 "เลือกวันเอง": the LIFF stand-in for LINE's date picker.
+        <div className="flex gap-2">
+          <input
+            type="date"
+            aria-label={datePick.label}
+            min={datePick.min}
+            value={pickedDate || datePick.initial}
+            onChange={(e) => setPickedDate(e.target.value)}
+            className="flex-1 rounded-lg border border-blue-200 px-3 py-2 text-base"
+          />
+          <button
+            type="button"
+            disabled={page.sending}
+            className="rounded-lg bg-blue-700 px-4 py-2 text-base text-white disabled:opacity-50"
+            onClick={() => void send(datePick.data, pickedDate || datePick.initial)}
+          >
+            {datePick.label}
+          </button>
+        </div>
+      )}
       <button type="button" className="px-4 py-3 text-base text-blue-700" onClick={() => liff.closeWindow()}>
         กลับไปที่แชท
       </button>

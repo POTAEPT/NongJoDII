@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent, LineMessage } from '@/server/line/types'
 import { answerProgressFromLiff } from '@/server/progress/liff'
-import { ANSWER_TEXT } from '@/server/reminders/answer'
+import { ANSWER_TEXT, PICK_MAX } from '@/server/reminders/answer'
 import { REMINDER_TEXT, reminderCarousel } from '@/server/reminders/card'
 import { encodeReminderAction } from '@/server/reminders/postback'
 import { selectReminders } from '@/server/reminders/select'
@@ -159,6 +159,21 @@ describe('Postpone (#45)', () => {
     expect(t.task(t.slides.id).dueAt).toEqual(bkk('2026-11-17T18:00:00'))
   })
 
+  it('a Task reassigned between the check and the write is not answered by the former owner', async () => {
+    const t = setup()
+    const stale = (await t.store.getTask(t.slides.id))! // the copy the resolver read: still BIW's
+    t.task(t.slides.id).assigneeLineUserId = TON // the edit page reassigned it meanwhile
+    vi.spyOn(t.store, 'getTask').mockResolvedValueOnce(stale)
+    await t.press(BIW, done(t.slides.id))
+    expect(textOf(t.lastReply())).toBe(ANSWER_TEXT.notAllowed('ต้น'))
+    expect(t.task(t.slides.id).status).toBe('in_process')
+
+    vi.spyOn(t.store, 'getTask').mockResolvedValueOnce(stale)
+    await t.press(BIW, encodeReminderAction({ kind: 'postpone_to', taskId: t.slides.id, date: '2026-11-17' }))
+    expect(textOf(t.lastReply())).toBe(ANSWER_TEXT.notAllowed('ต้น'))
+    expect(t.task(t.slides.id).dueAt).toEqual(bkk('2026-11-16T17:00:00'))
+  })
+
   it('only the owner may postpone', async () => {
     const t = setup()
     await t.press(TON, encodeReminderAction({ kind: 'postpone_to', taskId: t.slides.id, date: '2026-11-17' }))
@@ -181,6 +196,13 @@ describe('ฉันรับเอง (#45, option ก)', () => {
     await t.press(BIW, take(t.room.id))
     expect(textOf(t.lastReply())).toBe(ANSWER_TEXT.alreadyTaken('ต้น'))
     expect(t.task(t.room.id).assigneeLineUserId).toBe(TON)
+  })
+
+  it('a first-time presser is registered as a Member, so the Task stays editable', async () => {
+    const t = setup()
+    await t.press('Unew', take(t.room.id))
+    expect(t.task(t.room.id).assigneeLineUserId).toBe('Unew')
+    expect(await t.store.getMembership(t.group.id, 'Unew')).toBe('live')
   })
 
   it('a Member who left the group cannot take it', async () => {
@@ -229,6 +251,22 @@ describe('a press without the presser\'s userId (#45)', () => {
     expect(body.choices.map((c) => c.label)).toEqual(['+1 วัน (อ. 17 พ.ย.)', '+3 วัน (พฤ. 19 พ.ย.)', '+1 สัปดาห์ (จ. 23 พ.ย.)'])
   })
 
+  it('the LIFF page offers its own date input, which postpones to the picked date', async () => {
+    const t = setup()
+    t.line.idTokens.set('tok-biw', { lineUserId: BIW, displayName: 'บิว' })
+    const asked = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: postpone(t.slides.id) })
+    const pick = (asked.body as { datePick: { label: string; data: string; min: string; initial: string } }).datePick
+    expect(pick).toEqual({
+      label: ANSWER_TEXT.pickDate, data: encodeReminderAction({ kind: 'postpone_pick', taskId: t.slides.id }),
+      min: '2026-11-16', initial: '2026-11-17',
+    })
+    const past = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: pick.data, pickedDate: '2026-11-10' })
+    expect(past.body).toMatchObject({ result: 'past_date' })
+    const res = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: pick.data, pickedDate: '2026-11-30' })
+    expect(res.body).toMatchObject({ result: 'postponed' })
+    expect(t.task(t.slides.id).dueAt).toEqual(bkk('2026-11-30T17:00:00'))
+  })
+
   it('the LIFF page refuses an outsider', async () => {
     const t = setup()
     t.line.idTokens.set('tok-out', { lineUserId: 'Uoutsider', displayName: 'X' })
@@ -260,6 +298,23 @@ describe('typed fallbacks (#45)', () => {
     await t.press(BIW, b['ทำโลโก้'].data)
     expect(t.task(logo.id).status).toBe('done')
     expect(t.task(t.slides.id).status).toBe('in_process')
+  })
+
+  it('with more Tasks than the picker holds, shows the nearest due first and says how many are left', async () => {
+    const t = setup()
+    for (let i = 0; i < PICK_MAX + 1; i += 1) {
+      // Created before slides would not matter: the order is by due date, and these are all later.
+      t.store.seedTask({
+        groupId: t.group.id, title: `งาน ${i}`, createdByLineUserId: OWNER, status: 'in_process', assigneeLineUserId: BIW,
+        dueAt: i === 0 ? null : bkk(`2026-11-${String(17 + i).padStart(2, '0')}T12:00:00`),
+      })
+    }
+    await t.say(BIW, 'NongJoDII done')
+    const labels = Object.keys(buttons(t.lastReply()))
+    expect(labels).toHaveLength(PICK_MAX)
+    expect(labels[0]).toBe('ทำสไลด์') // due today
+    expect(labels).not.toContain('งาน 0') // no due date: last
+    expect(json(t.lastReply())).toContain(ANSWER_TEXT.moreTasks(2))
   })
 
   it('with no open Task of the sender, says so', async () => {

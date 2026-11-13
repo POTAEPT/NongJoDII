@@ -1,4 +1,4 @@
-import { AdapterError } from '../log'
+import { AdapterError, LinePushRejected } from '../log'
 import type { LinePort, LinePushResult } from '../ports'
 import type { LineMessage } from './types'
 
@@ -42,7 +42,9 @@ export class LineHttpClient implements LinePort {
 
   /** With a retry key, LINE accepts the push at most once per key (24 h): a repeat
    *  answers 409 ("An API request with the same retry key is already accepted", LINE's
-   *  retry docs), so it resolves 'duplicate': the post is there, nothing was sent now. */
+   *  retry docs), so it resolves 'duplicate': the post is there, nothing was sent now.
+   *  Any other 4xx throws LinePushRejected: LINE did not accept the push. A 5xx, a timeout
+   *  or a network error throws something else, and the push may have been delivered. */
   async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
     if (opts?.retryKey) headers['X-Line-Retry-Key'] = opts.retryKey
@@ -52,6 +54,7 @@ export class LineHttpClient implements LinePort {
       body: JSON.stringify({ to, messages }),
     })
     if (res.status === 409 && opts?.retryKey) return 'duplicate'
+    if (res.status >= 400 && res.status < 500) throw new LinePushRejected(res.status)
     if (!res.ok) throw new AdapterError(`line push ${res.status}`)
     return 'sent'
   }

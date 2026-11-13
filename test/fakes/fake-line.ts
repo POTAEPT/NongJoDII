@@ -1,6 +1,6 @@
 import type { LineMessage } from '@/server/line/types'
 import type { LinePort, LinePushResult } from '@/server/ports'
-import { AdapterError } from '@/server/log'
+import { AdapterError, LinePushRejected } from '@/server/log'
 
 export class FakeLine implements LinePort {
   /** Every reply call, recorded before `failReply` is applied. */
@@ -25,8 +25,12 @@ export class FakeLine implements LinePort {
   groupSummaryCalls: string[] = []
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
-  /** Makes push reject, as the real adapter does on a LINE 5xx or 429. */
+  /** Makes push reject as the real adapter does on a LINE 5xx: the outcome is unknown to
+   *  the caller, and here LINE did not accept the push (the retry key stays free). */
   failPush = false
+  /** Makes push reject as the real adapter does on a LINE 4xx (LinePushRejected): LINE
+   *  refused the push, nothing was sent. */
+  rejectPush = false
   /** Makes getGroupMemberProfile reject, as the real adapter does on a LINE 5xx/429. */
   failProfile = false
   /** When above 0, getGroupMemberProfile answers only after this many ms, then rejects
@@ -42,11 +46,13 @@ export class FakeLine implements LinePort {
   acceptedRetryKeys = new Set<string>()
   /** Pushes LINE actually delivered (a repeat of an accepted retry key is not one). */
   delivered: { to: string; messages: LineMessage[]; retryKey?: string }[] = []
-  /** LINE accepts and delivers the push, then the answer is lost (a timeout). */
+  /** LINE accepts and delivers the push, then the answer is lost (a timeout): the outcome
+   *  is unknown to the caller, and the retry key counts as accepted for a later repeat. */
   timeoutAfterAccept = false
 
   async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult> {
     this.pushes.push({ to, messages, retryKey: opts?.retryKey })
+    if (this.rejectPush) throw new LinePushRejected(400)
     if (this.failPush) throw new AdapterError('line push 500')
     const key = opts?.retryKey
     if (key !== undefined && this.acceptedRetryKeys.has(key)) return 'duplicate'

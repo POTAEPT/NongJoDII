@@ -9,7 +9,8 @@ export interface LinePort {
   /** Push to a LINE group ID. Unlike a reply, a push counts against the monthly
    *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes).
    *  'duplicate': LINE had already accepted a push with this retry key (409), so this
-   *  call sent nothing. */
+   *  call sent nothing. Rejects with LinePushRejected when LINE refused the push (another
+   *  4xx: nothing was sent); any other rejection leaves the outcome unknown. */
   push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
@@ -233,7 +234,8 @@ export interface StorePort {
    *  lineUsed and inserts this push's row when the total stays within `allowed`.
    *  null = no budget, nothing inserted. */
   claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }>
-  /** Deletes a claimed push_log row after the push failed. */
+  /** Deletes a claimed push_log row whose push sent nothing (LINE refused it, or it was
+   *  a duplicate of an accepted push). */
   releasePushBudget(pushLogId: string): Promise<void>
   listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]>
   // #5 / #6 usage

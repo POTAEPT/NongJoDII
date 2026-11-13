@@ -155,7 +155,7 @@ describe('weekly insight group post (#21)', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { store, line, tickAt } = setup()
     const group = seedGroup(store, line)
-    line.failPush = true
+    line.rejectPush = true // a LINE 4xx: nothing was sent, so the claim goes back
     await tickAt(MONDAY_9)
     expect(line.pushes).toHaveLength(1) // attempted
     expect(insightOf(store, group.id)?.postedAt).toBeNull()
@@ -163,7 +163,7 @@ describe('weekly insight group post (#21)', () => {
     expect(errors.mock.calls.map((c) => JSON.parse(String(c[0])).event)).toContain('group_push_failed')
 
     // The week's insight is not saved twice, and the post is not retried later the same day.
-    line.failPush = false
+    line.rejectPush = false
     await tickAt(bkk('2026-11-16T09:15:00'))
     expect(store.tables.weekly_insights.filter((w) => w.groupId === group.id)).toHaveLength(1)
     expect(line.pushes).toHaveLength(1)

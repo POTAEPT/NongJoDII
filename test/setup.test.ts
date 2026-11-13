@@ -432,14 +432,39 @@ describe('setup send, another Owner', () => {
     expect(t.store.tables.projects).toEqual([{ id: t.row().projectId, ownerLineUserId: 'Upim' }])
   })
 
-  it('a failed push still saves the setup and gives the budget back', async () => {
+  it('a push LINE refuses (4xx) still saves the setup and gives the budget back', async () => {
+    const t = await setup()
+    t.line.rejectPush = true
+    const res = await t.submit({ ownerLineUserId: 'Upim' })
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ state: 'pending_owner', posted: 'failed' })
+    expect(t.row().nominatedOwnerLineUserId).toBe('Upim')
+    expect(t.store.tables.push_log).toHaveLength(0)
+  })
+
+  it('a failed push with an unknown outcome (5xx) still saves the setup and keeps the budget claim', async () => {
     const t = await setup()
     t.line.failPush = true
     const res = await t.submit({ ownerLineUserId: 'Upim' })
     expect(res.status).toBe(200)
     expect(res.body).toEqual({ state: 'pending_owner', posted: 'failed' })
     expect(t.row().nominatedOwnerLineUserId).toBe('Upim')
-    expect(t.store.tables.push_log).toHaveLength(0)
+    // LINE may have delivered the card, so its messages stay booked.
+    expect(t.store.tables.push_log).toHaveLength(1)
+  })
+
+  it('a card LINE accepted before the answer was lost keeps one claim through the resend', async () => {
+    const t = await setup()
+    t.line.timeoutAfterAccept = true
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'failed' })
+    t.line.timeoutAfterAccept = false
+    const first = t.store.tables.push_log.map((r) => r.id)
+    expect(first).toHaveLength(1)
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    // Same retry key: LINE answers 409, and only the resend's claim goes back.
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'pushed' })
+    expect(t.line.delivered).toHaveLength(1)
+    expect(t.store.tables.push_log.map((r) => r.id)).toEqual(first)
   })
 
   it('a push skipped for quota still saves the setup', async () => {

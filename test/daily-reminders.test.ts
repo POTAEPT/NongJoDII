@@ -151,7 +151,7 @@ describe('daily reminders (#44)', () => {
     expect(claimedOn(store, group.id)).toBe('2026-11-16')
   })
 
-  it('retries on the next tick when LINE rejects the post, with the same retry key', async () => {
+  it('retries on the next tick when the post fails (a LINE 5xx), with the same retry key', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { store, line, tickAt } = setup()
     const group = seedGroup(store, line)
@@ -163,7 +163,9 @@ describe('daily reminders (#44)', () => {
     line.failPush = true
     await tickAt(MON_9)
     expect(claimedOn(store, group.id)).toBeNull() // released
-    expect(store.tables.push_log).toHaveLength(0)
+    // A LINE 5xx leaves the outcome unknown (the push may have been delivered), so the
+    // budget claim stays; only a push LINE refused (4xx) gives it back.
+    expect(store.tables.push_log).toHaveLength(1)
     expect(errors.mock.calls.map((c) => JSON.parse(String(c[0])).event)).toContain('group_push_failed')
 
     line.failPush = false

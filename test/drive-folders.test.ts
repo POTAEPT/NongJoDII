@@ -3,8 +3,10 @@ import { finishGoogleSignIn } from '@/server/google/callback'
 import { ensureDriveFolders, ensureGroupFolder, MAIN_GROUP_FOLDER, ROOT_FOLDER } from '@/server/google/drive-folders'
 import { startGoogleSignIn } from '@/server/google/start'
 import { AdapterError } from '@/server/log'
+import { seal } from '@/server/crypto/secretbox'
 import { confirmOwner } from '@/server/setup/confirm'
-import { makeTestDeps, TEST_NOW } from './harness'
+import { submitSetup } from '@/server/setup/submit'
+import { makeTestDeps, TEST_KEY, TEST_NOW } from './harness'
 
 // #13 acceptance: after Google sign-in (and an Owner confirm), the Owner's Drive gets
 // NongJoDII/<main group>/Main group files and one folder per Sub group, IDs stored,
@@ -361,5 +363,30 @@ describe('Owner confirm', () => {
     await h.runDeferred()
     expect(h.google.refreshCalls).toEqual([])
     expect(h.google.driveCalls).toEqual([])
+  })
+
+  it('an Owner who names themselves in the setup form, already signed in to Google, gets the folders', async () => {
+    const h = setup()
+    const g = h.store.seedGroup({ lineGroupId: MAIN_LINE_GROUP, name: 'ทีมหลัก' })
+    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+    h.line.groupMemberCounts.set(MAIN_LINE_GROUP, 1)
+    await h.store.upsertGoogleAccount({
+      lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
+      grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+    })
+    const res = await submitSetup(h.deps, {
+      idToken: OWNER_TOKEN, groupId: g.id, workDescription: 'งาน',
+      features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
+      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
+      members: [{ lineUserId: OWNER, nicknames: ['โอ'], role: 'PM' }], ownerLineUserId: OWNER,
+    }, h.defer)
+    expect(res).toMatchObject({ status: 200, body: { state: 'confirmed' } })
+    expect(h.google.folders.size).toBe(0) // nothing before the response
+    await h.runDeferred()
+    const projectId = h.store.tables.groups.find((r) => r.id === g.id)!.projectId as string
+    expect(h.google.folders.get(projectRow(h, projectId).driveProjectFolderId as string)?.name).toBe('ทีมหลัก')
+    expect(groupFolderId(h, g.id)).not.toBeNull()
+    expect(h.google.shares).toHaveLength(1)
+    expect(h.store.tables.drive_connections).toHaveLength(1)
   })
 })

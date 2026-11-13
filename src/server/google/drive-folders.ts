@@ -56,7 +56,9 @@ export async function ensureDriveFolders(deps: Deps, projectId: string): Promise
 
 /** The folder of one group (a Sub group just attached, or before a file is saved),
  *  making the root and Project folders first when needed. null when the group has no
- *  Project or no confirmed Owner, or the Owner has no usable Google account. */
+ *  Project or no confirmed Owner, the Owner has no usable Google account, or the
+ *  Project's active connection is another Google account. Throws on a token, Drive or
+ *  store failure, so the caller (the Sub group attach flow, #4's file save) must catch. */
 export async function ensureGroupFolder(deps: Deps, groupId: string): Promise<string | null> {
   const row = await deps.store.getGroupById(groupId)
   if (!row?.projectId) return null

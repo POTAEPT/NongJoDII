@@ -193,6 +193,11 @@ export interface StorePort {
   touchGroupMember(groupId: string, lineUserId: string, source: 'message' | 'liff'): Promise<void> // insert-if-absent (group_id, line_user_id)
   getMembership(groupId: string, lineUserId: string): Promise<Membership>
   insertMessage(m: NewMessage): Promise<{ inserted: boolean; id: string | null }>   // conflict target webhook_event_id -> inserted false, id null
+  // #24 unsend
+  /** Deletes the stored message with this LINE message id. deleted false when no row had it
+   *  (never stored, or already deleted), so a repeat is harmless. Rows that point at it
+   *  (task_prompts.trigger_message_id, files.message_id) are kept by ON DELETE SET NULL. */
+  deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }>
   // #15 Summary
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null

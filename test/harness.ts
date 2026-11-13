@@ -95,6 +95,7 @@ export const ev: {
   follow(p: { userId?: string; eventId?: string }): LineEvent
   groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string; pickedDate?: string }): LineEvent
   join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean }): LineEvent
+  unsend(p: { messageId: string; groupId?: string; userId?: string; eventId?: string; redelivery?: boolean }): LineEvent
 } = {
   groupText(p) {
     const userId = p.userId === undefined ? DEFAULT_USER : p.userId
@@ -165,6 +166,18 @@ export const ev: {
       replyToken: p.replyToken ?? next('rt'),
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },
+    }
+  },
+  unsend(p) {
+    // LINE's unsend event carries no replyToken; unsend.messageId is the unsent message's id (#24).
+    return {
+      type: 'unsend',
+      mode: 'active',
+      timestamp: TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP, userId: p.userId ?? DEFAULT_USER },
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: p.redelivery ?? false },
+      unsend: { messageId: p.messageId },
     }
   },
   follow(p) {

@@ -184,3 +184,77 @@ describe('webhook', () => {
     expect((await send('{"destination":"U"}')).status).toBe(400)
   })
 })
+
+describe('webhook: unsend (#24)', () => {
+  it('12. an unsend deletes the stored copy of that message and defers no job', async () => {
+    const { send, store, deferred } = setup()
+    await send(webhookBody(
+      ev.groupText({ text: 'keep me', messageId: 'm-keep' }),
+      ev.groupText({ text: 'oops', messageId: 'm-gone' }),
+    ))
+    deferred.length = 0
+    const res = await send(webhookBody(ev.unsend({ messageId: 'm-gone', eventId: 'ev-unsend' })))
+    expect(res.status).toBe(200)
+    expect(store.tables.messages.map((m) => m.lineMessageId)).toEqual(['m-keep'])
+    expect(store.tables.webhook_events.find((w) => w.webhookEventId === 'ev-unsend'))
+      .toMatchObject({ eventType: 'unsend', lineGroupId: 'Cgroup1' })
+    expect(deferred).toHaveLength(0)
+  })
+
+  it('13. an unsend for a message never stored does nothing and answers 200', async () => {
+    const { send, store, deferred } = setup()
+    await send(webhookBody(ev.groupText({ text: 'hi', messageId: 'm-1' })))
+    deferred.length = 0
+    const res = await send(webhookBody(ev.unsend({ messageId: 'm-unknown' })))
+    expect(res.status).toBe(200)
+    expect(store.tables.messages.map((m) => m.lineMessageId)).toEqual(['m-1'])
+    expect(deferred).toHaveLength(0)
+  })
+
+  it('14. an unsend of a message behind a confirmed Task keeps the Task', async () => {
+    const { send, store } = setup()
+    await send(webhookBody(ev.groupText({ text: 'ทำสไลด์เสร็จแล้ว', messageId: 'm-trigger' })))
+    const message = store.tables.messages[0]
+    const task = store.seedTask({ groupId: message.groupId, title: 'ทำสไลด์', createdByLineUserId: 'Uuser1', status: 'in_process' })
+    await store.createProgressPrompt({
+      groupId: message.groupId, taskId: task.id, targetStatus: 'done',
+      subjectLineUserId: 'Uuser1', triggerMessageId: message.id, askedAt: message.sentAt,
+    })
+    const res = await send(webhookBody(ev.unsend({ messageId: 'm-trigger' })))
+    expect(res.status).toBe(200)
+    expect(store.tables.messages).toHaveLength(0)
+    expect(store.tables.tasks).toHaveLength(1)
+    expect(store.tables.tasks[0]).toMatchObject({ id: task.id, title: 'ทำสไลด์', status: 'in_process', deletedAt: null })
+    // task_prompts.trigger_message_id is ON DELETE SET NULL: the prompt stays, unlinked.
+    expect(store.tables.task_prompts).toHaveLength(1)
+    expect(store.tables.task_prompts[0]).toMatchObject({ taskId: task.id, triggerMessageId: null })
+  })
+
+  it('15. the same unsend delivered twice has the same result as once', async () => {
+    const { send, store, deferred } = setup()
+    await send(webhookBody(
+      ev.groupText({ text: 'keep', messageId: 'm-keep' }),
+      ev.groupText({ text: 'oops', messageId: 'm-gone' }),
+    ))
+    deferred.length = 0
+    expect((await send(webhookBody(ev.unsend({ messageId: 'm-gone', eventId: 'ev-u' })))).status).toBe(200)
+    const after = structuredClone(store.tables)
+    expect((await send(webhookBody(ev.unsend({ messageId: 'm-gone', eventId: 'ev-u', redelivery: true })))).status).toBe(200)
+    expect(store.tables).toEqual(after)
+    expect(store.tables.messages.map((m) => m.lineMessageId)).toEqual(['m-keep'])
+    expect(deferred).toHaveLength(0)
+  })
+
+  it('16. a store failure on the delete returns 500 and a resend recovers', async () => {
+    const { send, store } = setup()
+    await send(webhookBody(ev.groupText({ text: 'oops', messageId: 'm-gone' })))
+    const body = webhookBody(ev.unsend({ messageId: 'm-gone', eventId: 'ev-u' }))
+    store.failNext('deleteMessageByLineId')
+    expect((await send(body)).status).toBe(500)
+    expect(store.tables.messages).toHaveLength(1)
+    expect(store.tables.webhook_events.some((w) => w.webhookEventId === 'ev-u')).toBe(false)
+    expect((await send(body)).status).toBe(200)
+    expect(store.tables.messages).toHaveLength(0)
+    expect(store.tables.webhook_events.some((w) => w.webhookEventId === 'ev-u')).toBe(true)
+  })
+})

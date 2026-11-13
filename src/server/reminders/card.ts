@@ -24,7 +24,8 @@ export const REMINDER_TEXT = {
   title: 'แจ้งเตือนงานวันนี้',
   more: (n: number) => `และอีก ${n} งาน ดูได้ใน Dashboard`,
   done: 'เสร็จแล้ว',
-  postpone: 'ขอเลื่อน',
+  postpone: 'เลื่อนกำหนด', // Figma "UI แก้ V.1", frame 6A
+  take: 'ฉันรับเอง',       // Figma 6C: a Task with no owner offers this instead (#45, option ก)
   owner: (name: string) => `คนทำ: ${name}`,
   noOwner: 'ยังไม่มีผู้รับ',
 } as const
@@ -137,10 +138,14 @@ function taskBubble(item: ReminderItem, names: Map<string, string | null>, now: 
       })),
       text(owner, { size: 'xs', color: C.muted }),
     ],
-    [
-      button(REMINDER_TEXT.postpone, encodeReminderAction({ kind: 'postpone', taskId: task.id }), 'secondary'),
-      button(REMINDER_TEXT.done, encodeReminderAction({ kind: 'done', taskId: task.id }), 'primary'),
-    ],
+    // Done and Postpone belong to the Task's owner (the #39 rule). A Task with no owner has
+    // nobody who may answer them, so its next step is someone taking it.
+    task.assigneeLineUserId === null
+      ? [button(REMINDER_TEXT.take, encodeReminderAction({ kind: 'take', taskId: task.id }), 'primary')]
+      : [
+          button(REMINDER_TEXT.postpone, encodeReminderAction({ kind: 'postpone', taskId: task.id }), 'secondary'),
+          button(REMINDER_TEXT.done, encodeReminderAction({ kind: 'done', taskId: task.id }), 'primary'),
+        ],
   )
 }
 

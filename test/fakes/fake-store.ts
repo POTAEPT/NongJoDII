@@ -733,6 +733,38 @@ export class FakeStore implements StorePort {
       }))
   }
 
+  // ---- #45 reminder answers ----
+  private openLiveTask(taskId: string): TaskRecord | undefined {
+    return this.tables.tasks.find((t) => t.id === taskId && t.deletedAt === null && t.status !== 'done')
+  }
+
+  async markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markTaskDone')
+    fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
+    const row = this.openLiveTask(t.taskId)
+    if (!row || row.assigneeLineUserId !== t.by) return { updated: false }
+    Object.assign(row, { status: 'done', doneAt: t.at, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
+  async postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('postponeTask')
+    fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
+    const row = this.openLiveTask(t.taskId)
+    if (!row || row.assigneeLineUserId !== t.by) return { updated: false }
+    Object.assign(row, { dueAt: t.dueAt, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
+  async takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('takeTask')
+    fk(this.hasLineUser(t.by), 'tasks.assignee_line_user_id')
+    const row = this.openLiveTask(t.taskId)
+    if (!row || row.assigneeLineUserId !== null) return { updated: false }
+    Object.assign(row, { assigneeLineUserId: t.by, status: 'in_process', lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
   /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
   seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {

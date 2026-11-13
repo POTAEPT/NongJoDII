@@ -2,6 +2,8 @@ import { ensureGroupAccess, requireLiffUser } from '../liff-auth'
 import type { LineMessage } from '../line/types'
 import { log } from '../log'
 import type { ApiResult, Deps } from '../ports'
+import { resolveReminderAction } from '../reminders/answer'
+import { type ReminderAction, parseReminderAction } from '../reminders/postback'
 import { field } from '../review/load'
 import { resolveProgressAction } from './handle-postback'
 import { parseProgressAction } from './postback'
@@ -17,6 +19,9 @@ export type ProgressLiffBody = {
   text: string
   /** Picker buttons, when the outcome asks the person to pick a Task. */
   choices: { label: string; data: string }[]
+  /** #45: the reminder's "เลือกวันเอง" picker. The page shows a date input and sends `data`
+   *  with the chosen `pickedDate`, as LINE's own picker does. Absent on progress answers. */
+  datePick?: { label: string; data: string; min: string; initial: string }
 }
 
 export async function answerProgressFromLiff(deps: Deps, body: unknown): Promise<ApiResult> {
@@ -24,7 +29,12 @@ export async function answerProgressFromLiff(deps: Deps, body: unknown): Promise
   if (!user) return { status: 401, body: { error: 'unauthorized' } }
   const data = field(body, 'data')
   const action = typeof data === 'string' ? parseProgressAction(data) : null
-  if (!action) return { status: 400, body: { error: 'bad_request', field: 'data' } }
+  if (!action) {
+    // The same LIFF login page also serves the reminder buttons (#45).
+    const reminder = typeof data === 'string' ? parseReminderAction(data) : null
+    if (reminder) return answerReminderFromLiff(deps, user.lineUserId, reminder, field(body, 'pickedDate'))
+    return { status: 400, body: { error: 'bad_request', field: 'data' } }
+  }
 
   // The group comes from the stored card or message, never from the client.
   let groupId: string | null = null
@@ -44,9 +54,48 @@ export async function answerProgressFromLiff(deps: Deps, body: unknown): Promise
   return { status: 200, body: out }
 }
 
+/** #45: a reminder button pressed without a userId, repeated here after LINE login. The group
+ *  comes from the stored Task, never from the client. */
+async function answerReminderFromLiff(
+  deps: Deps, lineUserId: string, action: ReminderAction, pickedDate: unknown,
+): Promise<ApiResult> {
+  const task = await deps.store.getTask(action.taskId)
+  const group = task ? await deps.store.getGroupById(task.groupId) : null
+  if (!group) return { status: 404, body: { error: 'not_found' } }
+  const member = await ensureGroupAccess(deps, { groupId: group.id, lineGroupId: group.lineGroupId, lineUserId })
+  if (!member) return { status: 403, body: { error: 'forbidden' } }
+  // The resolver checks the date's shape and refuses past dates.
+  const date = typeof pickedDate === 'string' ? pickedDate : null
+  const outcome = await resolveReminderAction(deps, { groupId: group.id, userId: lineUserId, action, pickedDate: date })
+  log('reminder_liff_answer', { groupId: group.id, result: outcome.result })
+  const out: ProgressLiffBody = { result: outcome.result, text: messageText(outcome.message), choices: postbackChoices(outcome.message) }
+  const picker = datePickerOf(outcome.message)
+  if (picker) out.datePick = picker
+  return { status: 200, body: out }
+}
+
 function messageText(m: LineMessage): string {
   if (m.type === 'text') return m.text
   return m.altText
+}
+
+/** The first date-picker button of a Flex message, in the LIFF page's shape. */
+function datePickerOf(m: LineMessage): ProgressLiffBody['datePick'] | null {
+  if (m.type !== 'flex') return null
+  let found: ProgressLiffBody['datePick'] | null = null
+  const walk = (node: unknown): void => {
+    if (found || !node || typeof node !== 'object') return
+    const n = node as Record<string, unknown>
+    const a = n.action as Record<string, unknown> | undefined
+    if (n.type === 'button' && a?.type === 'datetimepicker' && typeof a.label === 'string' && typeof a.data === 'string'
+      && typeof a.min === 'string' && typeof a.initial === 'string') {
+      found = { label: a.label, data: a.data, min: a.min, initial: a.initial }
+      return
+    }
+    for (const v of Object.values(n)) walk(v)
+  }
+  walk(m.contents)
+  return found
 }
 
 /** The postback buttons of a Flex message, in order. */

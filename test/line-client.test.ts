@@ -146,6 +146,27 @@ describe('LineHttpClient.push', () => {
   })
 })
 
+describe('LineHttpClient.getGroupMemberCount', () => {
+  it('returns the count, with the URL and Bearer token', async () => {
+    const { client, calls } = stubFetch(200, { count: 7 })
+    await expect(client.getGroupMemberCount('C/1')).resolves.toBe(7)
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/group/C%2F1/members/count')
+    expect(calls[0].init.method).toBe('GET')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+  })
+
+  it('throws AdapterError on 404 and 500', async () => {
+    await expect(stubFetch(404).client.getGroupMemberCount('C1')).rejects.toThrow(new AdapterError('line member count 404'))
+    await expect(stubFetch(500).client.getGroupMemberCount('C1')).rejects.toThrow(new AdapterError('line member count 500'))
+  })
+
+  it('throws AdapterError when a 200 has no usable count', async () => {
+    for (const body of [{}, { count: -1 }, { count: 1.5 }]) {
+      await expect(stubFetch(200, body).client.getGroupMemberCount('C1')).rejects.toThrow(new AdapterError('line member count 200'))
+    }
+  })
+})
+
 describe('LineHttpClient.getMessageQuota', () => {
   function quotaFetch(quota: unknown, usage: unknown, status = 200) {
     const fetchImpl = (async (input: string | URL | Request) => {

@@ -1,6 +1,10 @@
 import { getDeps } from '@/server/deps'
 import { notifyReview } from '@/server/review/notify'
 
+// Shorter than the 2-minute stale window in notify.ts, so a live request's claim
+// is never taken over.
+export const maxDuration = 60
+
 export async function POST(request: Request) {
   let body: unknown
   try {

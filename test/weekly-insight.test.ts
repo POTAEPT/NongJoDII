@@ -211,14 +211,13 @@ describe('weekly insight (#20)', () => {
     expect(insightsOf(store, other.id)).toHaveLength(1)
   })
 
-  it('makes no AI call and sends nothing to LINE (posting is #21)', async () => {
+  it('makes no AI call (the group post itself is covered in weekly-post.test.ts)', async () => {
     const { store, llm, line, tickAt } = setup()
     const group = seedOwnedGroup(store)
     seedTasks(store, group.id)
     await tickAt(bkk('2026-11-16T09:00:00'))
     expect(insightsOf(store, group.id)).toHaveLength(1)
     expect(llm.requests).toHaveLength(0)
-    expect(line.pushes).toHaveLength(0)
     expect(line.replies).toHaveLength(0)
   })
 })

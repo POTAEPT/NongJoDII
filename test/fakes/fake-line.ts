@@ -16,6 +16,9 @@ export class FakeLine implements LinePort {
   /** Push budget getMessageQuota answers with; limit null = no limit. */
   quota: { limit: number | null; used: number } = { limit: 300, used: 0 }
   failQuota = false
+  /** lineGroupId -> LINE's member count. A missing key answers 0. */
+  groupMemberCounts = new Map<string, number>()
+  failMemberCount = false
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
   /** Makes push reject, as the real adapter does on a LINE 5xx or 429. */
@@ -57,6 +60,11 @@ export class FakeLine implements LinePort {
     if (this.failProfile) throw new AdapterError('line profile 500')
     const displayName = this.profiles.get(`${lineGroupId}:${lineUserId}`)
     return displayName === undefined ? null : { displayName }
+  }
+
+  async getGroupMemberCount(lineGroupId: string): Promise<number> {
+    if (this.failMemberCount) throw new AdapterError('line member count 500')
+    return this.groupMemberCounts.get(lineGroupId) ?? 0
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {

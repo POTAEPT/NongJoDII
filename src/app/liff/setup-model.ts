@@ -4,10 +4,23 @@ import {
 } from '@/server/setup/rules'
 import type { SetupFeatures, SetupLoad, SetupSubmitBody } from '@/server/setup/types'
 
-// Pure logic of the setup form (#52, Figma v4 #2b-#2d2): defaults, step checks and the
-// body the form sends. The server checks everything again (server/setup/submit.ts).
+// Pure logic of the setup form (#52, Figma v4 #2b-#2d2): defaults, step checks, the body
+// the form sends and where a refused field lives. The server checks everything again
+// (server/setup/submit.ts).
 
 export const SETUP_STEPS = 4
+
+const MSG = {
+  workDescription: `เล่าได้ไม่เกิน ${WORK_DESCRIPTION_MAX} ตัวอักษร`,
+  ownerMissing: 'กรุณาเลือกเจ้าของบอท 1 คน',
+  ownerGone: 'คนที่เลือกเป็นเจ้าของบอทไม่ได้อยู่ในกลุ่มแล้ว กรุณาเลือกคนอื่น',
+  nickname: `ชื่อเล่นยาวได้ไม่เกิน ${NICKNAME_MAX} ตัวอักษร`,
+  role: `หน้าที่ยาวได้ไม่เกิน ${ROLE_MAX} ตัวอักษร`,
+  members: 'ชื่อเล่นหรือหน้าที่ไม่ถูกต้อง กรุณาตรวจอีกครั้ง',
+  features: 'กรุณาตรวจตัวเลือกอีกครั้ง',
+  time: 'กรุณาเลือกเวลาทีละ 15 นาที',
+  weekday: 'กรุณาเลือกวัน',
+} as const
 
 export type MemberForm = {
   lineUserId: string
@@ -67,21 +80,34 @@ export function setRole(form: SetupForm, lineUserId: string, role: string): Setu
 
 /** Thai message for the first problem on step `step` (1..4), or null when it may move on. */
 export function validateStep(form: SetupForm, step: number): string | null {
-  if (step === 1 && form.workDescription.trim().length > WORK_DESCRIPTION_MAX) {
-    return `เล่าได้ไม่เกิน ${WORK_DESCRIPTION_MAX} ตัวอักษร`
-  }
+  if (step === 1 && form.workDescription.trim().length > WORK_DESCRIPTION_MAX) return MSG.workDescription
   if (step === 2) {
-    if (!form.members.some((m) => m.lineUserId === form.ownerLineUserId)) return 'กรุณาเลือกเจ้าของบอท 1 คน'
+    if (!form.members.some((m) => m.lineUserId === form.ownerLineUserId)) return MSG.ownerMissing
     for (const m of form.members) {
-      if (cleanNicknames(m.nicknames).some((n) => n.length > NICKNAME_MAX)) return `ชื่อเล่นยาวได้ไม่เกิน ${NICKNAME_MAX} ตัวอักษร`
-      if (m.role.trim().length > ROLE_MAX) return `หน้าที่ยาวได้ไม่เกิน ${ROLE_MAX} ตัวอักษร`
+      if (cleanNicknames(m.nicknames).some((n) => n.length > NICKNAME_MAX)) return MSG.nickname
+      if (m.role.trim().length > ROLE_MAX) return MSG.role
     }
   }
   if (step === 4) {
-    if (!isQuarterHour(form.dailyReminderTime) || !isQuarterHour(form.weeklySummaryTime)) return 'กรุณาเลือกเวลาทีละ 15 นาที'
-    if (!isIsoWeekday(form.weeklySummaryWeekday)) return 'กรุณาเลือกวัน'
+    if (!isQuarterHour(form.dailyReminderTime) || !isQuarterHour(form.weeklySummaryTime)) return MSG.time
+    if (!isIsoWeekday(form.weeklySummaryWeekday)) return MSG.weekday
   }
   return null
+}
+
+/** Where a 400 from /api/setup/submit points: the step that owns its `field` and a short
+ *  Thai message. null for any other field; the page then shows its general message. */
+export function stepForField(field: unknown): { step: number; message: string } | null {
+  switch (field) {
+    case 'workDescription': return { step: 1, message: MSG.workDescription }
+    case 'members': return { step: 2, message: MSG.members }
+    case 'ownerLineUserId': return { step: 2, message: MSG.ownerGone }
+    case 'features': return { step: 3, message: MSG.features }
+    case 'dailyReminderTime':
+    case 'weeklySummaryTime': return { step: 4, message: MSG.time }
+    case 'weeklySummaryWeekday': return { step: 4, message: MSG.weekday }
+    default: return null
+  }
 }
 
 /** The first step with a problem and its message, checked before the final send. */

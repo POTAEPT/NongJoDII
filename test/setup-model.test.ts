@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addNickname, initialSetupForm, removeNickname, setNickname, setRole, toSubmitBody, validateAll, validateStep,
+  addNickname, initialSetupForm, removeNickname, setNickname, setRole, stepForField, toSubmitBody, validateAll,
+  validateStep,
 } from '@/app/liff/setup-model'
 import { cleanNicknames, isQuarterHour, NICKNAMES_PER_MEMBER_MAX, QUARTER_HOURS, WEEKDAYS } from '@/server/setup/rules'
 import type { SetupLoad } from '@/server/setup/types'
@@ -100,5 +101,23 @@ describe('validateStep', () => {
     const f = { ...initialSetupForm(view()), dailyReminderTime: '09:10' }
     expect(validateStep(f, 4)).not.toBeNull()
     expect(validateAll(f)?.step).toBe(4)
+  })
+})
+
+describe('stepForField', () => {
+  it('sends a refused field to the step that owns it, with a message', () => {
+    const steps = Object.fromEntries([
+      'workDescription', 'members', 'ownerLineUserId', 'features',
+      'dailyReminderTime', 'weeklySummaryWeekday', 'weeklySummaryTime',
+    ].map((f) => [f, stepForField(f)?.step]))
+    expect(steps).toEqual({
+      workDescription: 1, members: 2, ownerLineUserId: 2, features: 3,
+      dailyReminderTime: 4, weeklySummaryWeekday: 4, weeklySummaryTime: 4,
+    })
+    expect(stepForField('ownerLineUserId')?.message).toBe('คนที่เลือกเป็นเจ้าของบอทไม่ได้อยู่ในกลุ่มแล้ว กรุณาเลือกคนอื่น')
+    expect(stepForField('weeklySummaryTime')?.message).toBe('กรุณาเลือกเวลาทีละ 15 นาที')
+  })
+  it('gives null for a field the form has no step for, or no field', () => {
+    for (const f of ['groupId', 'idToken', undefined, null, 7]) expect(stepForField(f)).toBeNull()
   })
 })

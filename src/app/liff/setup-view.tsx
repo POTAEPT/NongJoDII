@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, QUARTER_HOURS, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import type { SetupFeatures, SetupLoad, SetupSubmitResult } from '@/server/setup/types'
+import { post } from './api'
 import type { LiffViewProps } from './liff-sdk'
 import {
-  addNickname, initialSetupForm, removeNickname, setNickname, setRole, SETUP_STEPS, toSubmitBody, validateAll,
-  validateStep, type SetupForm,
+  addNickname, initialSetupForm, removeNickname, setNickname, setRole, SETUP_STEPS, stepForField, toSubmitBody,
+  validateAll, validateStep, type SetupForm,
 } from './setup-model'
 
 // #52 setup form, Figma v4 #2b-#2d2: four steps with next and back, then one send. `id`
@@ -20,6 +21,12 @@ const ERR_400 = 'ข้อมูลไม่ถูกต้อง กรุณ�
 const ERR_LOAD = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
 const ERR_SUBMIT = 'ส่งข้อมูลไม่สำเร็จ กรุณาลองใหม่'
 
+/** The done screen's note when the #2e card did not reach the group. */
+const POSTED_NOTE: Partial<Record<SetupSubmitResult['posted'], string>> = {
+  skipped_quota: 'บันทึกแล้ว แต่เดือนนี้แจ้งในกลุ่มไม่ได้ (โควตาข้อความใกล้หมด)',
+  failed: 'บันทึกแล้ว แต่แจ้งในกลุ่มไม่สำเร็จ',
+}
+
 function errorCopy(status: number, fallback: string): string {
   if (status === 401) return ERR_401
   if (status === 403) return ERR_403
@@ -27,17 +34,6 @@ function errorCopy(status: number, fallback: string): string {
   if (status === 409) return ERR_409
   if (status === 400) return ERR_400
   return fallback
-}
-
-async function post(path: string, body: Record<string, unknown>): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  let json: unknown = null
-  if (res.status === 200) json = await res.json()
-  return { status: res.status, json }
 }
 
 const FEATURES: { key: keyof SetupFeatures; label: string; sub: string }[] = [
@@ -114,7 +110,12 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
     try {
       const { status, json } = await post('/api/setup/submit', { idToken, groupId: id, ...toSubmitBody(form) })
       if (status === 200) setDone(json as SetupSubmitResult)
-      else setFormError(errorCopy(status, ERR_SUBMIT))
+      else {
+        // A 400 names the refused field: its message goes on the step that owns it.
+        const problem = status === 400 ? stepForField((json as { field?: unknown } | null)?.field) : null
+        if (problem) setStep(problem.step)
+        setFormError(problem ? problem.message : errorCopy(status, ERR_SUBMIT))
+      }
     } catch {
       setFormError(ERR_SUBMIT)
     } finally {
@@ -151,7 +152,7 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
         {done.state === 'pending_owner' && owner && (
           <p className="mt-2">รอ {owner.displayName} ยืนยันเป็นเจ้าของบอท จากการ์ดในกลุ่ม</p>
         )}
-        {done.posted !== 'pushed' && <p className="mt-2 text-sm text-gray-600">บันทึกแล้ว แต่แจ้งในกลุ่มไม่สำเร็จ</p>}
+        {POSTED_NOTE[done.posted] && <p className="mt-2 text-sm text-gray-600">{POSTED_NOTE[done.posted]}</p>}
         {close}
       </div>
     )

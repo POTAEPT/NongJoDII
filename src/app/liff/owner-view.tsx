@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SetupLoad } from '@/server/setup/types'
+import { post } from './api'
 import type { LiffViewProps } from './liff-sdk'
 
 // #52 Owner confirm, opened from the #2e card. `id` is groups.id. The server takes the
@@ -14,17 +15,6 @@ const ERR_NOT_NOMINEE = 'เฉพาะคนที่ถูกเลือก�
 const ERR_CLOSED = 'กลุ่มนี้มีเจ้าของบอทแล้ว หรือมีการเปลี่ยนเจ้าของบอท'
 const ERR_LOAD = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
 const ERR_SUBMIT = 'ยืนยันไม่สำเร็จ กรุณาลองใหม่'
-
-async function post(path: string, body: Record<string, unknown>): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  let json: unknown = null
-  if (res.status === 200 || res.status === 403) json = await res.json()
-  return { status: res.status, json }
-}
 
 function errorCopy(status: number, json: unknown, fallback: string): string {
   if (status === 401) return ERR_401

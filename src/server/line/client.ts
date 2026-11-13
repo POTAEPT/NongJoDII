@@ -1,10 +1,10 @@
-import { AdapterError } from '../log'
-import type { LinePort } from '../ports'
+import { AdapterError, LinePushRejected } from '../log'
+import type { LinePort, LinePushResult } from '../ports'
 import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
 
-/** LINE Messaging API (reply, push, quota, group member profile) and LINE Login ID token verify.
+/** LINE Messaging API (reply, push, quota, group member profile, group summary) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
 export class LineHttpClient implements LinePort {
   private readonly token: string
@@ -41,8 +41,11 @@ export class LineHttpClient implements LinePort {
   }
 
   /** With a retry key, LINE accepts the push at most once per key (24 h): a repeat
-   *  answers 409, which means it was already sent, so it counts as success. */
-  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
+   *  answers 409 ("An API request with the same retry key is already accepted", LINE's
+   *  retry docs), so it resolves 'duplicate': the post is there, nothing was sent now.
+   *  Any other 4xx throws LinePushRejected: LINE did not accept the push. A 5xx, a timeout
+   *  or a network error throws something else, and the push may have been delivered. */
+  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
     if (opts?.retryKey) headers['X-Line-Retry-Key'] = opts.retryKey
     const res = await this.fetchImpl(`${API}/v2/bot/message/push`, {
@@ -50,8 +53,10 @@ export class LineHttpClient implements LinePort {
       headers,
       body: JSON.stringify({ to, messages }),
     })
-    if (res.status === 409 && opts?.retryKey) return
+    if (res.status === 409 && opts?.retryKey) return 'duplicate'
+    if (res.status >= 400 && res.status < 500) throw new LinePushRejected(res.status)
     if (!res.ok) throw new AdapterError(`line push ${res.status}`)
+    return 'sent'
   }
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {
@@ -73,6 +78,16 @@ export class LineHttpClient implements LinePort {
       throw new AdapterError('line member count 200')
     }
     return body.count
+  }
+
+  async getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null> {
+    const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/summary`
+    const res = await this.fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } })
+    if (res.status === 404) return null
+    if (res.status !== 200) throw new AdapterError(`line group summary ${res.status}`)
+    const body = (await res.json()) as { groupName?: unknown }
+    if (typeof body.groupName !== 'string') throw new AdapterError('line group summary 200')
+    return { groupName: body.groupName }
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {

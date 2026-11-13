@@ -8,11 +8,13 @@ export type Job =
       senderLineUserId: string | null; text: string | null; replyToken: string | null
     }
   | {
-      // A button press in a group (#7 progress cards). userId is optional on postbacks.
+      // A button press in a group (#7 progress cards, #45 reminder cards). userId is optional on
+      // postbacks. pickedDate: a date picker's choice ('YYYY-MM-DD'), null for other buttons.
       kind: 'group_postback'; groupId: string; lineGroupId: string
-      userId: string | null; data: string; replyToken: string | null
+      userId: string | null; data: string; pickedDate: string | null; replyToken: string | null
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
+  | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
 
 /** Stops at the first event that throws and returns the jobs collected before it,
  *  plus that error. Never throws itself. */
@@ -77,8 +79,21 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     if (!inserted) return null
     return {
       kind: 'group_postback', groupId: group.id, lineGroupId: source.groupId,
-      userId, data: event.postback.data, replyToken: event.replyToken ?? null,
+      userId, data: event.postback.data, pickedDate: event.postback.params?.date ?? null,
+      replyToken: event.replyToken ?? null,
     }
+  }
+
+  if (source.type === 'group' && event.type === 'join') {
+    // The group row first (idempotent), the ledger claim last, as for a postback: a
+    // redelivered join answers once.
+    const group = await store.ensureGroup(source.groupId)
+    const { inserted } = await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'join', lineGroupId: source.groupId,
+      eventTimestamp, isRedelivery,
+    })
+    if (!inserted) return null
+    return { kind: 'group_join', groupId: group.id, lineGroupId: source.groupId, replyToken: event.replyToken ?? null }
   }
 
   const { inserted } = await store.recordWebhookEvent({
@@ -89,7 +104,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (join, leave, memberJoined, unsend, room...) is only
+  // Every other event (leave, memberJoined, unsend, room...) is only
   // recorded; handling belongs to #2 and #11.
   return null
 }

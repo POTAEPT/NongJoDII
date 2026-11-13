@@ -14,6 +14,20 @@ export class AdapterError extends Error {
   name = 'AdapterError'
 }
 
+/** LINE answered a push with a 4xx: it did not accept the request, so nothing was sent
+ *  (LINE's retry docs: "4xx: Problem with the request. Retries don't change the result").
+ *  Any other push failure (a 5xx, a timeout, a network error) leaves the outcome unknown:
+ *  LINE may have delivered the push. The message stays `line push <status>`. */
+export class LinePushRejected extends AdapterError {
+  name = 'LinePushRejected'
+  readonly status: number
+
+  constructor(status: number) {
+    super(`line push ${status}`)
+    this.status = status
+  }
+}
+
 /** Logs an AdapterError's message; any other error logs only its name, because
  *  its message may quote chat-derived input. */
 export function logError(event: string, fields: Fields, err: unknown): void {

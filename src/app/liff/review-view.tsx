@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import type { NotifyResult, ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
+import { post } from './api'
 import {
   countDecisions, initialForms, needsDeclineConfirm, summarizeResults, toDecisions, validateForms,
   type CandidateForm, type SavedTask,
@@ -22,18 +23,6 @@ function errorCopy(status: number, fallback: string): string {
   if (status === 404) return ERR_404
   if (status === 400) return ERR_400
   return fallback
-}
-
-// Only the LIFF ID token goes up as identity: the server verifies it with LINE.
-async function post(path: string, body: Record<string, unknown>): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  let json: unknown = null
-  if (res.status === 200) json = await res.json()
-  return { status: res.status, json }
 }
 
 type Announce = 'idle' | 'working' | 'posted' | 'quota' | 'failed'

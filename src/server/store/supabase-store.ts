@@ -5,7 +5,10 @@ import type {
   AiUsageCap,
   AnnounceClaim,
   CandidateRow,
+  DailyReminderGroup,
   GroupRow,
+  GroupSetup,
+  GroupSetupWrite,
   Member,
   Membership,
   MessageRef,
@@ -17,10 +20,13 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
   ProgressAnswer,
   ProgressPromptRow,
+  ReminderTask,
+  SetupOutcome,
   StorePort,
   StoredMessage,
   SummaryRow,
@@ -56,6 +62,15 @@ import {
 
 const GROUP_COLS =
   'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind'
+const SETUP_COLS =
+  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at, owner_nominated_at'
+type DbGroupSetup = {
+  id: string; line_group_id: string; name: string | null; project_id: string | null; work_description: string | null
+  feature_summarize: boolean; feature_draft_tasks: boolean; feature_save_files: boolean
+  feature_track_remind: boolean; feature_weekly_summary: boolean
+  daily_reminder_time: string; weekly_summary_weekday: number; weekly_summary_time: string
+  nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null; owner_nominated_at: string | null
+}
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
 const TASK_COLS =
@@ -702,6 +717,202 @@ export class SupabaseStore implements StorePort {
       .maybeSingle()
     check('hasWeeklyInsight', error)
     return data !== null
+  }
+
+  async markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('weekly_insights')
+      .update({ posted_at: at.toISOString() })
+      .eq('group_id', groupId)
+      .eq('week_start', weekStart)
+      .is('posted_at', null)
+    check('markWeeklyInsightPosted', error)
+  }
+
+  // ---- #44 daily reminders ----
+  /** Pages of WEEKLY_PAGE rows ordered by id, as listWeeklySummaryGroups. */
+  async listDailyReminderGroups(): Promise<DailyReminderGroup[]> {
+    type Row = { id: string; line_group_id: string; daily_reminder_time: string; daily_reminder_last_sent_on: string | null }
+    const out: DailyReminderGroup[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, daily_reminder_time, daily_reminder_last_sent_on')
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .eq('feature_track_remind', true)
+        .order('id')
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listDailyReminderGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({ groupId: r.id, lineGroupId: r.line_group_id, time: r.daily_reminder_time, lastSentOn: r.daily_reminder_last_sent_on })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
+  }
+
+  async claimDailyReminder(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    // One logic tree, so both conditions hold: the day is not complete, and no live claim.
+    const notSent = `or(daily_reminder_last_sent_on.is.null,daily_reminder_last_sent_on.lt.${todayBkk})`
+    const noLiveClaim = `or(daily_reminder_claimed_at.is.null,daily_reminder_claimed_at.lt."${staleBefore.toISOString()}")`
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_claimed_at: at.toISOString() })
+      .eq('id', groupId)
+      .or(`and(${notSent},${noLiveClaim})`)
+      .select('id')
+    check('claimDailyReminder', error)
+    return { claimed: (data?.length ?? 0) > 0 }
+  }
+
+  async finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_last_sent_on: todayBkk, daily_reminder_claimed_at: null })
+      .eq('id', groupId)
+      .eq('daily_reminder_claimed_at', at.toISOString())
+    check('finishDailyReminder', error)
+  }
+
+  async releaseDailyReminder(groupId: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_claimed_at: null })
+      .eq('id', groupId)
+      .eq('daily_reminder_claimed_at', at.toISOString())
+    check('releaseDailyReminder', error)
+  }
+
+  // ---- #45 reminder answers ----
+  // Done and Postpone also require `by` to still own the Task, so a reassignment between the
+  // check and the write is never overridden by the former owner.
+  async markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ status: 'done', done_at: at, last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
+      .neq('status', 'done')
+      .select('id')
+    check('markTaskDone', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ due_at: t.dueAt.toISOString(), last_activity_at: t.at.toISOString(), last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
+      .neq('status', 'done')
+      .select('id')
+    check('postponeTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ assignee_line_user_id: t.by, status: 'in_process', last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .is('assignee_line_user_id', null)
+      .neq('status', 'done')
+      .select('id')
+    check('takeTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST
+   *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
+  async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
+    type Row = {
+      id: string; title: string; status: TaskStatus; assignee_line_user_id: string | null
+      due_at: string | null; last_activity_at: string | null; deleted_at: string | null
+    }
+    const out: ReminderTask[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('tasks')
+        .select('id, title, status, assignee_line_user_id, due_at, last_activity_at, deleted_at')
+        .eq('group_id', groupId)
+        .is('deleted_at', null)
+        .neq('status', 'done')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listReminderTasks', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({
+          id: r.id, title: r.title, status: r.status, assigneeLineUserId: r.assignee_line_user_id,
+          dueAt: toDate(r.due_at), lastActivityAt: toDate(r.last_activity_at), deletedAt: toDate(r.deleted_at),
+        })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
+  }
+
+  // ---- #52 onboarding ----
+  async setGroupName(groupId: string, name: string): Promise<void> {
+    const { error } = await this.db.from('groups').update({ name }).eq('id', groupId)
+    check('setGroupName', error)
+  }
+
+  async getGroupSetup(groupId: string): Promise<GroupSetup | null> {
+    const { data, error } = await this.db.from('groups').select(SETUP_COLS).eq('id', groupId).maybeSingle()
+    check('getGroupSetup', error)
+    const r = data as DbGroupSetup | null
+    if (!r) return null
+    return {
+      groupId: r.id, lineGroupId: r.line_group_id, name: r.name, projectId: r.project_id,
+      workDescription: r.work_description,
+      features: {
+        summarize: r.feature_summarize, draftTasks: r.feature_draft_tasks, saveFiles: r.feature_save_files,
+        trackRemind: r.feature_track_remind, weeklySummary: r.feature_weekly_summary,
+      },
+      // time columns arrive as 'HH:MM:SS'; the form speaks 'HH:MM'.
+      dailyReminderTime: r.daily_reminder_time.slice(0, 5),
+      weeklySummaryWeekday: r.weekly_summary_weekday,
+      weeklySummaryTime: r.weekly_summary_time.slice(0, 5),
+      nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
+      ownerNominatedAt: toDate(r.owner_nominated_at),
+    }
+  }
+
+  async saveGroupSetup(w: GroupSetupWrite): Promise<{ outcome: SetupOutcome }> {
+    const { data, error } = await this.db.rpc('setup_group', {
+      p_group_id: w.groupId, p_by: w.byLineUserId, p_work_description: w.workDescription,
+      p_feature_summarize: w.features.summarize, p_feature_draft_tasks: w.features.draftTasks,
+      p_feature_save_files: w.features.saveFiles, p_feature_track_remind: w.features.trackRemind,
+      p_feature_weekly_summary: w.features.weeklySummary,
+      p_daily_reminder_time: w.dailyReminderTime, p_weekly_summary_weekday: w.weeklySummaryWeekday,
+      p_weekly_summary_time: w.weeklySummaryTime,
+      p_members: w.members.map((m) => ({ line_user_id: m.lineUserId, nicknames: m.nicknames, role: m.role })),
+      p_owner: w.ownerLineUserId, p_at: w.at.toISOString(),
+    })
+    check('saveGroupSetup', error)
+    if (data !== 'confirmed' && data !== 'pending' && data !== 'closed' && data !== 'owner_not_member') {
+      throw new Error('saveGroupSetup: unexpected result from setup_group')
+    }
+    return { outcome: data }
+  }
+
+  async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {
+    const { data, error } = await this.db.rpc('confirm_group_owner', {
+      p_group_id: groupId, p_line_user_id: lineUserId, p_at: at.toISOString(),
+    })
+    check('confirmGroupOwner', error)
+    const outcomes: OwnerConfirmOutcome[] = ['confirmed', 'already_confirmed', 'not_nominee', 'not_member', 'closed']
+    if (!outcomes.includes(data as OwnerConfirmOutcome)) {
+      throw new Error('confirmGroupOwner: unexpected result from confirm_group_owner')
+    }
+    return { outcome: data as OwnerConfirmOutcome }
   }
 
   // ---- #12 Google ----

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LineHttpClient } from '@/server/line/client'
-import { AdapterError } from '@/server/log'
+import { AdapterError, LinePushRejected } from '@/server/log'
 
 type Call = { url: string; init: RequestInit }
 
@@ -167,6 +167,22 @@ describe('LineHttpClient.getGroupMemberCount', () => {
   })
 })
 
+describe('LineHttpClient.getGroupSummary', () => {
+  it('returns the group name, with the URL and Bearer token', async () => {
+    const { client, calls } = stubFetch(200, { groupId: 'C/1', groupName: 'ทีมงาน', pictureUrl: 'https://x' })
+    await expect(client.getGroupSummary('C/1')).resolves.toEqual({ groupName: 'ทีมงาน' })
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/group/C%2F1/summary')
+    expect(calls[0].init.method).toBe('GET')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+  })
+
+  it('returns null on 404 and throws AdapterError on 500 or a 200 without a name', async () => {
+    await expect(stubFetch(404).client.getGroupSummary('C1')).resolves.toBeNull()
+    await expect(stubFetch(500).client.getGroupSummary('C1')).rejects.toThrow(new AdapterError('line group summary 500'))
+    await expect(stubFetch(200, { groupId: 'C1' }).client.getGroupSummary('C1')).rejects.toThrow(new AdapterError('line group summary 200'))
+  })
+})
+
 describe('LineHttpClient.getMessageQuota', () => {
   function quotaFetch(quota: unknown, usage: unknown, status = 200) {
     const fetchImpl = (async (input: string | URL | Request) => {
@@ -192,14 +208,72 @@ describe('LineHttpClient.getMessageQuota', () => {
 })
 
 describe('LineHttpClient.push retry key', () => {
-  it('sends X-Line-Retry-Key and treats 409 (already accepted) as success', async () => {
-    const { client, calls } = stubFetch(409)
-    await client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })
+  it('sends X-Line-Retry-Key and resolves sent when LINE accepts (200)', async () => {
+    const { client, calls } = stubFetch(200)
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })).resolves.toBe('sent')
+    expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBe('k-1')
+  })
+
+  it('resolves sent for a 200 without a retry key', async () => {
+    const { client, calls } = stubFetch(200)
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }])).resolves.toBe('sent')
+    expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBeNull()
+  })
+
+  it('resolves duplicate on 409 with a retry key (a request with this key was already accepted)', async () => {
+    const { client, calls } = stubFetch(409, { message: 'The retry key is already accepted' })
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })).resolves.toBe('duplicate')
     expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBe('k-1')
   })
 
   it('a 409 without a retry key is still an error', async () => {
     const { client } = stubFetch(409)
     await expect(client.push('C1', [{ type: 'text', text: 'x' }])).rejects.toThrow('line push 409')
+  })
+})
+
+// A caller that booked the push must know whether LINE certainly sent nothing (a 4xx) or
+// may have delivered it (anything else).
+describe('LineHttpClient.push failure kinds', () => {
+  const push = (client: LineHttpClient, retryKey?: string) =>
+    client.push('C1', [{ type: 'text', text: 'x' }], retryKey ? { retryKey } : undefined).catch((e: unknown) => e)
+
+  it.each([400, 401, 403, 429])('a %i is a LinePushRejected with the status, same message as before', async (status) => {
+    const err = await push(stubFetch(status, { message: 'secret detail' }).client, 'k-1')
+    expect(err).toBeInstanceOf(LinePushRejected)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as LinePushRejected).status).toBe(status)
+    expect((err as Error).message).toBe(`line push ${status}`)
+  })
+
+  it('a 409 without a retry key is a rejection, not a duplicate', async () => {
+    const err = await push(stubFetch(409).client)
+    expect(err).toBeInstanceOf(LinePushRejected)
+    expect((err as LinePushRejected).status).toBe(409)
+  })
+
+  it.each([500, 502, 503])('a %i is not a rejection: LINE may have delivered the push', async (status) => {
+    const err = await push(stubFetch(status).client, 'k-1')
+    expect(err).toBeInstanceOf(AdapterError)
+    expect(err).not.toBeInstanceOf(LinePushRejected)
+    expect((err as Error).message).toBe(`line push ${status}`)
+  })
+
+  it('a network error is not a rejection', async () => {
+    const fetchImpl = (async () => { throw new TypeError('fetch failed') }) as typeof fetch
+    const err = await push(new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl }), 'k-1')
+    expect(err).toBeInstanceOf(TypeError)
+    expect(err).not.toBeInstanceOf(LinePushRejected)
+  })
+
+  it('a timeout is not a rejection', async () => {
+    const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })) as typeof fetch
+    const err = await push(new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl, timeoutMs: 20 }), 'k-1')
+    expect(err).toBeInstanceOf(AdapterError)
+    expect(err).not.toBeInstanceOf(LinePushRejected)
+    expect((err as Error).message).toBe('line timeout')
   })
 })

@@ -6,6 +6,8 @@ import type {
   CandidateRow,
   CandidateState,
   GroupRow,
+  GroupSetup,
+  GroupSetupWrite,
   Member,
   Membership,
   NewAiUsage,
@@ -16,10 +18,14 @@ import type {
   NewTask,
   NewProgressPrompt,
   NewWebhookEvent,
+  OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
+  DailyReminderGroup,
+  ReminderTask,
   MessageRef,
   ProgressPromptRow,
+  SetupOutcome,
   StorePort,
   StoredMessage,
   SummaryRow,
@@ -68,8 +74,17 @@ export type GoogleAccountRecord = {
 export type GroupScheduleRecord = {
   groupId: string; leftAt: Date | null; featureWeeklySummary: boolean
   weeklySummaryWeekday: number; weeklySummaryTime: string; weeklySummaryLastSentOn: string | null
+  dailyReminderTime: string; dailyReminderLastSentOn: string | null
+  /** groups.daily_reminder_claimed_at: the live attempt's claim, or null. */
+  dailyReminderClaimedAt?: Date | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
+/** The other groups columns setup writes (#52). No row = schema defaults. */
+export type GroupSetupRecord = {
+  groupId: string; isMain: boolean; featureSaveFiles: boolean
+  ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
+}
+export type ProjectRecord = { id: string; ownerLineUserId: string }
 
 export type FakeTables = {
   line_users: LineUserRecord[]
@@ -87,6 +102,8 @@ export type FakeTables = {
   google_accounts: GoogleAccountRecord[]
   group_schedules: GroupScheduleRecord[]
   weekly_insights: WeeklyInsightRecord[]
+  group_setups: GroupSetupRecord[]
+  projects: ProjectRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -116,6 +133,8 @@ export class FakeStore implements StorePort {
     google_accounts: [],
     group_schedules: [],
     weekly_insights: [],
+    group_setups: [],
+    projects: [],
   }
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
@@ -613,6 +632,7 @@ export class FakeStore implements StorePort {
       row = {
         groupId, leftAt: null, featureWeeklySummary: true,
         weeklySummaryWeekday: 1, weeklySummaryTime: '09:00:00', weeklySummaryLastSentOn: null,
+        dailyReminderTime: '09:00:00', dailyReminderLastSentOn: null,
       }
       this.tables.group_schedules.push(row)
     }
@@ -683,6 +703,198 @@ export class FakeStore implements StorePort {
   async hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean> {
     this.fault('hasWeeklyInsight')
     return this.tables.weekly_insights.some((w) => w.groupId === groupId && w.weekStart === weekStart)
+  }
+
+  async markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void> {
+    this.fault('markWeeklyInsightPosted')
+    const row = this.tables.weekly_insights.find((w) => w.groupId === groupId && w.weekStart === weekStart)
+    if (row && row.postedAt === null) row.postedAt = at
+  }
+
+  // ---- #44 daily reminders ----
+  /** feature_track_remind lives on GroupRow; left_at and the daily slot in group_schedules. */
+  async listDailyReminderGroups(): Promise<DailyReminderGroup[]> {
+    this.fault('listDailyReminderGroups')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && g.featureTrackRemind)
+      .map((g) => ({ g, s: this.scheduleOf(g.id) }))
+      .filter(({ s }) => s.leftAt === null)
+      .sort((a, b) => a.g.id.localeCompare(b.g.id))
+      .map(({ g, s }) => ({ groupId: g.id, lineGroupId: g.lineGroupId, time: s.dailyReminderTime, lastSentOn: s.dailyReminderLastSentOn }))
+  }
+
+  async claimDailyReminder(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    this.fault('claimDailyReminder')
+    if (!this.hasGroup(groupId)) return { claimed: false }
+    const s = this.scheduleOf(groupId)
+    if (s.dailyReminderLastSentOn !== null && s.dailyReminderLastSentOn >= todayBkk) return { claimed: false }
+    const held = s.dailyReminderClaimedAt ?? null
+    if (held !== null && held.getTime() >= staleBefore.getTime()) return { claimed: false }
+    s.dailyReminderClaimedAt = new Date(at)
+    return { claimed: true }
+  }
+
+  async finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    this.fault('finishDailyReminder')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.dailyReminderClaimedAt?.getTime() === at.getTime()) {
+      s.dailyReminderLastSentOn = todayBkk
+      s.dailyReminderClaimedAt = null
+    }
+  }
+
+  async releaseDailyReminder(groupId: string, at: Date): Promise<void> {
+    this.fault('releaseDailyReminder')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.dailyReminderClaimedAt?.getTime() === at.getTime()) s.dailyReminderClaimedAt = null
+  }
+
+  /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */
+  async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
+    this.fault('listReminderTasks')
+    return this.liveTasksOf(groupId)
+      .filter((t) => t.status !== 'done')
+      .map((t) => ({
+        id: t.id, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
+        dueAt: t.dueAt, lastActivityAt: t.lastActivityAt, deletedAt: t.deletedAt,
+      }))
+  }
+
+  // ---- #45 reminder answers ----
+  private openLiveTask(taskId: string): TaskRecord | undefined {
+    return this.tables.tasks.find((t) => t.id === taskId && t.deletedAt === null && t.status !== 'done')
+  }
+
+  async markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markTaskDone')
+    fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
+    const row = this.openLiveTask(t.taskId)
+    if (!row || row.assigneeLineUserId !== t.by) return { updated: false }
+    Object.assign(row, { status: 'done', doneAt: t.at, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
+  async postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('postponeTask')
+    fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
+    const row = this.openLiveTask(t.taskId)
+    if (!row || row.assigneeLineUserId !== t.by) return { updated: false }
+    Object.assign(row, { dueAt: t.dueAt, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
+  async takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('takeTask')
+    fk(this.hasLineUser(t.by), 'tasks.assignee_line_user_id')
+    const row = this.openLiveTask(t.taskId)
+    if (!row || row.assigneeLineUserId !== null) return { updated: false }
+    Object.assign(row, { assigneeLineUserId: t.by, status: 'in_process', lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
+  // ---- #52 onboarding ----
+  private setupOf(groupId: string): GroupSetupRecord {
+    let row = this.tables.group_setups.find((r) => r.groupId === groupId)
+    if (!row) {
+      fk(this.hasGroup(groupId), 'groups.id')
+      row = { groupId, isMain: false, featureSaveFiles: true, ownerNominatedByLineUserId: null, ownerNominatedAt: null }
+      this.tables.group_setups.push(row)
+    }
+    return row
+  }
+
+  async setGroupName(groupId: string, name: string): Promise<void> {
+    this.fault('setGroupName')
+    const g = this.tables.groups.find((row) => row.id === groupId)
+    if (g) g.name = name
+  }
+
+  async getGroupSetup(groupId: string): Promise<GroupSetup | null> {
+    this.fault('getGroupSetup')
+    const g = this.tables.groups.find((row) => row.id === groupId)
+    if (!g) return null
+    const s = this.scheduleOf(groupId)
+    const x = this.setupOf(groupId)
+    return {
+      groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, projectId: g.projectId,
+      workDescription: g.workDescription,
+      features: {
+        summarize: g.featureSummarize, draftTasks: g.featureDraftTasks, saveFiles: x.featureSaveFiles,
+        trackRemind: g.featureTrackRemind, weeklySummary: s.featureWeeklySummary,
+      },
+      dailyReminderTime: s.dailyReminderTime.slice(0, 5),
+      weeklySummaryWeekday: s.weeklySummaryWeekday,
+      weeklySummaryTime: s.weeklySummaryTime.slice(0, 5),
+      nominatedOwnerLineUserId: g.nominatedOwnerLineUserId, ownerConfirmedAt: g.ownerConfirmedAt,
+      ownerNominatedAt: x.ownerNominatedAt,
+    }
+  }
+
+  private isLiveMember(groupId: string, lineUserId: string): boolean {
+    return this.tables.group_members.some((m) => m.groupId === groupId && m.lineUserId === lineUserId && m.leftAt === null)
+  }
+
+  /** Same rules as setup_group, as one step: every check before any write. */
+  async saveGroupSetup(w: GroupSetupWrite): Promise<{ outcome: SetupOutcome }> {
+    this.fault('saveGroupSetup')
+    const g = this.groupOf(w.groupId)
+    if (g.ownerConfirmedAt !== null || g.projectId !== null) return { outcome: 'closed' }
+    if (!this.isLiveMember(w.groupId, w.ownerLineUserId)) return { outcome: 'owner_not_member' }
+    fk(this.hasLineUser(w.byLineUserId), 'groups.owner_nominated_by_line_user_id')
+    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
+    const s = this.scheduleOf(w.groupId)
+    const x = this.setupOf(w.groupId)
+    Object.assign(g, {
+      workDescription: w.workDescription, featureSummarize: w.features.summarize,
+      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
+    })
+    const newNominee = g.nominatedOwnerLineUserId !== w.ownerLineUserId
+    // groups_owner_rules: a new nominee resets the confirmation.
+    if (newNominee) g.ownerConfirmedAt = null
+    g.nominatedOwnerLineUserId = w.ownerLineUserId
+    Object.assign(s, {
+      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
+      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
+    })
+    x.featureSaveFiles = w.features.saveFiles
+    // Who nominated and when change only with the nominee (the CASEs in setup_group).
+    if (newNominee) Object.assign(x, { ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
+    for (const m of w.members) {
+      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
+      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
+    }
+    if (w.ownerLineUserId === w.byLineUserId) {
+      const { outcome } = this.confirmOwner(w.groupId, w.ownerLineUserId, w.at)
+      // Cannot happen: the checks above (no confirmed Owner, no Project, the Owner a live
+      // Member) are the inner call's, made under the same row lock, and the sender was just
+      // named. Should the inner call answer not_nominee, already_confirmed or not_member,
+      // setup_group returns that answer and SupabaseStore.saveGroupSetup throws on it (it is
+      // not a setup_group outcome); the fake throws here instead, with the same result.
+      if (outcome !== 'confirmed') throw new Error(`FakeStore: setup self-confirm ${outcome}`)
+      return { outcome: 'confirmed' }
+    }
+    return { outcome: 'pending' }
+  }
+
+  async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {
+    this.fault('confirmGroupOwner')
+    return this.confirmOwner(groupId, lineUserId, at)
+  }
+
+  /** Same rules as confirm_group_owner. */
+  private confirmOwner(groupId: string, lineUserId: string, at: Date): { outcome: OwnerConfirmOutcome } {
+    const g = this.groupOf(groupId)
+    if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }
+    if (g.ownerConfirmedAt !== null) return { outcome: 'already_confirmed' }
+    if (g.projectId !== null) return { outcome: 'closed' }
+    if (!this.isLiveMember(groupId, lineUserId)) return { outcome: 'not_member' }
+    fk(this.hasLineUser(lineUserId), 'projects.owner_line_user_id')
+    const project: ProjectRecord = { id: randomUUID(), ownerLineUserId: lineUserId }
+    this.tables.projects.push(project)
+    g.projectId = project.id
+    g.ownerConfirmedAt = at
+    this.setupOf(groupId).isMain = true
+    return { outcome: 'confirmed' }
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

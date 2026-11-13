@@ -1,16 +1,24 @@
 import type { LineMessage } from './line/types'
 
 // ---- LINE (Messaging API + LINE Login verify) ----
+/** 'sent': LINE accepted the push now. 'duplicate': it had already accepted one with the
+ *  same retry key and sent nothing this time. */
+export type LinePushResult = 'sent' | 'duplicate'
 export interface LinePort {
   reply(replyToken: string, messages: LineMessage[]): Promise<void>
   /** Push to a LINE group ID. Unlike a reply, a push counts against the monthly
-   *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes). */
-  push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void>
+   *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes).
+   *  'duplicate': LINE had already accepted a push with this retry key (409), so this
+   *  call sent nothing. Rejects with LinePushRejected when LINE refused the push (another
+   *  4xx: nothing was sent); any other rejection leaves the outcome unknown. */
+  push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
   /** People in the group per LINE (GET /v2/bot/group/{id}/members/count). Excludes the
    *  bot. LINE charges a group push once per member, so this is the push's real cost. */
   getGroupMemberCount(lineGroupId: string): Promise<number>
+  /** The group's name per LINE (GET /v2/bot/group/{id}/summary); null on a 404. */
+  getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null>
   /** null when LINE rejects the ID token. */
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
@@ -95,14 +103,25 @@ export type NewAiUsage = {
 /** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
+/** What a push is for; stored in push_log.purpose (free text in the schema). */
+export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done'
 export type PushBudgetClaim = {
-  purpose: 'task_created'; lineTargetId: string; messageCount: number
+  purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
   allowed: number    // most the month may reach with this push
 }
 /** One "Tasks created" push attempt: `token` is the new batch's id and LINE retry key;
  *  a claim whose announce_pending_at is before `staleBefore` belongs to a dead request. */
 export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleBefore: Date }
+/** A set-up group (attached to a Project, bot still in it) with reminders on, and its
+ *  daily slot: Bangkok time 'HH:MM:SS' and the Bangkok date it was last sent. */
+export type DailyReminderGroup = { groupId: string; lineGroupId: string; time: string; lastSentOn: string | null }
+/** A live Task as the daily reminder reads it (#44). */
+export type ReminderTask = {
+  id: string; title: string; status: TaskStatus
+  assigneeLineUserId: string | null; dueAt: Date | null
+  lastActivityAt: Date | null; deletedAt: Date | null
+}
 /** A set-up group (attached to a Project, bot still in it) with the weekly summary on,
  *  and its chosen slot: ISO weekday 1..7, Bangkok time 'HH:MM:SS', last sent Bangkok date. */
 export type WeeklySummaryGroup = {
@@ -135,6 +154,29 @@ export type ProgressYes = {
   byLineUserId: string; assignTo: string | null; at: Date
 }
 export type ProgressYesOutcome = 'updated' | 'already_answered' | 'task_changed'
+// #52 onboarding: the setup form (Figma v4 #2b-#2d2) and the Owner confirm.
+/** The feature toggles of groups. The form's first checkbox sets summarize and draftTasks together. */
+export type GroupFeatures = {
+  summarize: boolean; draftTasks: boolean; saveFiles: boolean; trackRemind: boolean; weeklySummary: boolean
+}
+/** What the setup form reads. Times are Bangkok 'HH:MM'; weekday ISO 1..7. */
+export type GroupSetup = {
+  groupId: string; lineGroupId: string; name: string | null; projectId: string | null
+  workDescription: string | null; features: GroupFeatures
+  dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
+  nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
+  /** When the current nominee was named; a resend that keeps the nominee keeps it. */
+  ownerNominatedAt: Date | null
+}
+export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
+export type GroupSetupWrite = {
+  groupId: string; byLineUserId: string; workDescription: string | null; features: GroupFeatures
+  dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
+  members: SetupMemberWrite[]; ownerLineUserId: string; at: Date
+}
+/** 'closed': the group has a confirmed Owner or already belongs to a Project. */
+export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'
+export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nominee' | 'not_member' | 'closed'
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -192,7 +234,8 @@ export interface StorePort {
    *  lineUsed and inserts this push's row when the total stays within `allowed`.
    *  null = no budget, nothing inserted. */
   claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }>
-  /** Deletes a claimed push_log row after the push failed. */
+  /** Deletes a claimed push_log row whose push sent nothing (LINE refused it, or it was
+   *  a duplicate of an accepted push). */
   releasePushBudget(pushLogId: string): Promise<void>
   listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]>
   // #5 / #6 usage
@@ -224,6 +267,30 @@ export interface StorePort {
   /** ON CONFLICT (group_id, week_start) DO NOTHING; inserted false = this week already has one. */
   saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }>
   hasWeeklyInsight(groupId: string, weekStart: string): Promise<boolean>
+  /** #21: sets posted_at once the group post went out (only while it is still null). */
+  markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void>
+  // #44 daily reminders and gap flags
+  /** groups where project_id is not null, left_at is null and feature_track_remind. Every page, by id. */
+  listDailyReminderGroups(): Promise<DailyReminderGroup[]>
+  /** One statement: sets daily_reminder_claimed_at = at where daily_reminder_last_sent_on is
+   *  null or before todayBkk and no claim younger than `staleBefore` holds the group. The
+   *  claim expires on its own, so a request that dies mid-attempt never blocks the day. */
+  claimDailyReminder(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }>
+  /** Marks the day complete (daily_reminder_last_sent_on = todayBkk) and clears the claim,
+   *  only while the claim made `at` still holds the group. */
+  finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void>
+  /** Clears the claim made `at` without completing the day, so the next tick retries. */
+  releaseDailyReminder(groupId: string, at: Date): Promise<void>
+  /** The group's live Tasks that are not Done, oldest first. */
+  listReminderTasks(groupId: string): Promise<ReminderTask[]>
+  // #45 answers to reminder cards. Each is one UPDATE whose WHERE holds the precondition,
+  // so two presses at once cannot both win; updated false = the Task no longer qualifies.
+  /** "เสร็จแล้ว": status done, done_at, last_activity_at, last_edited_by; only a live Task not Done whose assignee is still `by`. */
+  markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  /** "เลื่อนกำหนด": new due_at, bumps last_activity_at and last_edited_by; only a live Task not Done whose assignee is still `by`. */
+  postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }>
+  /** "ฉันรับเอง": assignee = by and In Process; only a live Task not Done that has no assignee. */
+  takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>
@@ -243,6 +310,19 @@ export interface StorePort {
   confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }>
   /** Deletes a card only while it is unanswered: its reply never reached the group, or it went stale. */
   withdrawProgressPrompt(promptId: string): Promise<void>
+  // #52 onboarding
+  setGroupName(groupId: string, name: string): Promise<void>
+  getGroupSetup(groupId: string): Promise<GroupSetup | null>
+  /** One transaction (rpc setup_group): locks the group; a 'closed' group or an Owner who
+   *  is not a live Member saves nothing. Otherwise writes the settings and the nominee,
+   *  updates nicknames and role of the listed live Members only (never their source), and,
+   *  when the sender named themselves, confirms them and creates the Project as
+   *  confirmGroupOwner does. */
+  saveGroupSetup(s: GroupSetupWrite): Promise<{ outcome: SetupOutcome }>
+  /** One transaction (rpc confirm_group_owner): only the nominee, while a live Member,
+   *  confirms; this creates the Project (owner = the nominee) with the group as its main
+   *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
+  confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }>
   // #12 Google
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>

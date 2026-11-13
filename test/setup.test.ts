@@ -294,29 +294,94 @@ describe('setup send, another Owner', () => {
     expect(t.store.tables.projects).toEqual([{ id: t.row().projectId, ownerLineUserId: 'Ume' }])
   })
 
-  it('a plain resend with the same pending nominee posts no new card and claims no budget', async () => {
+  it('a resend after a failed card delivers it, under the failed attempt\'s retry key', async () => {
+    const t = await setup()
+    t.line.failPush = true
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'failed' })
+    t.line.failPush = false
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    const res = await t.submit({ ownerLineUserId: 'Upim' })
+    expect(res.body).toEqual({ state: 'pending_owner', posted: 'pushed' } satisfies SetupSubmitResult)
+    expect(t.line.pushes).toHaveLength(2)
+    expect(t.line.pushes[1].retryKey).toBe(t.line.pushes[0].retryKey)
+    // The Owner confirm link reaches the group after all.
+    expect(t.line.delivered).toHaveLength(1)
+    expect(flexJson(t.line.delivered[0].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
+    expect(uris(t.line.delivered[0].messages)).toEqual([liffUrl(TEST_LIFF_ID, 'owner', t.group.id)])
+  })
+
+  it('a resend after a card skipped for quota delivers it once the quota allows', async () => {
+    const t = await setup()
+    t.line.quota = { limit: 300, used: 299 }
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'skipped_quota' })
+    expect(t.line.pushes).toHaveLength(0)
+    t.line.quota = { limit: 300, used: 0 }
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    expect((await t.submit({ ownerLineUserId: 'Upim' })).body).toEqual({ state: 'pending_owner', posted: 'pushed' })
+    expect(t.line.delivered).toHaveLength(1)
+    expect(flexJson(t.line.delivered[0].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
+  })
+
+  it('a resend after a delivered card repeats its retry key, so LINE does not post it twice', async () => {
     const t = await setup()
     await t.submit({ ownerLineUserId: 'Upim' })
     t.setNow(new Date(TEST_NOW.getTime() + MIN))
     const res = await t.submit({ ownerLineUserId: 'Upim', workDescription: 'แก้คำอธิบาย' })
-    expect(res.body).toEqual({ state: 'pending_owner', posted: 'unchanged' } satisfies SetupSubmitResult)
+    expect(res.body).toEqual({ state: 'pending_owner', posted: 'pushed' })
     expect(t.row().workDescription).toBe('แก้คำอธิบาย')
-    expect(t.line.pushes).toHaveLength(1)
-    expect(t.store.tables.push_log).toHaveLength(1)
+    expect(t.line.pushes).toHaveLength(2)
+    expect(t.line.pushes[1].retryKey).toBe(t.line.pushes[0].retryKey)
+    // FakeLine answers a repeated key as LINE does (409, success, nothing sent).
+    expect(t.line.delivered).toHaveLength(1)
   })
 
-  it('a nomination back to an earlier nominee posts a card naming them again', async () => {
+  it('a nomination back to an earlier nominee posts a card naming them again, under a new key', async () => {
     const t = await setup()
     t.store.seedMember({ groupId: t.group.id, lineUserId: 'Ucarol', displayName: 'Carol K.' })
     for (const [i, owner] of ['Upim', 'Ucarol', 'Upim'].entries()) {
       t.setNow(new Date(TEST_NOW.getTime() + i * MIN))
       expect((await t.submit({ ownerLineUserId: owner })).body).toEqual({ state: 'pending_owner', posted: 'pushed' })
     }
+    expect(new Set(t.line.pushes.map((p) => p.retryKey)).size).toBe(3)
     // LINE delivered all three: the newest card in the group names Pim again.
     expect(t.line.delivered).toHaveLength(3)
     expect(flexJson(t.line.delivered[1].messages)).toContain('รอ Carol K. ยืนยันเป็นเจ้าของบอท')
     expect(flexJson(t.line.delivered[2].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
-    expect(t.store.tables.push_log).toHaveLength(3)
+  })
+
+  it('a resend keeps who nominated and when; a new nominee sets both', async () => {
+    const t = await setup()
+    t.store.seedMember({ groupId: t.group.id, lineUserId: 'Ucarol', displayName: 'Carol K.' })
+    t.line.idTokens.set('tok-carol', { lineUserId: 'Ucarol', displayName: 'Carol K.' })
+    const nomination = async () => {
+      const g = await t.store.getGroupSetup(t.group.id)
+      const x = t.store.tables.group_setups.find((r) => r.groupId === t.group.id)
+      return { at: g?.ownerNominatedAt, by: x?.ownerNominatedByLineUserId }
+    }
+    await t.submit({ ownerLineUserId: 'Upim' }) // Me names Pim
+    expect(await nomination()).toEqual({ at: TEST_NOW, by: 'Ume' })
+
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    await t.submit({ idToken: 'tok-carol', ownerLineUserId: 'Upim' }) // Carol resends, same nominee
+    expect(await nomination()).toEqual({ at: TEST_NOW, by: 'Ume' })
+
+    const later = new Date(TEST_NOW.getTime() + 2 * MIN)
+    t.setNow(later)
+    await t.submit({ idToken: 'tok-carol', ownerLineUserId: 'Ume' }) // Carol names Me
+    expect(await nomination()).toEqual({ at: later, by: 'Ucarol' })
+  })
+
+  it('the pending nominee sending the form for themselves is confirmed and gets the confirmed card', async () => {
+    const t = await setup()
+    await t.submit({ ownerLineUserId: 'Upim' }) // Me names Pim; the pending card is delivered
+    t.setNow(new Date(TEST_NOW.getTime() + MIN))
+    const res = await t.submit({ idToken: 'tok-pim', ownerLineUserId: 'Upim' })
+    expect(res.body).toEqual({ state: 'confirmed', posted: 'pushed' })
+    // Same nominee and nomination time as the pending card, but a new outcome: a new key.
+    expect(t.line.pushes[1].retryKey).not.toBe(t.line.pushes[0].retryKey)
+    expect(t.line.delivered).toHaveLength(2)
+    expect(flexJson(t.line.delivered[1].messages)).not.toContain('ยืนยันเจ้าของบอท')
+    expect(t.store.tables.projects).toEqual([{ id: t.row().projectId, ownerLineUserId: 'Upim' }])
   })
 
   it('a failed push still saves the setup and gives the budget back', async () => {

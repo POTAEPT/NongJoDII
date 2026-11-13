@@ -63,13 +63,13 @@ import {
 const GROUP_COLS =
   'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind'
 const SETUP_COLS =
-  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at'
+  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at, owner_nominated_at'
 type DbGroupSetup = {
   id: string; line_group_id: string; name: string | null; project_id: string | null; work_description: string | null
   feature_summarize: boolean; feature_draft_tasks: boolean; feature_save_files: boolean
   feature_track_remind: boolean; feature_weekly_summary: boolean
   daily_reminder_time: string; weekly_summary_weekday: number; weekly_summary_time: string
-  nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null
+  nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null; owner_nominated_at: string | null
 }
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
@@ -869,6 +869,7 @@ export class SupabaseStore implements StorePort {
       weeklySummaryWeekday: r.weekly_summary_weekday,
       weeklySummaryTime: r.weekly_summary_time.slice(0, 5),
       nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
+      ownerNominatedAt: toDate(r.owner_nominated_at),
     }
   }
 

@@ -813,6 +813,7 @@ export class FakeStore implements StorePort {
       weeklySummaryWeekday: s.weeklySummaryWeekday,
       weeklySummaryTime: s.weeklySummaryTime.slice(0, 5),
       nominatedOwnerLineUserId: g.nominatedOwnerLineUserId, ownerConfirmedAt: g.ownerConfirmedAt,
+      ownerNominatedAt: x.ownerNominatedAt,
     }
   }
 
@@ -834,14 +835,17 @@ export class FakeStore implements StorePort {
       workDescription: w.workDescription, featureSummarize: w.features.summarize,
       featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
     })
+    const newNominee = g.nominatedOwnerLineUserId !== w.ownerLineUserId
     // groups_owner_rules: a new nominee resets the confirmation.
-    if (g.nominatedOwnerLineUserId !== w.ownerLineUserId) g.ownerConfirmedAt = null
+    if (newNominee) g.ownerConfirmedAt = null
     g.nominatedOwnerLineUserId = w.ownerLineUserId
     Object.assign(s, {
       featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
       weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
     })
-    Object.assign(x, { featureSaveFiles: w.features.saveFiles, ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
+    x.featureSaveFiles = w.features.saveFiles
+    // Who nominated and when change only with the nominee (the CASEs in setup_group).
+    if (newNominee) Object.assign(x, { ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
     for (const m of w.members) {
       const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
       if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })

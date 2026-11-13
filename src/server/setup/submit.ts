@@ -116,15 +116,16 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
   if (outcome === 'owner_not_member') return badRequest('ownerLineUserId')
   const confirmed = outcome === 'confirmed'
   log('setup_saved', { groupId: group.groupId, ownerConfirmed: confirmed })
-  const state = confirmed ? 'confirmed' : 'pending_owner'
+  // The nomination time the row now holds: setup_group keeps it while the nominee stays,
+  // and a new nominee (a self-confirm included) gets this send's time.
+  const nominatedAt = (group.nominatedOwnerLineUserId === v.ownerLineUserId ? group.ownerNominatedAt : null) ?? at
 
-  // A plain resend while the same nominee is still pending: the group's newest card
-  // already names them, so no new card (no budget claim, no push).
-  if (!confirmed && group.nominatedOwnerLineUserId === v.ownerLineUserId) {
-    log('setup_done_not_posted', { groupId: group.groupId, reason: 'unchanged' })
-    return ok({ state, posted: 'unchanged' })
-  }
-
+  // Every send pushes the #2e card, under a LINE retry key made from the nominee, the
+  // outcome and the nomination time. A resend therefore repeats the earlier card's key:
+  // LINE drops the repeat when that card was delivered (409, counted as success) and
+  // delivers it when it failed or was skipped for quota, so the Owner confirm link always
+  // reaches the group. A new nominee, even one named before, has a new time, a new key
+  // and a new card.
   const pendingOwnerName = confirmed ? null : await lineNameOf(deps, v.ownerLineUserId, live)
   const posted = await pushToGroupWithinBudget(deps, {
     purpose: 'setup_done',
@@ -132,13 +133,8 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
     lineGroupId: group.lineGroupId,
     messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName })],
     reserve: SETUP_PUSH_RESERVE,
-    // Seeded with the nomination time as well: every real change gets its own key, so a
-    // nomination back to an earlier nominee within LINE's 24 h is still delivered.
-    retryKey: retryKeyFrom(`setup_done:${group.groupId}:${v.ownerLineUserId}:${outcome}:${at.toISOString()}`),
+    retryKey: retryKeyFrom(`setup_done:${group.groupId}:${v.ownerLineUserId}:${outcome}:${nominatedAt.toISOString()}`),
   })
-  return ok({ state, posted })
-}
-
-function ok(result: SetupSubmitResult): ApiResult {
+  const result: SetupSubmitResult = { state: confirmed ? 'confirmed' : 'pending_owner', posted }
   return { status: 200, body: result }
 }

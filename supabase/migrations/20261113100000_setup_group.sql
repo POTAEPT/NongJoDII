@@ -18,6 +18,13 @@
 -- belong to Settings (#28), and an Owner change of a Project goes through
 -- change_project_owner. Neither function touches left_at or delete_after (#11).
 --
+-- Nomination time and retry key: a resend of the form that keeps the nominee keeps
+-- owner_nominated_at and owner_nominated_by_line_user_id; a new nominee sets both.
+-- The app seeds the LINE retry key of the "setup done" card with that stored time,
+-- so a resend pushes the same card under the same key: LINE drops it when the first
+-- one was delivered and delivers it when the first one failed or was skipped for
+-- quota. A new nominee gets a new time, so a new key and a new card.
+--
 -- Trigger notes (initial schema):
 --   * groups_owner_rules clears owner_confirmed_at whenever the nominee changes,
 --     so the nominee is written first and the confirmation in a later statement
@@ -134,8 +141,10 @@ begin
     return 'owner_not_member';
   end if;
 
-  -- Settings and the nominee. The table CHECKs guard the times and the weekday.
-  update public.groups
+  -- Settings and the nominee. The table CHECKs guard the times and the weekday. Who
+  -- nominated and when change only with the nominee: every right-hand side reads the
+  -- old row, so g.nominated_owner_line_user_id in the CASEs is the stored nominee.
+  update public.groups g
      set work_description = p_work_description,
          feature_summarize = p_feature_summarize,
          feature_draft_tasks = p_feature_draft_tasks,
@@ -146,9 +155,13 @@ begin
          weekly_summary_weekday = p_weekly_summary_weekday,
          weekly_summary_time = p_weekly_summary_time,
          nominated_owner_line_user_id = p_owner,
-         owner_nominated_by_line_user_id = p_by,
-         owner_nominated_at = p_at
-   where id = p_group_id;
+         owner_nominated_by_line_user_id =
+           case when g.nominated_owner_line_user_id is distinct from p_owner
+                then p_by else g.owner_nominated_by_line_user_id end,
+         owner_nominated_at =
+           case when g.nominated_owner_line_user_id is distinct from p_owner
+                then p_at else g.owner_nominated_at end
+   where g.id = p_group_id;
 
   update public.group_members m
      set nicknames = coalesce(x.nicknames, '{}'),

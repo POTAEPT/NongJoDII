@@ -159,6 +159,8 @@ export type GroupSetup = {
   workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
   nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
+  /** When the current nominee was named; a resend that keeps the nominee keeps it. */
+  ownerNominatedAt: Date | null
 }
 export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
 export type GroupSetupWrite = {

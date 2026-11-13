@@ -5,8 +5,8 @@ import { AdapterError } from '@/server/log'
 export class FakeLine implements LinePort {
   /** Every reply call, recorded before `failReply` is applied. */
   replies: { replyToken: string; messages: LineMessage[] }[] = []
-  /** Every push call, recorded before `failPush` is applied. */
-  pushes: { to: string; messages: LineMessage[] }[] = []
+  /** Every push call with its retry key, recorded before `failPush` is applied. */
+  pushes: { to: string; messages: LineMessage[]; retryKey?: string }[] = []
   profileCalls: { lineGroupId: string; lineUserId: string }[] = []
   verifyCalls: string[] = []
   /** Key `${lineGroupId}:${lineUserId}` -> LINE name. A missing key answers null (LINE 404). */
@@ -46,7 +46,7 @@ export class FakeLine implements LinePort {
   timeoutAfterAccept = false
 
   async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
-    this.pushes.push({ to, messages })
+    this.pushes.push({ to, messages, retryKey: opts?.retryKey })
     if (this.failPush) throw new AdapterError('line push 500')
     const key = opts?.retryKey
     if (key !== undefined && this.acceptedRetryKeys.has(key)) return

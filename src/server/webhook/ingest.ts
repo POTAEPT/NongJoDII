@@ -96,6 +96,19 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     return { kind: 'group_join', groupId: group.id, lineGroupId: source.groupId, replyToken: event.replyToken ?? null }
   }
 
+  if (event.type === 'unsend' && typeof event.unsend?.messageId === 'string') {
+    // Delete first, the ledger row last: a failed delete answers 500 before the event is
+    // recorded, so LINE's redelivery retries it. The delete is idempotent (an unknown or
+    // already deleted message deletes nothing), so it needs no store-once gate and no Job.
+    // Confirmed Tasks have no link to messages, so they stay (#24).
+    await store.deleteMessageByLineId(event.unsend.messageId)
+    await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'unsend',
+      lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,
+    })
+    return null
+  }
+
   const { inserted } = await store.recordWebhookEvent({
     webhookEventId: event.webhookEventId, eventType: event.type,
     lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,
@@ -104,8 +117,8 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (leave, memberJoined, unsend, room...) is only
-  // recorded; handling belongs to #2 and #11.
+  // Every other event (leave, memberJoined, room...) is only recorded;
+  // handling belongs to #2 and #11. Unsend is handled above (#24).
   return null
 }
 

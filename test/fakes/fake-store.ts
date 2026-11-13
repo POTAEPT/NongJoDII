@@ -481,6 +481,17 @@ export class FakeStore implements StorePort {
       .map((t) => this.toTaskRow(t))
   }
 
+  // ---- #24 unsend ----
+  async deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }> {
+    this.fault('deleteMessageByLineId')
+    const i = this.tables.messages.findIndex((row) => row.lineMessageId === lineMessageId)
+    if (i === -1) return { deleted: false }
+    const [gone] = this.tables.messages.splice(i, 1)
+    // task_prompts.trigger_message_id is ON DELETE SET NULL.
+    for (const p of this.tables.task_prompts) if (p.triggerMessageId === gone.id) p.triggerMessageId = null
+    return { deleted: true }
+  }
+
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
     this.fault('getMessageRef')
     const m = this.tables.messages.find((row) => row.id === messageId)

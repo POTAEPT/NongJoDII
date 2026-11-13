@@ -93,7 +93,7 @@ export const ev: {
   groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number } }): LineEvent
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
-  groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string }): LineEvent
+  groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string; pickedDate?: string }): LineEvent
   join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean }): LineEvent
 } = {
   groupText(p) {
@@ -151,7 +151,8 @@ export const ev: {
       replyToken: p.replyToken ?? next('rt'),
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: false },
-      postback: { data: p.data },
+      // pickedDate: what LINE's date picker sends back in postback.params.date (#45).
+      postback: p.pickedDate ? { data: p.data, params: { date: p.pickedDate } } : { data: p.data },
     }
   },
   join(p) {

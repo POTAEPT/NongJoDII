@@ -8,9 +8,10 @@ export type Job =
       senderLineUserId: string | null; text: string | null; replyToken: string | null
     }
   | {
-      // A button press in a group (#7 progress cards). userId is optional on postbacks.
+      // A button press in a group (#7 progress cards, #45 reminder cards). userId is optional on
+      // postbacks. pickedDate: a date picker's choice ('YYYY-MM-DD'), null for other buttons.
       kind: 'group_postback'; groupId: string; lineGroupId: string
-      userId: string | null; data: string; replyToken: string | null
+      userId: string | null; data: string; pickedDate: string | null; replyToken: string | null
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
@@ -78,7 +79,8 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     if (!inserted) return null
     return {
       kind: 'group_postback', groupId: group.id, lineGroupId: source.groupId,
-      userId, data: event.postback.data, replyToken: event.replyToken ?? null,
+      userId, data: event.postback.data, pickedDate: event.postback.params?.date ?? null,
+      replyToken: event.replyToken ?? null,
     }
   }
 

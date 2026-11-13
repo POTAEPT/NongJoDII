@@ -531,6 +531,10 @@ describe('noise', () => {
   it('skips bot commands, a turned-off feature and groups with no open Tasks, without an AI call', async () => {
     const t = setup()
     await t.say(BIW, 'NongJoDII done')
+    // "NongJoDII done" is the reminder fallback (#45), which answers it itself; it is never
+    // read as a progress line, so no progress card and no AI call.
+    expect(t.line.replies.map((r) => JSON.stringify(r.messages))).not.toContainEqual(expect.stringContaining('อัปเดตงานนี้ไหม?'))
+    t.line.replies = []
     t.store.tables.groups[0].featureTrackRemind = false
     await t.say(BIW, 'สไลด์เสร็จแล้ว')
     t.store.tables.groups[0].featureTrackRemind = true

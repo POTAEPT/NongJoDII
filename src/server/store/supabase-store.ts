@@ -772,6 +772,50 @@ export class SupabaseStore implements StorePort {
     check('releaseDailyReminder', error)
   }
 
+  // ---- #45 reminder answers ----
+  // Done and Postpone also require `by` to still own the Task, so a reassignment between the
+  // check and the write is never overridden by the former owner.
+  async markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ status: 'done', done_at: at, last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
+      .neq('status', 'done')
+      .select('id')
+    check('markTaskDone', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ due_at: t.dueAt.toISOString(), last_activity_at: t.at.toISOString(), last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
+      .neq('status', 'done')
+      .select('id')
+    check('postponeTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ assignee_line_user_id: t.by, status: 'in_process', last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .is('assignee_line_user_id', null)
+      .neq('status', 'done')
+      .select('id')
+    check('takeTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
   /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST
    *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
   async listReminderTasks(groupId: string): Promise<ReminderTask[]> {

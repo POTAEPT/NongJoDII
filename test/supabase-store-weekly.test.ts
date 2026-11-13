@@ -58,3 +58,29 @@ describe('SupabaseStore.listWeeklySummaryGroups', () => {
     expect(calls.filter((c) => c.method === 'range')).toHaveLength(2)
   })
 })
+
+const taskRows = (n: number, offset = 0) =>
+  Array.from({ length: n }, (_, i) => ({
+    id: `t-${String(offset + i).padStart(5, '0')}`, title: `Task ${offset + i}`, status: 'not_assigned',
+    assignee_line_user_id: null, due_at: null, last_activity_at: '2026-11-15T05:00:00Z', deleted_at: null,
+  }))
+
+describe('SupabaseStore.listReminderTasks (#44)', () => {
+  it('reads every page, so Tasks after the first 1000 still reach the selection', async () => {
+    const { store, calls } = stubDb([taskRows(WEEKLY_PAGE), taskRows(3, WEEKLY_PAGE)])
+    const tasks = await store.listReminderTasks('g-1')
+    expect(tasks).toHaveLength(WEEKLY_PAGE + 3)
+    expect(tasks.at(-1)).toMatchObject({ id: 't-01002', title: 'Task 1002', assigneeLineUserId: null })
+    expect(calls.filter((c) => c.method === 'range').map((c) => c.args)).toEqual([
+      [0, WEEKLY_PAGE - 1], [WEEKLY_PAGE, 2 * WEEKLY_PAGE - 1],
+    ])
+  })
+
+  it('keeps the oldest-first order the selection relies on, and filters live open Tasks in the query', async () => {
+    const { store, calls } = stubDb([taskRows(2)])
+    await store.listReminderTasks('g-1')
+    expect(calls).toContainEqual({ method: 'order', args: ['created_at', { ascending: true }] })
+    expect(calls).toContainEqual({ method: 'neq', args: ['status', 'done'] })
+    expect(calls).toContainEqual({ method: 'is', args: ['deleted_at', null] })
+  })
+})

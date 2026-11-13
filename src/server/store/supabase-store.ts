@@ -759,25 +759,34 @@ export class SupabaseStore implements StorePort {
     check('releaseDailyReminder', error)
   }
 
-  /** A group's open Tasks fit one PostgREST page (max_rows 1000) at this project's size. */
+  /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST
+   *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
   async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
-    const { data, error } = await this.db
-      .from('tasks')
-      .select('id, title, status, assignee_line_user_id, due_at, last_activity_at, deleted_at')
-      .eq('group_id', groupId)
-      .is('deleted_at', null)
-      .neq('status', 'done')
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-    check('listReminderTasks', error)
     type Row = {
       id: string; title: string; status: TaskStatus; assignee_line_user_id: string | null
       due_at: string | null; last_activity_at: string | null; deleted_at: string | null
     }
-    return ((data ?? []) as Row[]).map((r) => ({
-      id: r.id, title: r.title, status: r.status, assigneeLineUserId: r.assignee_line_user_id,
-      dueAt: toDate(r.due_at), lastActivityAt: toDate(r.last_activity_at), deletedAt: toDate(r.deleted_at),
-    }))
+    const out: ReminderTask[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('tasks')
+        .select('id, title, status, assignee_line_user_id, due_at, last_activity_at, deleted_at')
+        .eq('group_id', groupId)
+        .is('deleted_at', null)
+        .neq('status', 'done')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listReminderTasks', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({
+          id: r.id, title: r.title, status: r.status, assigneeLineUserId: r.assignee_line_user_id,
+          dueAt: toDate(r.due_at), lastActivityAt: toDate(r.last_activity_at), deletedAt: toDate(r.deleted_at),
+        })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
   }
 
   // ---- #12 Google ----

@@ -8,7 +8,8 @@ import type { LineMessage } from './types'
 // announce (review/notify.ts): LINE counts a group push once per person in the group, so
 // the cost is the larger of LINE's member count and the stored live Members. The budget is
 // claimed under a database lock (claim_push_budget) before the push, and released if the
-// push fails.
+// push fails, or if LINE answers that it already accepted a push with the same retry key
+// (nothing was sent this time).
 
 export type GroupPushResult = 'pushed' | 'skipped_quota' | 'failed'
 
@@ -53,7 +54,15 @@ export async function pushToGroupWithinBudget(deps: Deps, p: GroupPush): Promise
       log('group_push_skipped', { purpose: p.purpose, groupId: p.groupId, reason: 'quota' })
       return 'skipped_quota'
     }
-    await deps.line.push(p.lineGroupId, p.messages, { retryKey: p.retryKey })
+    const sent = await deps.line.push(p.lineGroupId, p.messages, { retryKey: p.retryKey })
+    if (sent === 'duplicate') {
+      // LINE had already accepted this post (same retry key) and sent nothing now. The post
+      // is in the group, so it counts as pushed, but this claim books messages that were
+      // never sent: give it back. The accepted push keeps its own claim.
+      log('group_push_duplicate', { purpose: p.purpose, groupId: p.groupId })
+      await deps.store.releasePushBudget(pushLogId)
+        .catch((e) => logError('group_push_budget_release_failed', { purpose: p.purpose, groupId: p.groupId }, e))
+    }
     return 'pushed'
   } catch (err) {
     logError('group_push_failed', { purpose: p.purpose, groupId: p.groupId }, err)

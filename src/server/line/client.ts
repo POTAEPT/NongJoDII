@@ -1,5 +1,5 @@
 import { AdapterError } from '../log'
-import type { LinePort } from '../ports'
+import type { LinePort, LinePushResult } from '../ports'
 import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
@@ -41,8 +41,9 @@ export class LineHttpClient implements LinePort {
   }
 
   /** With a retry key, LINE accepts the push at most once per key (24 h): a repeat
-   *  answers 409, which means it was already sent, so it counts as success. */
-  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
+   *  answers 409 ("An API request with the same retry key is already accepted", LINE's
+   *  retry docs), so it resolves 'duplicate': the post is there, nothing was sent now. */
+  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }
     if (opts?.retryKey) headers['X-Line-Retry-Key'] = opts.retryKey
     const res = await this.fetchImpl(`${API}/v2/bot/message/push`, {
@@ -50,8 +51,9 @@ export class LineHttpClient implements LinePort {
       headers,
       body: JSON.stringify({ to, messages }),
     })
-    if (res.status === 409 && opts?.retryKey) return
+    if (res.status === 409 && opts?.retryKey) return 'duplicate'
     if (!res.ok) throw new AdapterError(`line push ${res.status}`)
+    return 'sent'
   }
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {

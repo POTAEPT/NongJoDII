@@ -1,5 +1,5 @@
 import type { LineMessage } from '@/server/line/types'
-import type { LinePort } from '@/server/ports'
+import type { LinePort, LinePushResult } from '@/server/ports'
 import { AdapterError } from '@/server/log'
 
 export class FakeLine implements LinePort {
@@ -38,21 +38,22 @@ export class FakeLine implements LinePort {
     if (this.failReply) throw new AdapterError('line reply 500')
   }
 
-  /** Retry keys LINE has accepted: a repeat is a no-op success (LINE answers 409). */
+  /** Retry keys LINE has accepted: a repeat sends nothing and resolves 'duplicate' (LINE answers 409). */
   acceptedRetryKeys = new Set<string>()
   /** Pushes LINE actually delivered (a repeat of an accepted retry key is not one). */
   delivered: { to: string; messages: LineMessage[]; retryKey?: string }[] = []
   /** LINE accepts and delivers the push, then the answer is lost (a timeout). */
   timeoutAfterAccept = false
 
-  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
+  async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult> {
     this.pushes.push({ to, messages, retryKey: opts?.retryKey })
     if (this.failPush) throw new AdapterError('line push 500')
     const key = opts?.retryKey
-    if (key !== undefined && this.acceptedRetryKeys.has(key)) return
+    if (key !== undefined && this.acceptedRetryKeys.has(key)) return 'duplicate'
     if (key !== undefined) this.acceptedRetryKeys.add(key)
     this.delivered.push({ to, messages, retryKey: key })
     if (this.timeoutAfterAccept) throw new AdapterError('line timeout')
+    return 'sent'
   }
 
   async getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null> {

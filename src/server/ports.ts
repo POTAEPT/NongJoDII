@@ -1,11 +1,16 @@
 import type { LineMessage } from './line/types'
 
 // ---- LINE (Messaging API + LINE Login verify) ----
+/** 'sent': LINE accepted the push now. 'duplicate': it had already accepted one with the
+ *  same retry key and sent nothing this time. */
+export type LinePushResult = 'sent' | 'duplicate'
 export interface LinePort {
   reply(replyToken: string, messages: LineMessage[]): Promise<void>
   /** Push to a LINE group ID. Unlike a reply, a push counts against the monthly
-   *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes). */
-  push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void>
+   *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes).
+   *  'duplicate': LINE had already accepted a push with this retry key (409), so this
+   *  call sent nothing. */
+  push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
   /** People in the group per LINE (GET /v2/bot/group/{id}/members/count). Excludes the

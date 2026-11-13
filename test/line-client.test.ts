@@ -208,9 +208,21 @@ describe('LineHttpClient.getMessageQuota', () => {
 })
 
 describe('LineHttpClient.push retry key', () => {
-  it('sends X-Line-Retry-Key and treats 409 (already accepted) as success', async () => {
-    const { client, calls } = stubFetch(409)
-    await client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })
+  it('sends X-Line-Retry-Key and resolves sent when LINE accepts (200)', async () => {
+    const { client, calls } = stubFetch(200)
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })).resolves.toBe('sent')
+    expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBe('k-1')
+  })
+
+  it('resolves sent for a 200 without a retry key', async () => {
+    const { client, calls } = stubFetch(200)
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }])).resolves.toBe('sent')
+    expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBeNull()
+  })
+
+  it('resolves duplicate on 409 with a retry key (a request with this key was already accepted)', async () => {
+    const { client, calls } = stubFetch(409, { message: 'The retry key is already accepted' })
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })).resolves.toBe('duplicate')
     expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBe('k-1')
   })
 

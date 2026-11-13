@@ -5,6 +5,7 @@ import type {
   AiUsageCap,
   AnnounceClaim,
   CandidateRow,
+  DailyReminderGroup,
   GroupRow,
   Member,
   Membership,
@@ -21,6 +22,7 @@ import type {
   NewWeeklyInsight,
   ProgressAnswer,
   ProgressPromptRow,
+  ReminderTask,
   StorePort,
   StoredMessage,
   SummaryRow,
@@ -712,6 +714,79 @@ export class SupabaseStore implements StorePort {
       .eq('week_start', weekStart)
       .is('posted_at', null)
     check('markWeeklyInsightPosted', error)
+  }
+
+  // ---- #44 daily reminders ----
+  /** Pages of WEEKLY_PAGE rows ordered by id, as listWeeklySummaryGroups. */
+  async listDailyReminderGroups(): Promise<DailyReminderGroup[]> {
+    type Row = { id: string; line_group_id: string; daily_reminder_time: string; daily_reminder_last_sent_on: string | null }
+    const out: DailyReminderGroup[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, daily_reminder_time, daily_reminder_last_sent_on')
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .eq('feature_track_remind', true)
+        .order('id')
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listDailyReminderGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({ groupId: r.id, lineGroupId: r.line_group_id, time: r.daily_reminder_time, lastSentOn: r.daily_reminder_last_sent_on })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
+  }
+
+  async claimDailyReminder(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_last_sent_on: todayBkk })
+      .eq('id', groupId)
+      .or(`daily_reminder_last_sent_on.is.null,daily_reminder_last_sent_on.lt.${todayBkk}`)
+      .select('id')
+    check('claimDailyReminder', error)
+    return { claimed: (data?.length ?? 0) > 0 }
+  }
+
+  async releaseDailyReminder(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_last_sent_on: previous })
+      .eq('id', groupId)
+      .eq('daily_reminder_last_sent_on', todayBkk)
+    check('releaseDailyReminder', error)
+  }
+
+  /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST
+   *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
+  async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
+    type Row = {
+      id: string; title: string; status: TaskStatus; assignee_line_user_id: string | null
+      due_at: string | null; last_activity_at: string | null; deleted_at: string | null
+    }
+    const out: ReminderTask[] = []
+    for (let from = 0; ; from += WEEKLY_PAGE) {
+      const { data, error } = await this.db
+        .from('tasks')
+        .select('id, title, status, assignee_line_user_id, due_at, last_activity_at, deleted_at')
+        .eq('group_id', groupId)
+        .is('deleted_at', null)
+        .neq('status', 'done')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + WEEKLY_PAGE - 1)
+      check('listReminderTasks', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({
+          id: r.id, title: r.title, status: r.status, assigneeLineUserId: r.assignee_line_user_id,
+          dueAt: toDate(r.due_at), lastActivityAt: toDate(r.last_activity_at), deletedAt: toDate(r.deleted_at),
+        })
+      }
+      if (rows.length < WEEKLY_PAGE) return out
+    }
   }
 
   // ---- #12 Google ----

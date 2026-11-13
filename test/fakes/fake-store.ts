@@ -18,6 +18,8 @@ import type {
   NewWebhookEvent,
   PushBudgetClaim,
   NewWeeklyInsight,
+  DailyReminderGroup,
+  ReminderTask,
   MessageRef,
   ProgressPromptRow,
   StorePort,
@@ -68,6 +70,7 @@ export type GoogleAccountRecord = {
 export type GroupScheduleRecord = {
   groupId: string; leftAt: Date | null; featureWeeklySummary: boolean
   weeklySummaryWeekday: number; weeklySummaryTime: string; weeklySummaryLastSentOn: string | null
+  dailyReminderTime: string; dailyReminderLastSentOn: string | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 
@@ -613,6 +616,7 @@ export class FakeStore implements StorePort {
       row = {
         groupId, leftAt: null, featureWeeklySummary: true,
         weeklySummaryWeekday: 1, weeklySummaryTime: '09:00:00', weeklySummaryLastSentOn: null,
+        dailyReminderTime: '09:00:00', dailyReminderLastSentOn: null,
       }
       this.tables.group_schedules.push(row)
     }
@@ -689,6 +693,44 @@ export class FakeStore implements StorePort {
     this.fault('markWeeklyInsightPosted')
     const row = this.tables.weekly_insights.find((w) => w.groupId === groupId && w.weekStart === weekStart)
     if (row && row.postedAt === null) row.postedAt = at
+  }
+
+  // ---- #44 daily reminders ----
+  /** feature_track_remind lives on GroupRow; left_at and the daily slot in group_schedules. */
+  async listDailyReminderGroups(): Promise<DailyReminderGroup[]> {
+    this.fault('listDailyReminderGroups')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && g.featureTrackRemind)
+      .map((g) => ({ g, s: this.scheduleOf(g.id) }))
+      .filter(({ s }) => s.leftAt === null)
+      .sort((a, b) => a.g.id.localeCompare(b.g.id))
+      .map(({ g, s }) => ({ groupId: g.id, lineGroupId: g.lineGroupId, time: s.dailyReminderTime, lastSentOn: s.dailyReminderLastSentOn }))
+  }
+
+  async claimDailyReminder(groupId: string, todayBkk: string): Promise<{ claimed: boolean }> {
+    this.fault('claimDailyReminder')
+    if (!this.hasGroup(groupId)) return { claimed: false }
+    const s = this.scheduleOf(groupId)
+    if (s.dailyReminderLastSentOn !== null && s.dailyReminderLastSentOn >= todayBkk) return { claimed: false }
+    s.dailyReminderLastSentOn = todayBkk
+    return { claimed: true }
+  }
+
+  async releaseDailyReminder(groupId: string, todayBkk: string, previous: string | null): Promise<void> {
+    this.fault('releaseDailyReminder')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.dailyReminderLastSentOn === todayBkk) s.dailyReminderLastSentOn = previous
+  }
+
+  /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */
+  async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
+    this.fault('listReminderTasks')
+    return this.liveTasksOf(groupId)
+      .filter((t) => t.status !== 'done')
+      .map((t) => ({
+        id: t.id, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
+        dueAt: t.dueAt, lastActivityAt: t.lastActivityAt, deletedAt: t.deletedAt,
+      }))
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

@@ -152,6 +152,13 @@ describe('Postpone (#45)', () => {
     expect(t.task(t.slides.id).dueAt).toEqual(bkk('2026-11-16T17:00:00'))
   })
 
+  it('refuses a date that does not exist, such as 2026-11-45, and asks again', async () => {
+    const t = setup()
+    await t.press(BIW, encodeReminderAction({ kind: 'postpone_pick', taskId: t.slides.id }), '2026-11-45')
+    expect(buttons(t.lastReply())[ANSWER_TEXT.pickDate]).toBeDefined()
+    expect(t.task(t.slides.id).dueAt).toEqual(bkk('2026-11-16T17:00:00'))
+  })
+
   it('a Task with no due time gets 18:00', async () => {
     const t = setup()
     t.task(t.slides.id).dueAt = null

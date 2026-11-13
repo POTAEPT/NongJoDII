@@ -18,16 +18,23 @@ export const REMINDER_PUSH_RESERVE = 0.02
 
 export type DailyResult = 'not_due' | 'claimed_elsewhere' | 'nothing_to_remind' | GroupPushResult
 
-/** One group, on one tick. A failure before the push, or a push LINE rejects, releases the
- *  day's claim so the next tick retries; the retry key keeps LINE from sending the same
- *  day's post twice. A post skipped near the quota keeps the claim: the Tasks are on the
- *  Dashboard, and retrying every 15 minutes would only skip again. */
+/** How long one attempt's claim holds the group. Shorter than the 15-minute tick, so the
+ *  next tick can take over from a request that stopped mid-attempt. */
+export const DAILY_CLAIM_TTL_MS = 10 * 60_000
+
+/** One group, on one tick. The claim is separate from the completed day: the day is marked
+ *  sent only after the attempt finishes. A failure before the push, or a push LINE rejects,
+ *  clears the claim so the next tick retries; a request that dies leaves a claim that expires
+ *  on its own. The retry key keeps LINE from sending the same day's post twice. A post
+ *  skipped near the quota completes the day: the Tasks are on the Dashboard, and retrying
+ *  every 15 minutes would only skip again. */
 export async function runDailyRemindersForGroup(deps: Deps, group: DailyReminderGroup, now: Date): Promise<DailyResult> {
   if (!isDailyDue({ time: group.time, lastSentOn: group.lastSentOn }, now)) return 'not_due'
   const today = bangkokTodayLabel(now)
-  if (!(await deps.store.claimDailyReminder(group.groupId, today)).claimed) return 'claimed_elsewhere'
+  const staleBefore = new Date(now.getTime() - DAILY_CLAIM_TTL_MS)
+  if (!(await deps.store.claimDailyReminder(group.groupId, today, now, staleBefore)).claimed) return 'claimed_elsewhere'
 
-  const release = () => deps.store.releaseDailyReminder(group.groupId, today, group.lastSentOn)
+  const release = () => deps.store.releaseDailyReminder(group.groupId, now)
     .catch((e) => logError('daily_reminder_release_failed', { groupId: group.groupId }, e))
 
   let result: DailyResult
@@ -35,24 +42,31 @@ export async function runDailyRemindersForGroup(deps: Deps, group: DailyReminder
     const { items, total } = selectReminders(await deps.store.listReminderTasks(group.groupId), now)
     if (total === 0) {
       log('daily_reminder_nothing', { groupId: group.groupId })
-      return 'nothing_to_remind'
+      result = 'nothing_to_remind'
+    } else {
+      const members = await deps.store.listLiveMembers(group.groupId)
+      const names = new Map(members.map((m) => [m.lineUserId, m.displayName]))
+      result = await pushToGroupWithinBudget(deps, {
+        purpose: 'reminder',
+        groupId: group.groupId,
+        lineGroupId: group.lineGroupId,
+        messages: [reminderCarousel({ items, total, names, now })],
+        reserve: REMINDER_PUSH_RESERVE,
+        retryKey: retryKeyFrom(`reminder:${group.groupId}:${today}`),
+      })
     }
-    const members = await deps.store.listLiveMembers(group.groupId)
-    const names = new Map(members.map((m) => [m.lineUserId, m.displayName]))
-    result = await pushToGroupWithinBudget(deps, {
-      purpose: 'reminder',
-      groupId: group.groupId,
-      lineGroupId: group.lineGroupId,
-      messages: [reminderCarousel({ items, total, names, now })],
-      reserve: REMINDER_PUSH_RESERVE,
-      retryKey: retryKeyFrom(`reminder:${group.groupId}:${today}`),
-    })
   } catch (err) {
     await release()
     throw err
   }
 
-  if (result === 'failed') await release()
+  if (result === 'failed') {
+    await release()
+    return result
+  }
+  // If this write fails, the claim expires and a later tick retries; the retry key turns a
+  // second push of a delivered post into a duplicate LINE drops.
+  await deps.store.finishDailyReminder(group.groupId, today, now)
   if (result === 'pushed') log('daily_reminder_posted', { groupId: group.groupId })
   return result
 }

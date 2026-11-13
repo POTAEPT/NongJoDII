@@ -194,8 +194,11 @@ export async function resolveReminderAction(
   const date = action.kind === 'postpone_to' ? action.date : p.pickedDate
   // Without a valid date (a picker press that lost its params), ask again.
   if (!date || !ISO_DATE.test(date)) return { result: 'asked_date', message: postponeChoicesCard(task, now) }
-  if (date < bangkokTodayLabel(now)) return { result: 'past_date', message: text(ANSWER_TEXT.pastDate) }
   const dueAt = postponedDueAt(date, task.dueAt)
+  // ISO_DATE checks only the shape: Date.UTC rolls '2026-11-45' over to December 15. A date
+  // that does not come back as itself is not a real date, so ask again.
+  if (bangkokTodayLabel(dueAt) !== date) return { result: 'asked_date', message: postponeChoicesCard(task, now) }
+  if (date < bangkokTodayLabel(now)) return { result: 'past_date', message: text(ANSWER_TEXT.pastDate) }
   if (!(await deps.store.postponeTask({ taskId: task.id, dueAt, by: userId, at: now })).updated) return lostWrite()
   log('reminder_postponed', { groupId, taskId: task.id })
   return { result: 'postponed', message: text(ANSWER_TEXT.postponed(task.title, formatWhen(dueAt))) }

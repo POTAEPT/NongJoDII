@@ -187,6 +187,35 @@ describe('daily reminders (#44)', () => {
     expect(line.pushes).toHaveLength(1)
   })
 
+  it('retries on the next tick when a failed post is followed by a failed release', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { store, line, tickAt } = setup()
+    const group = seedGroup(store, line)
+    seedTask(store, { groupId: group.id, title: 'late', dueAt: bkk('2026-11-14T12:00:00') })
+    line.failPush = true
+    store.failNext('releaseDailyReminder')
+    await tickAt(MON_9)
+    expect(claimedOn(store, group.id)).toBeNull() // the day is not complete; the claim expires
+
+    line.failPush = false
+    await tickAt(bkk('2026-11-16T09:15:00'))
+    expect(line.pushes).toHaveLength(2) // the failed attempt and the retry
+    expect(claimedOn(store, group.id)).toBe('2026-11-16')
+  })
+
+  it('a request that stops after claiming does not block the day: the claim expires', async () => {
+    const { store, line, tickAt } = setup()
+    const group = seedGroup(store, line)
+    seedTask(store, { groupId: group.id, title: 'late', dueAt: bkk('2026-11-14T12:00:00') })
+    // An earlier request claimed at 09:00 and died before finishing.
+    store.seedSchedule(group.id, { dailyReminderClaimedAt: MON_9 })
+    await tickAt(bkk('2026-11-16T09:05:00')) // the claim is still live: no second attempt
+    expect(line.pushes).toHaveLength(0)
+    await tickAt(bkk('2026-11-16T09:15:00'))
+    expect(line.pushes).toHaveLength(1)
+    expect(claimedOn(store, group.id)).toBe('2026-11-16')
+  })
+
   it('skips groups not set up, groups the bot left, and groups with reminders off', async () => {
     const { store, line, tickAt } = setup()
     const notSetUp = store.seedGroup({ lineGroupId: 'Cnew' })

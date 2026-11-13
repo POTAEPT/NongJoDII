@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, QUARTER_HOURS, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
-import type { SetupFeatures, SetupLoad, SetupSubmitResult } from '@/server/setup/types'
+import type { SetupFeatures, SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { post } from './api'
 import type { LiffViewProps } from './liff-sdk'
 import {
@@ -74,6 +74,8 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [done, setDone] = useState<SetupSubmitResult | null>(null)
+  /** The nominee a resend reported: the saved one, which may differ from this page's form. */
+  const [resentOwnerName, setResentOwnerName] = useState<string | null>(null)
   const started = useRef(false)
   const inFlight = useRef(false) // blocks a double send before state re-renders
 
@@ -124,6 +126,28 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
     }
   }
 
+  /** Pushes the card again for the nomination the group holds now. Saves nothing: this
+   *  page's form may be stale, and sending it again would undo another Member's changes. */
+  const resend = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setFormError(null)
+    setSubmitting(true)
+    try {
+      const { status, json } = await post('/api/setup/resend-card', { idToken, groupId: id })
+      if (status === 200) {
+        const r = json as SetupResendResult
+        setResentOwnerName(r.ownerName)
+        setDone({ state: r.state, posted: r.posted })
+      } else setFormError(errorCopy(status, ERR_SUBMIT))
+    } catch {
+      setFormError(ERR_SUBMIT)
+    } finally {
+      inFlight.current = false
+      setSubmitting(false)
+    }
+  }
+
   if (load.kind === 'loading') return <p className="p-4 text-base">กำลังโหลด...</p>
   if (load.kind === 'error') {
     return (
@@ -145,14 +169,29 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
     return <div className="p-4 text-base"><p>{ERR_409}</p>{close}</div>
   }
   if (done) {
-    const owner = form?.members.find((m) => m.lineUserId === form.ownerLineUserId)
+    const ownerName = resentOwnerName ?? form?.members.find((m) => m.lineUserId === form.ownerLineUserId)?.displayName
+    // Only a pending nomination can be sent again: a confirmed group answers 409.
+    const retryCard = done.state === 'pending_owner' && done.posted === 'failed'
     return (
       <div className="p-4 text-base">
         <h1 className="text-lg font-bold">ตั้งค่าเสร็จแล้ว ✓</h1>
-        {done.state === 'pending_owner' && owner && (
-          <p className="mt-2">รอ {owner.displayName} ยืนยันเป็นเจ้าของบอท จากการ์ดในกลุ่ม</p>
+        {done.state === 'pending_owner' && ownerName && done.posted === 'pushed' && (
+          <p className="mt-2">รอ {ownerName} ยืนยันเป็นเจ้าของบอท จากการ์ดในกลุ่ม</p>
         )}
         {POSTED_NOTE[done.posted] && <p className="mt-2 text-sm text-gray-600">{POSTED_NOTE[done.posted]}</p>}
+        {retryCard && (
+          // The server pushes the card for the saved nomination under its own retry key,
+          // without saving this page's form again.
+          <button
+            type="button"
+            className="mt-4 w-full rounded bg-[#1F5BAD] px-4 py-2 text-white disabled:opacity-50"
+            disabled={submitting}
+            onClick={() => void resend()}
+          >
+            {submitting ? 'กำลังส่ง...' : 'ส่งการ์ดยืนยันอีกครั้ง'}
+          </button>
+        )}
+        {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
         {close}
       </div>
     )

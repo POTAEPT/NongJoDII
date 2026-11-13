@@ -272,10 +272,15 @@ export interface StorePort {
   // #44 daily reminders and gap flags
   /** groups where project_id is not null, left_at is null and feature_track_remind. Every page, by id. */
   listDailyReminderGroups(): Promise<DailyReminderGroup[]>
-  /** One statement: sets daily_reminder_last_sent_on = todayBkk where it is null or before todayBkk. */
-  claimDailyReminder(groupId: string, todayBkk: string): Promise<{ claimed: boolean }>
-  /** Puts back `previous` only while the column still holds todayBkk, so a later tick retries. */
-  releaseDailyReminder(groupId: string, todayBkk: string, previous: string | null): Promise<void>
+  /** One statement: sets daily_reminder_claimed_at = at where daily_reminder_last_sent_on is
+   *  null or before todayBkk and no claim younger than `staleBefore` holds the group. The
+   *  claim expires on its own, so a request that dies mid-attempt never blocks the day. */
+  claimDailyReminder(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }>
+  /** Marks the day complete (daily_reminder_last_sent_on = todayBkk) and clears the claim,
+   *  only while the claim made `at` still holds the group. */
+  finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void>
+  /** Clears the claim made `at` without completing the day, so the next tick retries. */
+  releaseDailyReminder(groupId: string, at: Date): Promise<void>
   /** The group's live Tasks that are not Done, oldest first. */
   listReminderTasks(groupId: string): Promise<ReminderTask[]>
   // #45 answers to reminder cards. Each is one UPDATE whose WHERE holds the precondition,

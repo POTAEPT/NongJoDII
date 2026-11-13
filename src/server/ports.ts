@@ -11,6 +11,8 @@ export interface LinePort {
   /** People in the group per LINE (GET /v2/bot/group/{id}/members/count). Excludes the
    *  bot. LINE charges a group push once per member, so this is the push's real cost. */
   getGroupMemberCount(lineGroupId: string): Promise<number>
+  /** The group's name per LINE (GET /v2/bot/group/{id}/summary); null on a 404. */
+  getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null>
   /** null when LINE rejects the ID token. */
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
@@ -96,7 +98,7 @@ export type NewAiUsage = {
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 /** What a push is for; stored in push_log.purpose (free text in the schema). */
-export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder'
+export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done'
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -146,6 +148,29 @@ export type ProgressYes = {
   byLineUserId: string; assignTo: string | null; at: Date
 }
 export type ProgressYesOutcome = 'updated' | 'already_answered' | 'task_changed'
+// #52 onboarding: the setup form (Figma v4 #2b-#2d2) and the Owner confirm.
+/** The feature toggles of groups. The form's first checkbox sets summarize and draftTasks together. */
+export type GroupFeatures = {
+  summarize: boolean; draftTasks: boolean; saveFiles: boolean; trackRemind: boolean; weeklySummary: boolean
+}
+/** What the setup form reads. Times are Bangkok 'HH:MM'; weekday ISO 1..7. */
+export type GroupSetup = {
+  groupId: string; lineGroupId: string; name: string | null; projectId: string | null
+  workDescription: string | null; features: GroupFeatures
+  dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
+  nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
+  /** When the current nominee was named; a resend that keeps the nominee keeps it. */
+  ownerNominatedAt: Date | null
+}
+export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
+export type GroupSetupWrite = {
+  groupId: string; byLineUserId: string; workDescription: string | null; features: GroupFeatures
+  dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
+  members: SetupMemberWrite[]; ownerLineUserId: string; at: Date
+}
+/** 'closed': the group has a confirmed Owner or already belongs to a Project. */
+export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'
+export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nominee' | 'not_member' | 'closed'
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -273,6 +298,19 @@ export interface StorePort {
   confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }>
   /** Deletes a card only while it is unanswered: its reply never reached the group, or it went stale. */
   withdrawProgressPrompt(promptId: string): Promise<void>
+  // #52 onboarding
+  setGroupName(groupId: string, name: string): Promise<void>
+  getGroupSetup(groupId: string): Promise<GroupSetup | null>
+  /** One transaction (rpc setup_group): locks the group; a 'closed' group or an Owner who
+   *  is not a live Member saves nothing. Otherwise writes the settings and the nominee,
+   *  updates nicknames and role of the listed live Members only (never their source), and,
+   *  when the sender named themselves, confirms them and creates the Project as
+   *  confirmGroupOwner does. */
+  saveGroupSetup(s: GroupSetupWrite): Promise<{ outcome: SetupOutcome }>
+  /** One transaction (rpc confirm_group_owner): only the nominee, while a live Member,
+   *  confirms; this creates the Project (owner = the nominee) with the group as its main
+   *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
+  confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }>
   // #12 Google
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>

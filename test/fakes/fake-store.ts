@@ -6,6 +6,8 @@ import type {
   CandidateRow,
   CandidateState,
   GroupRow,
+  GroupSetup,
+  GroupSetupWrite,
   Member,
   Membership,
   NewAiUsage,
@@ -16,12 +18,14 @@ import type {
   NewTask,
   NewProgressPrompt,
   NewWebhookEvent,
+  OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
   DailyReminderGroup,
   ReminderTask,
   MessageRef,
   ProgressPromptRow,
+  SetupOutcome,
   StorePort,
   StoredMessage,
   SummaryRow,
@@ -73,6 +77,12 @@ export type GroupScheduleRecord = {
   dailyReminderTime: string; dailyReminderLastSentOn: string | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
+/** The other groups columns setup writes (#52). No row = schema defaults. */
+export type GroupSetupRecord = {
+  groupId: string; isMain: boolean; featureSaveFiles: boolean
+  ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
+}
+export type ProjectRecord = { id: string; ownerLineUserId: string }
 
 export type FakeTables = {
   line_users: LineUserRecord[]
@@ -90,6 +100,8 @@ export type FakeTables = {
   google_accounts: GoogleAccountRecord[]
   group_schedules: GroupScheduleRecord[]
   weekly_insights: WeeklyInsightRecord[]
+  group_setups: GroupSetupRecord[]
+  projects: ProjectRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -119,6 +131,8 @@ export class FakeStore implements StorePort {
     google_accounts: [],
     group_schedules: [],
     weekly_insights: [],
+    group_setups: [],
+    projects: [],
   }
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
@@ -763,6 +777,111 @@ export class FakeStore implements StorePort {
     if (!row || row.assigneeLineUserId !== null) return { updated: false }
     Object.assign(row, { assigneeLineUserId: t.by, status: 'in_process', lastActivityAt: t.at, lastEditedByLineUserId: t.by })
     return { updated: true }
+  }
+
+  // ---- #52 onboarding ----
+  private setupOf(groupId: string): GroupSetupRecord {
+    let row = this.tables.group_setups.find((r) => r.groupId === groupId)
+    if (!row) {
+      fk(this.hasGroup(groupId), 'groups.id')
+      row = { groupId, isMain: false, featureSaveFiles: true, ownerNominatedByLineUserId: null, ownerNominatedAt: null }
+      this.tables.group_setups.push(row)
+    }
+    return row
+  }
+
+  async setGroupName(groupId: string, name: string): Promise<void> {
+    this.fault('setGroupName')
+    const g = this.tables.groups.find((row) => row.id === groupId)
+    if (g) g.name = name
+  }
+
+  async getGroupSetup(groupId: string): Promise<GroupSetup | null> {
+    this.fault('getGroupSetup')
+    const g = this.tables.groups.find((row) => row.id === groupId)
+    if (!g) return null
+    const s = this.scheduleOf(groupId)
+    const x = this.setupOf(groupId)
+    return {
+      groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, projectId: g.projectId,
+      workDescription: g.workDescription,
+      features: {
+        summarize: g.featureSummarize, draftTasks: g.featureDraftTasks, saveFiles: x.featureSaveFiles,
+        trackRemind: g.featureTrackRemind, weeklySummary: s.featureWeeklySummary,
+      },
+      dailyReminderTime: s.dailyReminderTime.slice(0, 5),
+      weeklySummaryWeekday: s.weeklySummaryWeekday,
+      weeklySummaryTime: s.weeklySummaryTime.slice(0, 5),
+      nominatedOwnerLineUserId: g.nominatedOwnerLineUserId, ownerConfirmedAt: g.ownerConfirmedAt,
+      ownerNominatedAt: x.ownerNominatedAt,
+    }
+  }
+
+  private isLiveMember(groupId: string, lineUserId: string): boolean {
+    return this.tables.group_members.some((m) => m.groupId === groupId && m.lineUserId === lineUserId && m.leftAt === null)
+  }
+
+  /** Same rules as setup_group, as one step: every check before any write. */
+  async saveGroupSetup(w: GroupSetupWrite): Promise<{ outcome: SetupOutcome }> {
+    this.fault('saveGroupSetup')
+    const g = this.groupOf(w.groupId)
+    if (g.ownerConfirmedAt !== null || g.projectId !== null) return { outcome: 'closed' }
+    if (!this.isLiveMember(w.groupId, w.ownerLineUserId)) return { outcome: 'owner_not_member' }
+    fk(this.hasLineUser(w.byLineUserId), 'groups.owner_nominated_by_line_user_id')
+    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
+    const s = this.scheduleOf(w.groupId)
+    const x = this.setupOf(w.groupId)
+    Object.assign(g, {
+      workDescription: w.workDescription, featureSummarize: w.features.summarize,
+      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
+    })
+    const newNominee = g.nominatedOwnerLineUserId !== w.ownerLineUserId
+    // groups_owner_rules: a new nominee resets the confirmation.
+    if (newNominee) g.ownerConfirmedAt = null
+    g.nominatedOwnerLineUserId = w.ownerLineUserId
+    Object.assign(s, {
+      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
+      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
+    })
+    x.featureSaveFiles = w.features.saveFiles
+    // Who nominated and when change only with the nominee (the CASEs in setup_group).
+    if (newNominee) Object.assign(x, { ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
+    for (const m of w.members) {
+      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
+      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
+    }
+    if (w.ownerLineUserId === w.byLineUserId) {
+      const { outcome } = this.confirmOwner(w.groupId, w.ownerLineUserId, w.at)
+      // Cannot happen: the checks above (no confirmed Owner, no Project, the Owner a live
+      // Member) are the inner call's, made under the same row lock, and the sender was just
+      // named. Should the inner call answer not_nominee, already_confirmed or not_member,
+      // setup_group returns that answer and SupabaseStore.saveGroupSetup throws on it (it is
+      // not a setup_group outcome); the fake throws here instead, with the same result.
+      if (outcome !== 'confirmed') throw new Error(`FakeStore: setup self-confirm ${outcome}`)
+      return { outcome: 'confirmed' }
+    }
+    return { outcome: 'pending' }
+  }
+
+  async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {
+    this.fault('confirmGroupOwner')
+    return this.confirmOwner(groupId, lineUserId, at)
+  }
+
+  /** Same rules as confirm_group_owner. */
+  private confirmOwner(groupId: string, lineUserId: string, at: Date): { outcome: OwnerConfirmOutcome } {
+    const g = this.groupOf(groupId)
+    if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }
+    if (g.ownerConfirmedAt !== null) return { outcome: 'already_confirmed' }
+    if (g.projectId !== null) return { outcome: 'closed' }
+    if (!this.isLiveMember(groupId, lineUserId)) return { outcome: 'not_member' }
+    fk(this.hasLineUser(lineUserId), 'projects.owner_line_user_id')
+    const project: ProjectRecord = { id: randomUUID(), ownerLineUserId: lineUserId }
+    this.tables.projects.push(project)
+    g.projectId = project.id
+    g.ownerConfirmedAt = at
+    this.setupOf(groupId).isMain = true
+    return { outcome: 'confirmed' }
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

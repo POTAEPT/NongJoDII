@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TaskView as TaskData } from '@/server/tasks/load'
+import { post } from './api'
 import { splitBangkokIso, toBangkokIso } from './form-model'
 import type { LiffViewProps } from './liff-sdk'
 
@@ -17,18 +18,6 @@ function errorCopy(status: number): string {
   if (status === 404) return ERR_404
   if (status === 400) return ERR_400
   return ERR_OTHER
-}
-
-// Only the LIFF ID token goes up as identity: the server verifies it with LINE.
-async function post(path: string, body: Record<string, unknown>): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  let json: unknown = null
-  if (res.status === 200) json = await res.json()
-  return { status: res.status, json }
 }
 
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: TaskData }

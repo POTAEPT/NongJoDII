@@ -7,6 +7,8 @@ import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, type ParsedTask } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
+import { setupCard } from '../setup/card'
+import { isSetupOpen, setupState } from '../setup/rules'
 import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
 
@@ -50,7 +52,13 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   if (!group.featureSummarize) return replyText(deps, replyToken, groupId, REPLY_FEATURE_OFF, sent)
   // Owner-backed features run only with a confirmed Owner.
   if (!group.ownerConfirmedAt || !group.nominatedOwnerLineUserId) {
-    return replyText(deps, replyToken, groupId, REPLY_NO_OWNER, sent)
+    const messages: LineMessage[] = [{ type: 'text', text: REPLY_NO_OWNER }]
+    // Setup not finished (no Project yet): the #2a setup card rides on the same reply,
+    // the second way to it after the join reply (#52). It reaches groups whose join reply
+    // failed and groups the bot joined before onboarding existed. A group that has a
+    // Project but no confirmed Owner (the Owner left) needs an Owner change, not setup.
+    if (isSetupOpen(setupState(group))) messages.push(setupCard({ liffId: deps.config.liffId, groupId }))
+    return reply(deps, replyToken, groupId, messages, sent)
   }
   const ownerLineUserId = group.nominatedOwnerLineUserId
 

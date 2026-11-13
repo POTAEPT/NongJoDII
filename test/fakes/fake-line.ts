@@ -5,8 +5,8 @@ import { AdapterError } from '@/server/log'
 export class FakeLine implements LinePort {
   /** Every reply call, recorded before `failReply` is applied. */
   replies: { replyToken: string; messages: LineMessage[] }[] = []
-  /** Every push call, recorded before `failPush` is applied. */
-  pushes: { to: string; messages: LineMessage[] }[] = []
+  /** Every push call with its retry key, recorded before `failPush` is applied. */
+  pushes: { to: string; messages: LineMessage[]; retryKey?: string }[] = []
   profileCalls: { lineGroupId: string; lineUserId: string }[] = []
   verifyCalls: string[] = []
   /** Key `${lineGroupId}:${lineUserId}` -> LINE name. A missing key answers null (LINE 404). */
@@ -19,6 +19,10 @@ export class FakeLine implements LinePort {
   /** lineGroupId -> LINE's member count. A missing key answers 0. */
   groupMemberCounts = new Map<string, number>()
   failMemberCount = false
+  /** lineGroupId -> LINE group name. A missing key answers null (LINE 404). */
+  groupNames = new Map<string, string>()
+  failGroupSummary = false
+  groupSummaryCalls: string[] = []
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
   /** Makes push reject, as the real adapter does on a LINE 5xx or 429. */
@@ -42,7 +46,7 @@ export class FakeLine implements LinePort {
   timeoutAfterAccept = false
 
   async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void> {
-    this.pushes.push({ to, messages })
+    this.pushes.push({ to, messages, retryKey: opts?.retryKey })
     if (this.failPush) throw new AdapterError('line push 500')
     const key = opts?.retryKey
     if (key !== undefined && this.acceptedRetryKeys.has(key)) return
@@ -65,6 +69,13 @@ export class FakeLine implements LinePort {
   async getGroupMemberCount(lineGroupId: string): Promise<number> {
     if (this.failMemberCount) throw new AdapterError('line member count 500')
     return this.groupMemberCounts.get(lineGroupId) ?? 0
+  }
+
+  async getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null> {
+    this.groupSummaryCalls.push(lineGroupId)
+    if (this.failGroupSummary) throw new AdapterError('line group summary 500')
+    const groupName = this.groupNames.get(lineGroupId)
+    return groupName === undefined ? null : { groupName }
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {

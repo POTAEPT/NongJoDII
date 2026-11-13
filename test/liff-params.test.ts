@@ -11,6 +11,10 @@ describe('readLiffParams', () => {
   it('decodes liff.state that is a path plus a query', () => {
     expect(readLiffParams('?liff.state=%2Fliff%3Fview%3Dgoogle')).toEqual({ view: 'google', id: null })
   })
+  it('reads the setup and owner views (#52)', () => {
+    expect(readLiffParams('?view=setup&id=g1')).toEqual({ view: 'setup', id: 'g1' })
+    expect(readLiffParams('?liff.state=%3Fview%3Downer%26id%3Dg1')).toEqual({ view: 'owner', id: 'g1' })
+  })
   it('gives null for an unknown view', () => {
     expect(readLiffParams('?view=bogus')).toEqual({ view: null, id: null })
   })

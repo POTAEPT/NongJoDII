@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import { GoogleView } from './google-view'
+import { OwnerView } from './owner-view'
 import { ProgressView } from './progress-view'
 import { ReviewView } from './review-view'
+import { SetupView } from './setup-view'
 import { TaskView } from './task-view'
 import { initLiff, type LiffViewProps } from './liff-sdk'
 import { readLiffParams, type LiffParams } from './params'
@@ -47,5 +49,7 @@ export function LiffApp({ liffId }: { liffId: string }) {
   if (params.view === 'review') return <ReviewView {...viewProps} />
   if (params.view === 'task') return <TaskView {...viewProps} />
   if (params.view === 'progress') return <ProgressView {...viewProps} />
+  if (params.view === 'setup') return <SetupView {...viewProps} />
+  if (params.view === 'owner') return <OwnerView {...viewProps} />
   return <p className="p-4 text-base">{OPEN_FAILED}</p>
 }

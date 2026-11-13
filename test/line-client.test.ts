@@ -167,6 +167,22 @@ describe('LineHttpClient.getGroupMemberCount', () => {
   })
 })
 
+describe('LineHttpClient.getGroupSummary', () => {
+  it('returns the group name, with the URL and Bearer token', async () => {
+    const { client, calls } = stubFetch(200, { groupId: 'C/1', groupName: 'ทีมงาน', pictureUrl: 'https://x' })
+    await expect(client.getGroupSummary('C/1')).resolves.toEqual({ groupName: 'ทีมงาน' })
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/group/C%2F1/summary')
+    expect(calls[0].init.method).toBe('GET')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+  })
+
+  it('returns null on 404 and throws AdapterError on 500 or a 200 without a name', async () => {
+    await expect(stubFetch(404).client.getGroupSummary('C1')).resolves.toBeNull()
+    await expect(stubFetch(500).client.getGroupSummary('C1')).rejects.toThrow(new AdapterError('line group summary 500'))
+    await expect(stubFetch(200, { groupId: 'C1' }).client.getGroupSummary('C1')).rejects.toThrow(new AdapterError('line group summary 200'))
+  })
+})
+
 describe('LineHttpClient.getMessageQuota', () => {
   function quotaFetch(quota: unknown, usage: unknown, status = 200) {
     const fetchImpl = (async (input: string | URL | Request) => {

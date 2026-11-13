@@ -4,7 +4,7 @@ import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
 
-/** LINE Messaging API (reply, push, quota, group member profile) and LINE Login ID token verify.
+/** LINE Messaging API (reply, push, quota, group member profile, group summary) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
 export class LineHttpClient implements LinePort {
   private readonly token: string
@@ -73,6 +73,16 @@ export class LineHttpClient implements LinePort {
       throw new AdapterError('line member count 200')
     }
     return body.count
+  }
+
+  async getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null> {
+    const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/summary`
+    const res = await this.fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } })
+    if (res.status === 404) return null
+    if (res.status !== 200) throw new AdapterError(`line group summary ${res.status}`)
+    const body = (await res.json()) as { groupName?: unknown }
+    if (typeof body.groupName !== 'string') throw new AdapterError('line group summary 200')
+    return { groupName: body.groupName }
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {

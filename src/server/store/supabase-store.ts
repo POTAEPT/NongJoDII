@@ -7,6 +7,8 @@ import type {
   CandidateRow,
   DailyReminderGroup,
   GroupRow,
+  GroupSetup,
+  GroupSetupWrite,
   Member,
   Membership,
   MessageRef,
@@ -18,11 +20,13 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
   ProgressAnswer,
   ProgressPromptRow,
   ReminderTask,
+  SetupOutcome,
   StorePort,
   StoredMessage,
   SummaryRow,
@@ -58,6 +62,15 @@ import {
 
 const GROUP_COLS =
   'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind'
+const SETUP_COLS =
+  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at'
+type DbGroupSetup = {
+  id: string; line_group_id: string; name: string | null; project_id: string | null; work_description: string | null
+  feature_summarize: boolean; feature_draft_tasks: boolean; feature_save_files: boolean
+  feature_track_remind: boolean; feature_weekly_summary: boolean
+  daily_reminder_time: string; weekly_summary_weekday: number; weekly_summary_time: string
+  nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null
+}
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
 const TASK_COLS =
@@ -787,6 +800,62 @@ export class SupabaseStore implements StorePort {
       }
       if (rows.length < WEEKLY_PAGE) return out
     }
+  }
+
+  // ---- #52 onboarding ----
+  async setGroupName(groupId: string, name: string): Promise<void> {
+    const { error } = await this.db.from('groups').update({ name }).eq('id', groupId)
+    check('setGroupName', error)
+  }
+
+  async getGroupSetup(groupId: string): Promise<GroupSetup | null> {
+    const { data, error } = await this.db.from('groups').select(SETUP_COLS).eq('id', groupId).maybeSingle()
+    check('getGroupSetup', error)
+    const r = data as DbGroupSetup | null
+    if (!r) return null
+    return {
+      groupId: r.id, lineGroupId: r.line_group_id, name: r.name, projectId: r.project_id,
+      workDescription: r.work_description,
+      features: {
+        summarize: r.feature_summarize, draftTasks: r.feature_draft_tasks, saveFiles: r.feature_save_files,
+        trackRemind: r.feature_track_remind, weeklySummary: r.feature_weekly_summary,
+      },
+      // time columns arrive as 'HH:MM:SS'; the form speaks 'HH:MM'.
+      dailyReminderTime: r.daily_reminder_time.slice(0, 5),
+      weeklySummaryWeekday: r.weekly_summary_weekday,
+      weeklySummaryTime: r.weekly_summary_time.slice(0, 5),
+      nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
+    }
+  }
+
+  async saveGroupSetup(w: GroupSetupWrite): Promise<{ outcome: SetupOutcome }> {
+    const { data, error } = await this.db.rpc('setup_group', {
+      p_group_id: w.groupId, p_by: w.byLineUserId, p_work_description: w.workDescription,
+      p_feature_summarize: w.features.summarize, p_feature_draft_tasks: w.features.draftTasks,
+      p_feature_save_files: w.features.saveFiles, p_feature_track_remind: w.features.trackRemind,
+      p_feature_weekly_summary: w.features.weeklySummary,
+      p_daily_reminder_time: w.dailyReminderTime, p_weekly_summary_weekday: w.weeklySummaryWeekday,
+      p_weekly_summary_time: w.weeklySummaryTime,
+      p_members: w.members.map((m) => ({ line_user_id: m.lineUserId, nicknames: m.nicknames, role: m.role })),
+      p_owner: w.ownerLineUserId, p_at: w.at.toISOString(),
+    })
+    check('saveGroupSetup', error)
+    if (data !== 'confirmed' && data !== 'pending' && data !== 'closed' && data !== 'owner_not_member') {
+      throw new Error('saveGroupSetup: unexpected result from setup_group')
+    }
+    return { outcome: data }
+  }
+
+  async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {
+    const { data, error } = await this.db.rpc('confirm_group_owner', {
+      p_group_id: groupId, p_line_user_id: lineUserId, p_at: at.toISOString(),
+    })
+    check('confirmGroupOwner', error)
+    const outcomes: OwnerConfirmOutcome[] = ['confirmed', 'already_confirmed', 'not_nominee', 'not_member', 'closed']
+    if (!outcomes.includes(data as OwnerConfirmOutcome)) {
+      throw new Error('confirmGroupOwner: unexpected result from confirm_group_owner')
+    }
+    return { outcome: data as OwnerConfirmOutcome }
   }
 
   // ---- #12 Google ----

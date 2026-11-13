@@ -19,6 +19,10 @@ export class FakeLine implements LinePort {
   /** lineGroupId -> LINE's member count. A missing key answers 0. */
   groupMemberCounts = new Map<string, number>()
   failMemberCount = false
+  /** lineGroupId -> LINE group name. A missing key answers null (LINE 404). */
+  groupNames = new Map<string, string>()
+  failGroupSummary = false
+  groupSummaryCalls: string[] = []
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
   /** Makes push reject, as the real adapter does on a LINE 5xx or 429. */
@@ -65,6 +69,13 @@ export class FakeLine implements LinePort {
   async getGroupMemberCount(lineGroupId: string): Promise<number> {
     if (this.failMemberCount) throw new AdapterError('line member count 500')
     return this.groupMemberCounts.get(lineGroupId) ?? 0
+  }
+
+  async getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null> {
+    this.groupSummaryCalls.push(lineGroupId)
+    if (this.failGroupSummary) throw new AdapterError('line group summary 500')
+    const groupName = this.groupNames.get(lineGroupId)
+    return groupName === undefined ? null : { groupName }
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {

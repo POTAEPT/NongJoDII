@@ -1,6 +1,7 @@
+import { syncDriveForOwner } from '../google/drive-folders'
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import { log, logError } from '../log'
-import type { ApiResult, Deps, GroupSetup, Member, SetupMemberWrite, SetupOutcome } from '../ports'
+import type { ApiResult, Defer, Deps, GroupSetup, Member, SetupMemberWrite, SetupOutcome } from '../ports'
 import { badRequest, field } from '../review/load'
 import { setupDoneCard } from './card'
 import { lineNameOf, openSetupGroup } from './load'
@@ -83,8 +84,9 @@ const closed: ApiResult = { status: 409, body: { error: 'setup_closed' } }
 /** POST /api/setup/submit. Saves the setup form and nominates the Owner; naming yourself
  *  confirms you at once and creates the Project (your LIFF login is the LINE login).
  *  Refused (409) once the group has a confirmed Owner or belongs to a Project: later
- *  edits belong to Settings (#28). Then pushes the #2e card to the group. */
-export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult> {
+ *  edits belong to Settings (#28). Then pushes the #2e card to the group. A self-confirmed
+ *  Owner already signed in to Google gets the Drive folders (#13) after the response. */
+export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Promise<ApiResult> {
   const gate = await openSetupGroup(deps, body)
   if (!gate.ok) return gate.result
   const { group, requester } = gate
@@ -116,6 +118,7 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
   if (outcome === 'owner_not_member') return badRequest('ownerLineUserId')
   const confirmed = outcome === 'confirmed'
   log('setup_saved', { groupId: group.groupId, ownerConfirmed: confirmed })
+  if (confirmed) defer(() => syncDriveForOwner(deps, requester))
   const nominatedAt = await storedNominationTime(deps, group.groupId, v.ownerLineUserId, at)
 
   // Every send pushes the #2e card, under a LINE retry key made from the nominee, the

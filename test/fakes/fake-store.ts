@@ -22,6 +22,8 @@ import type {
   PushBudgetClaim,
   NewWeeklyInsight,
   DailyReminderGroup,
+  DriveContext,
+  DriveGroup,
   ReminderTask,
   MessageRef,
   ProgressPromptRow,
@@ -66,6 +68,10 @@ export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; mo
 export type GoogleAccountRecord = {
   id: string; lineUserId: string; googleSubject: string; email: string | null; grantedScopes: string[]
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
+  driveRootFolderId?: string | null   // absent = null (#13)
+}
+export type DriveConnectionRecord = {
+  id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
 }
 
 /** The groups columns the weekly insight reads (left_at, feature_weekly_summary and the
@@ -83,8 +89,9 @@ export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Dat
 export type GroupSetupRecord = {
   groupId: string; isMain: boolean; featureSaveFiles: boolean
   ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
+  driveFolderId?: string | null   // groups.drive_folder_id; absent = null (#13)
 }
-export type ProjectRecord = { id: string; ownerLineUserId: string }
+export type ProjectRecord = { id: string; ownerLineUserId: string; driveProjectFolderId?: string | null }
 
 export type FakeTables = {
   line_users: LineUserRecord[]
@@ -104,6 +111,7 @@ export type FakeTables = {
   weekly_insights: WeeklyInsightRecord[]
   group_setups: GroupSetupRecord[]
   projects: ProjectRecord[]
+  drive_connections: DriveConnectionRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -135,6 +143,7 @@ export class FakeStore implements StorePort {
     weekly_insights: [],
     group_setups: [],
     projects: [],
+    drive_connections: [],
   }
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
@@ -621,6 +630,83 @@ export class FakeStore implements StorePort {
       .filter((g) => g.lineUserId === lineUserId)
       .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))
     return rows[0] ? { id: rows[0].id, tokenStatus: rows[0].tokenStatus } : null
+  }
+
+  // ---- #13 Drive folders ----
+  private isLeft(groupId: string): boolean {
+    return this.tables.group_schedules.find((s) => s.groupId === groupId)?.leftAt != null
+  }
+  private isMainGroup(groupId: string): boolean {
+    return this.tables.group_setups.find((r) => r.groupId === groupId)?.isMain === true
+  }
+
+  async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
+    this.fault('listConfirmedOwnerProjects')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.nominatedOwnerLineUserId === lineUserId &&
+        g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .map((g) => g.projectId as string)
+  }
+
+  async getDriveContext(projectId: string): Promise<DriveContext | null> {
+    this.fault('getDriveContext')
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) return null
+    const groups = this.tables.groups.filter((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+    const toDrive = (g: GroupRow): DriveGroup => ({
+      groupId: g.id, lineGroupId: g.lineGroupId, name: g.name,
+      folderId: this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId ?? null,
+    })
+    const main = groups.find((g) => this.isMainGroup(g.id))
+    const account = this.tables.google_accounts
+      .filter((a) => a.lineUserId === project.ownerLineUserId)
+      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))[0]
+    const active = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    return {
+      projectId, ownerLineUserId: project.ownerLineUserId, projectFolderId: project.driveProjectFolderId ?? null,
+      mainGroup: main ? toDrive(main) : null,
+      subGroups: groups.filter((g) => !this.isMainGroup(g.id)).map(toDrive),
+      account: account
+        ? {
+            id: account.id, tokenStatus: account.tokenStatus,
+            refreshTokenCiphertext: account.refreshTokenCiphertext, rootFolderId: account.driveRootFolderId ?? null,
+          }
+        : null,
+      activeAccountId: active?.googleAccountId ?? null,
+    }
+  }
+
+  async setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setDriveRootFolder')
+    const row = this.tables.google_accounts.find((a) => a.id === googleAccountId)
+    if (!row) return { folderId: null }
+    if ((row.driveRootFolderId ?? null) === from) row.driveRootFolderId = to
+    return { folderId: row.driveRootFolderId ?? null }
+  }
+
+  async setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setProjectDriveFolder')
+    const row = this.tables.projects.find((p) => p.id === projectId)
+    if (!row) return { folderId: null }
+    if ((row.driveProjectFolderId ?? null) === from) row.driveProjectFolderId = to
+    return { folderId: row.driveProjectFolderId ?? null }
+  }
+
+  async setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setGroupDriveFolder')
+    if (!this.hasGroup(groupId)) return { folderId: null }
+    const row = this.setupOf(groupId)
+    if ((row.driveFolderId ?? null) === from) row.driveFolderId = to
+    return { folderId: row.driveFolderId ?? null }
+  }
+
+  async ensureDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean }> {
+    this.fault('ensureDriveConnection')
+    fk(this.tables.projects.some((p) => p.id === projectId), 'drive_connections.project_id')
+    fk(this.tables.google_accounts.some((a) => a.id === googleAccountId), 'drive_connections.google_account_id')
+    if (this.tables.drive_connections.some((c) => c.projectId === projectId && c.status === 'active')) return { created: false }
+    this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
+    return { created: true }
   }
 
   // ---- #20 weekly insight ----

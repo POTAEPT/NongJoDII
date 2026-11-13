@@ -1,8 +1,9 @@
 import { openState, seal } from '../crypto/secretbox'
 import { log } from '../log'
 import { liffUrl } from '../liff-links'
-import type { Deps } from '../ports'
+import type { Defer, Deps } from '../ports'
 import { DRIVE_FILE_SCOPE } from './client'
+import { syncDriveForOwner } from './drive-folders'
 
 export type CallbackOutcome = 'ok' | 'cancelled' | 'expired' | 'missing_scope' | 'no_refresh_token' | 'failed'
 
@@ -14,13 +15,13 @@ export type CallbackOutcome = 'ok' | 'cancelled' | 'expired' | 'missing_scope' |
  *  account to an attacker's LINE user. It is bounded: the LINE user inside the
  *  state comes only from a server-verified LIFF ID token, the state expires in 10
  *  minutes, and the scope is drive.file (only files the app created). */
-export async function finishGoogleSignIn(deps: Deps, params: URLSearchParams): Promise<CallbackOutcome> {
-  const outcome = await decide(deps, params)
+export async function finishGoogleSignIn(deps: Deps, params: URLSearchParams, defer: Defer): Promise<CallbackOutcome> {
+  const outcome = await decide(deps, params, defer)
   log('google_signin', { outcome })
   return outcome
 }
 
-async function decide(deps: Deps, params: URLSearchParams): Promise<CallbackOutcome> {
+async function decide(deps: Deps, params: URLSearchParams, defer: Defer): Promise<CallbackOutcome> {
   const error = params.get('error')
   if (error !== null) return error === 'access_denied' ? 'cancelled' : 'failed'
 
@@ -53,6 +54,10 @@ async function decide(deps: Deps, params: URLSearchParams): Promise<CallbackOutc
   } catch {
     return 'failed'
   }
+  // #13: the Drive folders are made after the page is sent. A Drive failure is logged
+  // there and never changes this outcome: the account is stored either way.
+  const lineUserId = opened.lineUserId
+  defer(() => syncDriveForOwner(deps, lineUserId))
   return 'ok'
 }
 

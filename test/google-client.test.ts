@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DRIVE_FILE_SCOPE, GoogleHttpClient } from '@/server/google/client'
-import { AdapterError } from '@/server/log'
+import { AdapterError, GoogleTokenRevoked } from '@/server/log'
 
 type Call = { url: string; init: RequestInit }
 
@@ -92,5 +92,101 @@ describe('GoogleHttpClient.exchangeCode', () => {
     const err = await client.exchangeCode('c').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(AdapterError)
     expect((err as Error).message).toBe('google token 400')
+  })
+})
+
+describe('GoogleHttpClient.accessToken', () => {
+  it('posts grant_type=refresh_token and returns the access token', async () => {
+    const { client, calls } = stubFetch(200, { access_token: 'at-1', expires_in: 3599 })
+    await expect(client.accessToken('rt-1')).resolves.toBe('at-1')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://oauth2.googleapis.com/token')
+    expect(calls[0].init.method).toBe('POST')
+    expect(Object.fromEntries(new URLSearchParams(calls[0].init.body as string))).toEqual({
+      client_id: 'cid', client_secret: 'csecret', refresh_token: 'rt-1', grant_type: 'refresh_token',
+    })
+  })
+
+  it('rejects with GoogleTokenRevoked on invalid_grant', async () => {
+    const { client } = stubFetch(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' })
+    const err = await client.accessToken('rt').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(GoogleTokenRevoked)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as Error).message).toBe('google refresh invalid_grant')
+  })
+
+  it('throws a plain AdapterError on another failure, and when access_token is missing', async () => {
+    const e500 = await stubFetch(500, {}).client.accessToken('rt').catch((e: unknown) => e)
+    expect(e500).toBeInstanceOf(AdapterError)
+    expect(e500).not.toBeInstanceOf(GoogleTokenRevoked)
+    expect((e500 as Error).message).toBe('google refresh 500')
+    const e400 = await stubFetch(400, { error: 'invalid_client' }).client.accessToken('rt').catch((e: unknown) => e)
+    expect(e400).not.toBeInstanceOf(GoogleTokenRevoked)
+    expect((e400 as Error).message).toBe('google refresh 400')
+    const none = await stubFetch(200, {}).client.accessToken('rt').catch((e: unknown) => e)
+    expect((none as Error).message).toBe('google refresh no access_token')
+  })
+})
+
+describe('GoogleHttpClient Drive', () => {
+  it('createFolder posts a folder with its parent and returns the id', async () => {
+    const { client, calls } = stubFetch(200, { id: 'f-1' })
+    await expect(client.createFolder('at-1', 'NongJoDII', 'p-1')).resolves.toBe('f-1')
+    const url = new URL(calls[0].url)
+    expect(url.origin + url.pathname).toBe('https://www.googleapis.com/drive/v3/files')
+    expect(url.searchParams.get('fields')).toBe('id')
+    expect(calls[0].init.method).toBe('POST')
+    const headers = new Headers(calls[0].init.headers)
+    expect(headers.get('Authorization')).toBe('Bearer at-1')
+    expect(headers.get('Content-Type')).toBe('application/json')
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      name: 'NongJoDII', mimeType: 'application/vnd.google-apps.folder', parents: ['p-1'],
+    })
+  })
+
+  it('createFolder with no parent leaves parents out (the Drive root)', async () => {
+    const { client, calls } = stubFetch(200, { id: 'f-1' })
+    await client.createFolder('at-1', 'NongJoDII', null)
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ name: 'NongJoDII', mimeType: 'application/vnd.google-apps.folder' })
+  })
+
+  it('createFolder throws on an error status or a missing id', async () => {
+    expect(((await stubFetch(403).client.createFolder('a', 'n', null).catch((e: unknown) => e)) as Error).message)
+      .toBe('google drive create 403')
+    expect(((await stubFetch(200, {}).client.createFolder('a', 'n', null).catch((e: unknown) => e)) as Error).message)
+      .toBe('google drive create no id')
+  })
+
+  it('getFolder asks for the trashed field and maps ok, trashed and a 404', async () => {
+    const ok = stubFetch(200, { id: 'f-1', trashed: false })
+    await expect(ok.client.getFolder('at-1', 'f-1')).resolves.toBe('ok')
+    const url = new URL(ok.calls[0].url)
+    expect(url.origin + url.pathname).toBe('https://www.googleapis.com/drive/v3/files/f-1')
+    expect(url.searchParams.get('fields')).toBe('id,trashed')
+    expect(ok.calls[0].init.method ?? 'GET').toBe('GET')
+    expect(new Headers(ok.calls[0].init.headers).get('Authorization')).toBe('Bearer at-1')
+    await expect(stubFetch(200, { id: 'f-1', trashed: true }).client.getFolder('a', 'f-1')).resolves.toBe('trashed')
+    await expect(stubFetch(404, { error: {} }).client.getFolder('a', 'f-1')).resolves.toBe('missing')
+  })
+
+  it('getFolder encodes the id and throws on another error', async () => {
+    const s = stubFetch(200, { trashed: false })
+    await s.client.getFolder('a', 'a/b')
+    expect(s.calls[0].url).toContain('/files/a%2Fb?')
+    expect(((await stubFetch(500).client.getFolder('a', 'f').catch((e: unknown) => e)) as Error).message)
+      .toBe('google drive get 500')
+  })
+
+  it('shareAnyoneReader creates one reader permission for anyone', async () => {
+    const { client, calls } = stubFetch(200, { id: 'anyoneWithLink' })
+    await client.shareAnyoneReader('at-1', 'f-1')
+    expect(calls).toHaveLength(1)
+    const url = new URL(calls[0].url)
+    expect(url.origin + url.pathname).toBe('https://www.googleapis.com/drive/v3/files/f-1/permissions')
+    expect(calls[0].init.method).toBe('POST')
+    expect(new Headers(calls[0].init.headers).get('Authorization')).toBe('Bearer at-1')
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ role: 'reader', type: 'anyone' })
+    expect(((await stubFetch(403).client.shareAnyoneReader('a', 'f').catch((e: unknown) => e)) as Error).message)
+      .toBe('google drive share 403')
   })
 })

@@ -71,7 +71,7 @@ describe('google sign-in callback', () => {
   it('3. happy path stores the account with the refresh token encrypted', async () => {
     const h = setup()
     const state = await startedState(h)
-    const outcome = await finishGoogleSignIn(h.deps, params({ code: 'code-1', state }))
+    const outcome = await finishGoogleSignIn(h.deps, params({ code: 'code-1', state }), h.defer)
     expect(outcome).toBe('ok')
     expect(h.google.exchangedCodes).toEqual(['code-1'])
     expect(h.store.tables.google_accounts).toHaveLength(1)
@@ -90,7 +90,7 @@ describe('google sign-in callback', () => {
   it('4. error=access_denied gives cancelled, with no row and no exchange', async () => {
     const h = setup()
     const state = await startedState(h)
-    expect(await finishGoogleSignIn(h.deps, params({ error: 'access_denied', state }))).toBe('cancelled')
+    expect(await finishGoogleSignIn(h.deps, params({ error: 'access_denied', state }), h.defer)).toBe('cancelled')
     expect(h.google.exchangedCodes).toHaveLength(0)
     expect(h.store.tables.google_accounts).toHaveLength(0)
   })
@@ -98,7 +98,7 @@ describe('google sign-in callback', () => {
   it('4b. any other error gives failed', async () => {
     const h = setup()
     const state = await startedState(h)
-    expect(await finishGoogleSignIn(h.deps, params({ error: 'server_error', state }))).toBe('failed')
+    expect(await finishGoogleSignIn(h.deps, params({ error: 'server_error', state }), h.defer)).toBe('failed')
     expect(h.google.exchangedCodes).toHaveLength(0)
   })
 
@@ -106,7 +106,7 @@ describe('google sign-in callback', () => {
     const h = setup()
     const state = await startedState(h)
     h.setNow(new Date(TEST_NOW.getTime() + 11 * MIN))
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }))).toBe('expired')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }), h.defer)).toBe('expired')
     expect(h.google.exchangedCodes).toHaveLength(0)
     expect(h.store.tables.google_accounts).toHaveLength(0)
   })
@@ -114,7 +114,7 @@ describe('google sign-in callback', () => {
   it('5b. a forged state gives expired', async () => {
     const h = setup()
     const forged = sealState(OWNER, TEST_NOW, Buffer.alloc(32, 9))
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: forged }))).toBe('expired')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: forged }), h.defer)).toBe('expired')
     expect(h.google.exchangedCodes).toHaveLength(0)
   })
 
@@ -122,7 +122,7 @@ describe('google sign-in callback', () => {
     const h = setup()
     h.google.exchangeResult = { refreshToken: 'rt-1', scopes: ['openid', 'email'], subject: 'g-sub-1', email: null }
     const state = await startedState(h)
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }))).toBe('missing_scope')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }), h.defer)).toBe('missing_scope')
     expect(h.store.tables.google_accounts).toHaveLength(0)
   })
 
@@ -132,7 +132,7 @@ describe('google sign-in callback', () => {
       refreshToken: null, scopes: ['openid', 'https://www.googleapis.com/auth/drive.file'], subject: 'g-sub-1', email: null,
     }
     const state = await startedState(h)
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }))).toBe('no_refresh_token')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }), h.defer)).toBe('no_refresh_token')
     expect(h.store.tables.google_accounts).toHaveLength(0)
   })
 
@@ -140,7 +140,7 @@ describe('google sign-in callback', () => {
     const h = setup()
     h.google.exchangeResult = new Error('boom')
     const state = await startedState(h)
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }))).toBe('failed')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }), h.defer)).toBe('failed')
     expect(h.store.tables.google_accounts).toHaveLength(0)
   })
 
@@ -150,15 +150,15 @@ describe('google sign-in callback', () => {
       refreshToken: 'rt-1', scopes: ['https://www.googleapis.com/auth/drive.file'], subject: null, email: null,
     }
     const state = await startedState(h)
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }))).toBe('failed')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }), h.defer)).toBe('failed')
     expect(h.store.tables.google_accounts).toHaveLength(0)
   })
 
   it('8c. missing code or missing state gives expired without an exchange', async () => {
     const h = setup()
     const state = await startedState(h)
-    expect(await finishGoogleSignIn(h.deps, params({ state }))).toBe('expired')
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c' }))).toBe('expired')
+    expect(await finishGoogleSignIn(h.deps, params({ state }), h.defer)).toBe('expired')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c' }), h.defer)).toBe('expired')
     expect(h.google.exchangedCodes).toHaveLength(0)
   })
 
@@ -166,17 +166,17 @@ describe('google sign-in callback', () => {
     const h = setup()
     const state = await startedState(h)
     h.store.failNext('upsertGoogleAccount')
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }))).toBe('failed')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state }), h.defer)).toBe('failed')
   })
 
   it('9. signing in twice with the same subject keeps one row and updates the ciphertext', async () => {
     const h = setup()
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c1', state: await startedState(h) }))).toBe('ok')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c1', state: await startedState(h) }), h.defer)).toBe('ok')
     const first = h.store.tables.google_accounts[0].refreshTokenCiphertext as string
     h.google.exchangeResult = {
       refreshToken: 'rt-2', scopes: ['openid', 'https://www.googleapis.com/auth/drive.file'], subject: 'g-sub-1', email: 'owner@example.com',
     }
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c2', state: await startedState(h) }))).toBe('ok')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c2', state: await startedState(h) }), h.defer)).toBe('ok')
     expect(h.store.tables.google_accounts).toHaveLength(1)
     const second = h.store.tables.google_accounts[0].refreshTokenCiphertext as string
     expect(second).not.toBe(first)
@@ -190,7 +190,7 @@ describe('callback log', () => {
     const state = await startedState(h)
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     try {
-      await finishGoogleSignIn(h.deps, params({ code: 'code-1', state }))
+      await finishGoogleSignIn(h.deps, params({ code: 'code-1', state }), h.defer)
       expect(info.mock.calls).toEqual([[JSON.stringify({ event: 'google_signin', outcome: 'ok' })]])
     } finally {
       info.mockRestore()
@@ -248,13 +248,13 @@ describe('google status', () => {
 
   it('14. after a successful sign-in gives connected true', async () => {
     const h = setup()
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }))).toBe('ok')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
     expect(await status(h)).toEqual({ status: 200, body: { connected: true } })
   })
 
   it('15. a revoked account gives connected false', async () => {
     const h = setup()
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }))).toBe('ok')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
     h.store.tables.google_accounts[0].tokenStatus = 'revoked'
     expect(await status(h)).toEqual({ status: 200, body: { connected: false } })
   })
@@ -262,7 +262,7 @@ describe('google status', () => {
   it('16. another user sees only their own status (client lineUserId ignored)', async () => {
     const h = setup()
     h.line.idTokens.set('idtok-other', { lineUserId: 'Uother', displayName: null })
-    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }))).toBe('ok')
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
     expect(await status(h, { idToken: 'idtok-other', lineUserId: OWNER })).toEqual({ status: 200, body: { connected: false } })
   })
 })

@@ -5,11 +5,16 @@ export interface LinePort {
   reply(replyToken: string, messages: LineMessage[]): Promise<void>
   /** Push to a LINE group ID. Unlike a reply, a push counts against the monthly
    *  LINE quota (#25). Groups only: no 1:1 pushes (rules: Scheduling and pushes). */
-  push(to: string, messages: LineMessage[]): Promise<void>
+  push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<void>
   /** null when LINE answers 404 (the user is not in the group). */
   getGroupMemberProfile(lineGroupId: string, lineUserId: string): Promise<{ displayName: string } | null>
+  /** People in the group per LINE (GET /v2/bot/group/{id}/members/count). Excludes the
+   *  bot. LINE charges a group push once per member, so this is the push's real cost. */
+  getGroupMemberCount(lineGroupId: string): Promise<number>
   /** null when LINE rejects the ID token. */
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
+  /** This month's push budget: limit null = no limit; used = messages counted so far. */
+  getMessageQuota(): Promise<{ limit: number | null; used: number }>
 }
 
 // ---- OpenRouter ----
@@ -76,6 +81,7 @@ export type TaskRow = {
   id: string; groupId: string; lineGroupId: string; candidateId: string | null; title: string
   details: string | null; status: TaskStatus; assigneeLineUserId: string | null
   createdByLineUserId: string; dueAt: Date | null; deletedAt: Date | null
+  announcedAt: Date | null   // when the group was told about it (null = not yet)
 }
 export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
@@ -89,6 +95,14 @@ export type NewAiUsage = {
 /** The Fair-use cap the claim is checked against (FAIR_USE_* in usage/fair-use.ts). */
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
+export type PushBudgetClaim = {
+  purpose: 'task_created'; lineTargetId: string; messageCount: number
+  lineUsed: number   // LINE's figure for this month
+  allowed: number    // most the month may reach with this push
+}
+/** One "Tasks created" push attempt: `token` is the new batch's id and LINE retry key;
+ *  a claim whose announce_pending_at is before `staleBefore` belongs to a dead request. */
+export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleBefore: Date }
 /** A set-up group (attached to a Project, bot still in it) with the weekly summary on,
  *  and its chosen slot: ISO weekday 1..7, Bangkok time 'HH:MM:SS', last sent Bangkok date. */
 export type WeeklySummaryGroup = {
@@ -152,6 +166,35 @@ export interface StorePort {
   confirmCandidate(t: NewTask, decidedAt: Date): Promise<{ outcome: 'created' | 'already_decided'; taskId: string | null }>
   getTask(taskId: string): Promise<TaskRow | null>
   updateTask(taskId: string, patch: TaskPatch): Promise<{ updated: boolean }> // only a non-deleted Task; updated false when none matched
+  // tasks.announce_pending_token / announce_pending_at now carry the bot's batch token
+  // (the comment in applied migration 20261112171952 describes an older page-token use).
+  /** Claims Tasks for one "Tasks created" push attempt (#16). A batch released after a
+   *  failed push, or whose claim went stale (its request died), is re-claimed whole by
+   *  its token: every live, unannounced row holding that token, including rows not in
+   *  taskIds. The token is kept, so the retry reuses the LINE retry key. Live,
+   *  unannounced rows of taskIds with no token get c.token. Rows with a live claim,
+   *  announced rows and deleted rows are left alone. Returns every row this call now
+   *  holds, with its token. */
+  claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]>
+  /** LINE accepted the push of batch `token`: announced_at = at, token and pending_at
+   *  cleared (rows with announced_at null only). */
+  confirmTaskAnnouncements(token: string, at: Date): Promise<void>
+  /** The push of batch `token` failed or its outcome is unknown: pending_at = null,
+   *  token kept, so the next claim retries the same batch with the same retry key.
+   *  Only rows still held by this claim (announce_pending_at = claimedAt, the `at` it
+   *  wrote): a stale re-claim by another request rewrote pending_at and is left alone. */
+  releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void>
+  /** Batch `token` was never pushed under its token: token and pending_at cleared
+   *  (rows with announced_at null only), so its Tasks are claimed fresh next time.
+   *  Scoped to this claim by claimedAt, like release. */
+  abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void>
+  /** rpc claim_push_budget: serialized; counts recent push_log rows on top of
+   *  lineUsed and inserts this push's row when the total stays within `allowed`.
+   *  null = no budget, nothing inserted. */
+  claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }>
+  /** Deletes a claimed push_log row after the push failed. */
+  releasePushBudget(pushLogId: string): Promise<void>
+  listTasksByCandidates(candidateIds: string[]): Promise<TaskRow[]>
   // #5 / #6 usage
   /** Serialized per Owner: sums the Owner's Bangkok month (open claims included) and, when it is
    *  below the cap in tokens and dollars, inserts an open claim row holding the estimate `u`.
@@ -194,6 +237,8 @@ export interface StorePort {
   /** Yes, in one transaction (rpc answer_progress_yes): locks the card; if it is open and the
    *  live Task is still in fromStatus, moves the Task (done sets done_at; assignTo, when set,
    *  becomes the assignee; bumps last_activity_at and last_edited_by) and records the answer.
+   *  The presser must still be the Task's assignee or the card's subject at write time, else
+   *  task_changed (a reassignment can land between the handler's check and this write).
    *  task_changed leaves the card open and the Task untouched. */
   confirmProgressYes(y: ProgressYes): Promise<{ outcome: ProgressYesOutcome }>
   /** Deletes a card only while it is unanswered: its reply never reached the group, or it went stale. */

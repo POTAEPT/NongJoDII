@@ -130,3 +130,76 @@ describe('LineHttpClient timeout', () => {
     expect((err as Error).message).toBe('line timeout')
   })
 })
+
+describe('LineHttpClient.push', () => {
+  it('posts the target and messages', async () => {
+    const { client, calls } = stubFetch(200)
+    await client.push('C1', [{ type: 'text', text: 'x' }])
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/message/push')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ to: 'C1', messages: [{ type: 'text', text: 'x' }] })
+  })
+
+  it('throws AdapterError "line push 429" on a non-2xx answer', async () => {
+    const { client } = stubFetch(429, { message: 'secret detail' })
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }])).rejects.toThrow('line push 429')
+  })
+})
+
+describe('LineHttpClient.getGroupMemberCount', () => {
+  it('returns the count, with the URL and Bearer token', async () => {
+    const { client, calls } = stubFetch(200, { count: 7 })
+    await expect(client.getGroupMemberCount('C/1')).resolves.toBe(7)
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/group/C%2F1/members/count')
+    expect(calls[0].init.method).toBe('GET')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+  })
+
+  it('throws AdapterError on 404 and 500', async () => {
+    await expect(stubFetch(404).client.getGroupMemberCount('C1')).rejects.toThrow(new AdapterError('line member count 404'))
+    await expect(stubFetch(500).client.getGroupMemberCount('C1')).rejects.toThrow(new AdapterError('line member count 500'))
+  })
+
+  it('throws AdapterError when a 200 has no usable count', async () => {
+    for (const body of [{}, { count: -1 }, { count: 1.5 }]) {
+      await expect(stubFetch(200, body).client.getGroupMemberCount('C1')).rejects.toThrow(new AdapterError('line member count 200'))
+    }
+  })
+})
+
+describe('LineHttpClient.getMessageQuota', () => {
+  function quotaFetch(quota: unknown, usage: unknown, status = 200) {
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const body = String(input).endsWith('/consumption') ? usage : quota
+      return new Response(JSON.stringify(body), { status })
+    }) as typeof fetch
+    return new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl })
+  }
+
+  it('returns the limit and the messages counted this month', async () => {
+    await expect(quotaFetch({ type: 'limited', value: 300 }, { totalUsage: 42 }).getMessageQuota())
+      .resolves.toEqual({ limit: 300, used: 42 })
+  })
+
+  it('returns limit null when the plan has no limit', async () => {
+    await expect(quotaFetch({ type: 'none' }, { totalUsage: 5 }).getMessageQuota()).resolves.toEqual({ limit: null, used: 5 })
+  })
+
+  it('throws AdapterError on a bad answer', async () => {
+    await expect(quotaFetch({ type: 'limited' }, { totalUsage: 1 }).getMessageQuota()).rejects.toBeInstanceOf(AdapterError)
+    await expect(quotaFetch({}, {}, 500).getMessageQuota()).rejects.toThrow('line quota 500')
+  })
+})
+
+describe('LineHttpClient.push retry key', () => {
+  it('sends X-Line-Retry-Key and treats 409 (already accepted) as success', async () => {
+    const { client, calls } = stubFetch(409)
+    await client.push('C1', [{ type: 'text', text: 'x' }], { retryKey: 'k-1' })
+    expect(headersOf(calls[0]).get('X-Line-Retry-Key')).toBe('k-1')
+  })
+
+  it('a 409 without a retry key is still an error', async () => {
+    const { client } = stubFetch(409)
+    await expect(client.push('C1', [{ type: 'text', text: 'x' }])).rejects.toThrow('line push 409')
+  })
+})

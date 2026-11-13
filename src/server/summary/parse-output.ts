@@ -47,11 +47,18 @@ function parseTask(item: unknown): ParsedTask | null {
   if (title === '') return null
   const details = typeof t.details === 'string' ? t.details.trim().slice(0, DETAILS_MAX) || null : null
   const assigneeRef = typeof t.assignee === 'string' && /^m\d+$/.test(t.assignee) ? t.assignee : null
-  const sourceRef = typeof t.source === 'string' && /^#\d+$/.test(t.source) ? t.source : null
+  const sourceRef = typeof t.source === 'string' ? readSourceRef(t.source) : null
   let due: Date | null = null
   if (typeof t.due === 'string') {
     const d = new Date(t.due)
     if (!Number.isNaN(d.getTime())) due = d
   }
   return { title, details, assigneeRef, due, sourceRef }
+}
+
+/** "msg14" is the prompt's form; "{msg14}" and the older "#14" are accepted and
+ *  normalized to "msg14". Anything else is no source. */
+function readSourceRef(source: string): string | null {
+  const m = /^(?:\{msg(\d+)\}|msg(\d+)|#(\d+))$/.exec(source.trim())
+  return m ? `msg${m[1] ?? m[2] ?? m[3]}` : null
 }

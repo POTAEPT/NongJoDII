@@ -246,6 +246,14 @@ export interface StorePort {
   releaseDailyReminder(groupId: string, todayBkk: string, previous: string | null): Promise<void>
   /** The group's live Tasks that are not Done, oldest first. */
   listReminderTasks(groupId: string): Promise<ReminderTask[]>
+  // #45 answers to reminder cards. Each is one UPDATE whose WHERE holds the precondition,
+  // so two presses at once cannot both win; updated false = the Task no longer qualifies.
+  /** "เสร็จแล้ว": status done, done_at, last_activity_at, last_edited_by; only a live Task not Done. */
+  markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  /** "เลื่อนกำหนด": new due_at, bumps last_activity_at and last_edited_by; only a live Task not Done. */
+  postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }>
+  /** "ฉันรับเอง": assignee = by and In Process; only a live Task not Done that has no assignee. */
+  takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>

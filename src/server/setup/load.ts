@@ -45,16 +45,22 @@ export async function loadSetup(deps: Deps, body: unknown): Promise<ApiResult> {
   const { group, requester } = gate
   // After the access check, which adds a requester LINE knows but we had not stored.
   const live = await deps.store.listLiveMembers(group.groupId)
-  // The setup form is where nicknames are edited, so they come back to it (and only
-  // to it): a resent form must not wipe them. Every other screen shows LINE names only.
+  const state = setupState(group)
+  const editable = state === 'open' || state === 'pending_owner'
+  // The setup form is where nicknames are edited, so they come back to it while it takes
+  // changes (a resent form must not wipe them), and never once it is closed. Every other
+  // screen shows LINE names only.
   const members: SetupMember[] = live
-    .map((m) => ({ lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME, nicknames: m.nicknames, role: m.role }))
+    .map((m) => ({
+      lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME,
+      nicknames: editable ? m.nicknames : [], role: editable ? m.role : null,
+    }))
     .sort((a, b) => (a.lineUserId === requester ? -1 : b.lineUserId === requester ? 1 : a.displayName.localeCompare(b.displayName, 'th')))
   const nomineeId = group.nominatedOwnerLineUserId
   const view: SetupLoad = {
     groupId: group.groupId,
     groupName: group.name,
-    state: setupState(group),
+    state,
     requesterLineUserId: requester,
     values: {
       workDescription: group.workDescription ?? '',

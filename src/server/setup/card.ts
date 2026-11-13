@@ -36,9 +36,9 @@ function numbered(n: number, label: string) {
     type: 'box', layout: 'horizontal', spacing: 'sm', alignItems: 'center',
     contents: [
       {
-        type: 'box', layout: 'vertical', width: '20px', height: '20px', cornerRadius: '10px',
-        backgroundColor: C.badge, justifyContent: 'center',
-        contents: [text(String(n), { size: 'xxs', weight: 'bold', color: C.primary, align: 'center' })],
+        type: 'box', layout: 'horizontal', flex: 0, backgroundColor: C.badge, cornerRadius: 'xxl',
+        paddingStart: 'sm', paddingEnd: 'sm', paddingTop: 'xs', paddingBottom: 'xs',
+        contents: [text(String(n), { flex: 0, size: 'xxs', weight: 'bold', color: C.primary })],
       },
       text(label, { flex: 1 }),
     ],

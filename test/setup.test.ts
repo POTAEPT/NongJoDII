@@ -174,7 +174,10 @@ describe('setup send, self as Owner', () => {
     expect(json).not.toContain('ยืนยันเจ้าของบอท')
     expect(t.store.tables.push_log.map((p) => p.purpose)).toEqual(['setup_done'])
 
-    expect(((await t.load()).body as SetupLoad).state).toBe('confirmed')
+    // Closed: the load no longer hands out nicknames or roles.
+    const closedLoad = (await t.load()).body as SetupLoad
+    expect(closedLoad.state).toBe('confirmed')
+    expect(closedLoad.members.every((m) => m.nicknames.length === 0 && m.role === null)).toBe(true)
   })
 
   it('refuses a second send once the Owner is confirmed (409) and changes nothing', async () => {
@@ -210,6 +213,8 @@ describe('setup send, another Owner', () => {
 
     const loaded = (await t.load('tok-pim')).body as SetupLoad
     expect(loaded.state).toBe('pending_owner')
+    // Still editable: the saved nicknames come back so a resent form keeps them.
+    expect(loaded.members.find((m) => m.lineUserId === 'Upim')).toMatchObject({ nicknames: ['พิม', 'Pim'], role: 'ออกแบบ' })
     expect(loaded.nominee).toEqual({ lineUserId: 'Upim', displayName: 'Pim Sirin' })
   })
 

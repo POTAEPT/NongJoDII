@@ -10,10 +10,10 @@ import {
 } from './rules'
 import type { SetupFeatures, SetupSubmitResult } from './types'
 
-/** The #2e card is one of the pushes the 10% quota reserve is kept for (Owner and member
- *  cards, see review/notify.ts): it may use the reserve, never more than the quota.
- *  Agent choice. */
-export const SETUP_PUSH_RESERVE = 0
+/** Share of the monthly LINE quota left unspent by the #2e card. The Owner cards are what
+ *  the 10% reserve of the Tasks-created announce is kept for (review/notify.ts), so this
+ *  matches the reminder post's 2%. Agent choice. */
+export const SETUP_PUSH_RESERVE = 0.02
 
 type Parsed = {
   workDescription: string | null; features: SetupFeatures; dailyReminderTime: string

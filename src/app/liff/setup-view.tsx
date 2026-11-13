@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { QUARTER_HOURS, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
+import { NICKNAME_MAX, QUARTER_HOURS, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import type { SetupFeatures, SetupLoad, SetupSubmitResult } from '@/server/setup/types'
 import type { LiffViewProps } from './liff-sdk'
 import {
@@ -215,7 +215,7 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
                     <input
                       type="text"
                       aria-label="ชื่อเล่น"
-                      maxLength={50}
+                      maxLength={NICKNAME_MAX}
                       className="w-24 bg-transparent p-1 text-sm"
                       value={n}
                       disabled={submitting}
@@ -245,7 +245,7 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
                 <span className="text-sm">หน้าที่</span>
                 <input
                   type="text"
-                  maxLength={100}
+                  maxLength={ROLE_MAX}
                   className="mt-1 w-full rounded border p-2"
                   value={m.role}
                   disabled={submitting}

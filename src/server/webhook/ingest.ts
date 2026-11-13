@@ -13,6 +13,7 @@ export type Job =
       userId: string | null; data: string; replyToken: string | null
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
+  | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
 
 /** Stops at the first event that throws and returns the jobs collected before it,
  *  plus that error. Never throws itself. */
@@ -81,6 +82,18 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     }
   }
 
+  if (source.type === 'group' && event.type === 'join') {
+    // The group row first (idempotent), the ledger claim last, as for a postback: a
+    // redelivered join answers once.
+    const group = await store.ensureGroup(source.groupId)
+    const { inserted } = await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'join', lineGroupId: source.groupId,
+      eventTimestamp, isRedelivery,
+    })
+    if (!inserted) return null
+    return { kind: 'group_join', groupId: group.id, lineGroupId: source.groupId, replyToken: event.replyToken ?? null }
+  }
+
   const { inserted } = await store.recordWebhookEvent({
     webhookEventId: event.webhookEventId, eventType: event.type,
     lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,
@@ -89,7 +102,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (join, leave, memberJoined, unsend, room...) is only
+  // Every other event (leave, memberJoined, unsend, room...) is only
   // recorded; handling belongs to #2 and #11.
   return null
 }

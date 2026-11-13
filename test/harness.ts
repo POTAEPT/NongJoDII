@@ -94,6 +94,7 @@ export const ev: {
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
   groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string }): LineEvent
+  join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean }): LineEvent
 } = {
   groupText(p) {
     const userId = p.userId === undefined ? DEFAULT_USER : p.userId
@@ -151,6 +152,18 @@ export const ev: {
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: false },
       postback: { data: p.data },
+    }
+  },
+  join(p) {
+    // LINE sends no userId on a join: the bot was invited, nobody is the sender.
+    return {
+      type: 'join',
+      mode: 'active',
+      timestamp: TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
+      replyToken: p.replyToken ?? next('rt'),
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: p.redelivery ?? false },
     }
   },
   follow(p) {

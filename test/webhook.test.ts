@@ -123,16 +123,17 @@ describe('webhook', () => {
     expect(deferred).toHaveLength(0)
   })
 
-  it('8. a join event is only recorded', async () => {
+  // A join now answers with the setup card (#52, test/setup.test.ts).
+  it('8. a leave event is only recorded', async () => {
     const { send, store, deferred } = setup()
-    const join = {
-      type: 'join', timestamp: Date.now(), source: { type: 'group' as const, groupId: 'Cgroup1' },
-      replyToken: 'rt-join', webhookEventId: 'ev-join', deliveryContext: { isRedelivery: false },
+    const leave = {
+      type: 'leave', timestamp: Date.now(), source: { type: 'group' as const, groupId: 'Cgroup1' },
+      webhookEventId: 'ev-leave', deliveryContext: { isRedelivery: false },
     }
-    const res = await send(webhookBody(join))
+    const res = await send(webhookBody(leave))
     expect(res.status).toBe(200)
     expect(store.tables.webhook_events).toHaveLength(1)
-    expect(store.tables.webhook_events[0]).toMatchObject({ eventType: 'join', lineGroupId: 'Cgroup1' })
+    expect(store.tables.webhook_events[0]).toMatchObject({ eventType: 'leave', lineGroupId: 'Cgroup1' })
     expect(store.tables.messages).toHaveLength(0)
     expect(deferred).toHaveLength(0)
   })

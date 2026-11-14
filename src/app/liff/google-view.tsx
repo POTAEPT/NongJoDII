@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchGoogleStatus as fetchStatus, phaseOnOpen, phaseOnReturn, returnVisit } from './google-status'
+import { fetchGoogleStatus as fetchStatus, phaseOnOpen, returnStep, returnVisit } from './google-status'
 import type { LiffViewProps } from './liff-sdk'
 
 type Phase =
@@ -96,14 +96,14 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
       inFlight = true
       try {
         const status = await fetchStatus(idToken)
-        const next = phaseOnReturn(status, knownSignedInAt.current)
-        if (!next) return
-        if (next === 'connected') {
-          knownSignedInAt.current = status.signedInAt
+        const step = returnStep(status, knownSignedInAt.current)
+        knownSignedInAt.current = step.knownSignedInAt
+        if (!step.phase) return
+        if (step.phase === 'connected') {
           setCanChange(status.canChange)
           setJustSignedIn(true)
         }
-        setPhase(next)
+        setPhase(step.phase)
       } finally {
         inFlight = false
       }

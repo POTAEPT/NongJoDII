@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn, returnVisit } from '@/app/liff/google-status'
+import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn, returnStep, returnVisit } from '@/app/liff/google-status'
 
 const result = (status: GoogleStatusResult['status'], signedInAt: string | null = null, canChange = false): GoogleStatusResult =>
   ({ status, signedInAt, canChange })
@@ -52,6 +52,25 @@ describe('phaseOnReturn (back in LINE while sign-in is open in the browser)', ()
   it('not_connected stays in opened', () => expect(phaseOnReturn(result('not_connected'), null)).toBeNull())
   it('sign_in_again stays in opened: the new sign-in has not finished', () =>
     expect(phaseOnReturn(result('sign_in_again', 't1'), 't1')).toBeNull())
+})
+
+describe('returnStep (what the view keeps after each look at the status)', () => {
+  it('remembers the sign-in it has shown, so a retry after an unfinished change waits for a newer one', () => {
+    // A change started at t1 ended at t2 without finishing: shown as unfinished.
+    const failed = returnStep(result('change_unfinished', 't2', true), 't1')
+    expect(failed).toEqual({ phase: 'change_unfinished', knownSignedInAt: 't2' })
+    // The Owner retries and comes back to LINE before the retry ends: nothing new yet,
+    // so the page stays in 'opened' and keeps listening.
+    const waiting = returnStep(result('change_unfinished', 't2', true), failed.knownSignedInAt)
+    expect(waiting).toEqual({ phase: null, knownSignedInAt: 't2' })
+    // The retry finishes: success.
+    expect(returnStep(result('connected', 't3', true), waiting.knownSignedInAt)).toEqual({ phase: 'connected', knownSignedInAt: 't3' })
+  })
+  it('keeps the known time when nothing is shown, or on an error', () => {
+    expect(returnStep(result('connected', 't1'), 't1')).toEqual({ phase: null, knownSignedInAt: 't1' })
+    expect(returnStep(result('failed'), 't1')).toEqual({ phase: 'failed', knownSignedInAt: 't1' })
+    expect(returnStep(result('unauthorized'), 't1')).toEqual({ phase: 'unauthorized', knownSignedInAt: 't1' })
+  })
 })
 
 describe('fetchGoogleStatus', () => {

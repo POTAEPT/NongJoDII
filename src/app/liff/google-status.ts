@@ -54,6 +54,18 @@ export function phaseOnReturn(result: GoogleStatusResult, knownSignedInAt: strin
   }
 }
 
+/** One look at the status while sign-in is open: the phase to show (null = stay in
+ *  'opened') and the sign-in time to compare the next look against. A sign-in the page
+ *  has shown, finished or not, becomes the known one: a retry after an unfinished change
+ *  then waits for a newer sign-in instead of showing the old result again. */
+export function returnStep(
+  result: GoogleStatusResult, knownSignedInAt: string | null,
+): { phase: ReturnPhase | null; knownSignedInAt: string | null } {
+  const phase = phaseOnReturn(result, knownSignedInAt)
+  const shown = phase === 'connected' || phase === 'change_unfinished'
+  return { phase, knownSignedInAt: shown ? result.signedInAt : knownSignedInAt }
+}
+
 const result = (status: GoogleStatus): GoogleStatusResult => ({ status, canChange: false, signedInAt: null })
 
 export async function fetchGoogleStatus(idToken: string): Promise<GoogleStatusResult> {

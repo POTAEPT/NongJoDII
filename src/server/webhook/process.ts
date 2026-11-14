@@ -4,6 +4,7 @@ import { log, logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
 import { handleProgressPostback } from '@/server/progress/handle-postback'
 import { handleProgressText } from '@/server/progress/handle-text'
+import { handleMemberLeft } from '@/server/members/left'
 import { handleReminderCommand, handleReminderPostback } from '@/server/reminders/answer'
 import { parseReminderAction } from '@/server/reminders/postback'
 import { handleJoin } from '@/server/setup/join'
@@ -65,7 +66,7 @@ async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
   // The sender of a group message, or the person who pressed a button in a group.
   const senderLineUserId =
     job.kind === 'group_message' ? job.senderLineUserId : job.kind === 'group_postback' ? job.userId : null
-  if (job.kind === 'user_chat' || job.kind === 'group_join' || !senderLineUserId) return
+  if (job.kind === 'user_chat' || job.kind === 'group_join' || job.kind === 'member_left' || !senderLineUserId) return
   const { lineGroupId } = job
   try {
     const user = await deps.store.findLineUser(senderLineUserId)
@@ -120,6 +121,10 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
   }
   if (job.kind === 'group_join') {
     await handleJoin(deps, job)
+    return
+  }
+  if (job.kind === 'member_left') {
+    await handleMemberLeft(deps, job)
     return
   }
   await sendConnectDriveCard(deps, job)

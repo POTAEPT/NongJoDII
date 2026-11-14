@@ -13,6 +13,10 @@ export type Job =
       kind: 'group_postback'; groupId: string; lineGroupId: string
       userId: string | null; data: string; pickedDate: string | null; replyToken: string | null
     }
+  | {
+      // #29: people who left a group (LINE memberLeft). eventId keys the one push it may make.
+      kind: 'member_left'; groupId: string; lineGroupId: string; lineUserIds: string[]; at: Date; eventId: string
+    }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
 
@@ -109,6 +113,23 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     return null
   }
 
+  if (source.type === 'group' && event.type === 'memberLeft') {
+    const lineUserIds = (event.left?.members ?? [])
+      .filter((m) => m.type === 'user' && typeof m.userId === 'string')
+      .map((m) => m.userId as string)
+    const group = await store.ensureGroup(source.groupId)
+    // The ledger row is the store-once gate: a redelivered leave posts one card.
+    const { inserted } = await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'memberLeft', lineGroupId: source.groupId,
+      eventTimestamp, isRedelivery,
+    })
+    if (!inserted || lineUserIds.length === 0) return null
+    return {
+      kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, lineUserIds,
+      at: eventTimestamp, eventId: event.webhookEventId,
+    }
+  }
+
   const { inserted } = await store.recordWebhookEvent({
     webhookEventId: event.webhookEventId, eventType: event.type,
     lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,
@@ -118,7 +139,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
   // Every other event (leave, memberJoined, room...) is only recorded;
-  // handling belongs to #2 and #11. Unsend is handled above (#24).
+  // handling belongs to #2, #11 and #29 (memberJoined). Unsend is handled above (#24).
   return null
 }
 

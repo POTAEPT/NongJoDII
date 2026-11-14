@@ -238,6 +238,19 @@ describe('a member joins the group (#29)', () => {
     expect(res).toMatchObject({ status: 200, body: { result: 'taken' } })
   })
 
+  it('a redelivered leave that already ran does not undo a rejoin that came since', async () => {
+    const t = setup()
+    await t.send(ev.memberLeft({ userIds: [BIW], eventId: 'ev-left-once' }))
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: TEST_NOW.getTime() + 60_000 }))
+    await t.send(ev.groupPostback({ userId: BIW, data: encodeReminderAction({ kind: 'take', taskId: t.slides.id }) }))
+    expect(t.task(t.slides.id).assigneeLineUserId).toBe(BIW)
+    // LINE did not get our answer to the first delivery, so it sends the leave again.
+    await t.send(ev.memberLeft({ userIds: [BIW], eventId: 'ev-left-once', redelivery: true }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: BIW, status: 'in_process' })
+    expect(t.line.pushes).toHaveLength(1) // only the first leave's card
+  })
+
   it('an older join that arrives after the leave does not undo it', async () => {
     const t = setup()
     const leftAt = TEST_NOW.getTime()

@@ -186,6 +186,9 @@ export interface StorePort {
   // #1 webhook
   // Store-once methods: ON CONFLICT DO NOTHING RETURNING; empty result = duplicate = inserted false.
   recordWebhookEvent(e: NewWebhookEvent): Promise<{ inserted: boolean }>           // conflict target webhook_event_id
+  /** Read only: is this event already in the ledger? (#29: a redelivered member event that
+   *  already ran must not run its writes again.) */
+  hasWebhookEvent(webhookEventId: string): Promise<boolean>
   upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> // null name: insert-if-absent, never overwrites; name set: update
   findLineUser(lineUserId: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   ensureGroup(lineGroupId: string): Promise<GroupRow>                                // insert-if-absent (line_group_id), return row

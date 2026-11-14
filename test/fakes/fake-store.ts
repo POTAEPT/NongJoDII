@@ -185,6 +185,11 @@ export class FakeStore implements StorePort {
     return { inserted: true }
   }
 
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    this.fault('hasWebhookEvent')
+    return this.tables.webhook_events.some((w) => w.webhookEventId === webhookEventId)
+  }
+
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
     this.fault('upsertLineUser')
     const existing = this.tables.line_users.find((row) => row.lineUserId === u.lineUserId)

@@ -124,6 +124,16 @@ export class SupabaseStore implements StorePort {
     return { inserted: (data ?? []).length === 1 }
   }
 
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from('webhook_events')
+      .select('webhook_event_id')
+      .eq('webhook_event_id', webhookEventId)
+      .maybeSingle()
+    check('hasWebhookEvent', error)
+    return data !== null
+  }
+
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
     // A null name only makes sure the row exists; it never overwrites a known name.
     const { error } =

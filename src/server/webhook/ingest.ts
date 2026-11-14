@@ -119,6 +119,9 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     const lineUserIds = (event.left?.members ?? [])
       .filter((m) => m.type === 'user' && typeof m.userId === 'string')
       .map((m) => m.userId as string)
+    // A redelivery of a leave that already ran (it was recorded, but LINE did not get our
+    // answer) stops here: running its writes again could undo a rejoin that came since.
+    if (await store.hasWebhookEvent(event.webhookEventId)) return null
     const group = await store.ensureGroup(source.groupId)
     // The leave itself first, the ledger row last, as for unsend: if a write fails, the
     // webhook answers 500 before the event is recorded and LINE's redelivery runs it again,
@@ -145,6 +148,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     // #29: a person who joins is a Member at once, and a rejoin clears left_at, so they get
     // LIFF access back. Writes first, the ledger row last (as for a leave); both are
     // idempotent and nothing is posted, so no Job. The welcome reply comes later.
+    // A redelivered join cannot undo a later leave: it only clears a left_at older than itself.
     const group = await store.ensureGroup(source.groupId)
     for (const m of event.joined?.members ?? []) {
       if (m.type !== 'user' || typeof m.userId !== 'string') continue

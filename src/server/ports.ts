@@ -115,7 +115,7 @@ export type NewAiUsage = {
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 /** What a push is for; stored in push_log.purpose (free text in the schema). */
-export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done'
+export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked'
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -363,6 +363,11 @@ export interface StorePort {
   upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }>
   /** The person's latest account: connected_at DESC. */
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>
+  /** #14: one UPDATE that sets token_status 'revoked' and clears the refresh token, only
+   *  while the row is still 'valid' and still holds `refreshTokenCiphertext` (the token
+   *  Google refused). revoked: this call changed the row. So one caller per revocation gets
+   *  true, and a sign-in that stored a new token in between is left alone. */
+  markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }>
   // #13 Drive folders
   /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still
    *  in it). Every page, by group id. */

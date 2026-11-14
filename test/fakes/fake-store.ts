@@ -671,6 +671,17 @@ export class FakeStore implements StorePort {
     return row ? { id: row.id, tokenStatus: row.tokenStatus } : null
   }
 
+  /** The conditional UPDATE: only a 'valid' row that still holds this token changes. */
+  async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
+    this.fault('markGoogleAccountRevoked')
+    const row = this.tables.google_accounts.find((a) => a.id === googleAccountId)
+    if (!row || row.tokenStatus !== 'valid' || row.refreshTokenCiphertext !== refreshTokenCiphertext) return { revoked: false }
+    row.tokenStatus = 'revoked'
+    row.refreshTokenCiphertext = null
+    this.touchGoogleAccount(row)
+    return { revoked: true }
+  }
+
   // ---- #13 Drive folders ----
   private isLeft(groupId: string): boolean {
     return this.tables.group_schedules.find((s) => s.groupId === groupId)?.leftAt != null

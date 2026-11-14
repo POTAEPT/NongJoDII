@@ -392,13 +392,15 @@ describe('failures and skips', () => {
     expect(h.store.tables.drive_connections).toHaveLength(1)
   })
 
-  it('a revoked grant is logged as such and stops before any Drive call', async () => {
+  it('a revoked grant stops before any Drive call and marks the account (#14, see drive-lost-access.test.ts)', async () => {
     const h = setup()
     const { projectId } = await seedProject(h)
     h.google.revokedRefreshTokens.add('rt-1')
     expect(await signIn(h)).toBe('ok')
     expect(h.google.driveCalls).toEqual([])
-    expect(errorEvents()).toContainEqual({ event: 'drive_folders_failed', projectId, error: 'google refresh invalid_grant' })
+    expect(account(h).tokenStatus).toBe('revoked')
+    expect(infoEvents()).toContainEqual(expect.objectContaining({ event: 'drive_access_lost', projectId }))
+    expect(errorEvents().map((e) => e.event)).not.toContain('drive_folders_failed')
   })
 
   it('a store failure in the Drive job is logged and the outcome stays ok', async () => {

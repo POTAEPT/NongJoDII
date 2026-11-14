@@ -987,6 +987,18 @@ export class SupabaseStore implements StorePort {
     return row ? { id: row.id, tokenStatus: row.token_status } : null
   }
 
+  async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
+    const { data, error } = await this.db
+      .from('google_accounts')
+      .update({ token_status: 'revoked', refresh_token_ciphertext: null })
+      .eq('id', googleAccountId)
+      .eq('token_status', 'valid')
+      .eq('refresh_token_ciphertext', refreshTokenCiphertext)
+      .select('id')
+    check('markGoogleAccountRevoked', error)
+    return { revoked: ((data ?? []) as unknown[]).length > 0 }
+  }
+
   // ---- #13 Drive folders ----
   async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
     // A confirmed main group names the Project's owner (check_same_owner), so the

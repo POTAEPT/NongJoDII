@@ -113,6 +113,24 @@ describe('SupabaseStore Google accounts (#14: the latest account is the last sig
     expect(chains[0]).toContainEqual({ method: 'order', args: ['connected_at', { ascending: false }] })
     expect(chains[0]).toContainEqual({ method: 'limit', args: [1] })
   })
+
+  it('markGoogleAccountRevoked is one UPDATE that matches only a valid row still holding the refused token', async () => {
+    const { store, chains } = stubDb([ok([{ id: 'a1' }])])
+    expect(await store.markGoogleAccountRevoked('a1', 'v1.old')).toEqual({ revoked: true })
+    expect(chains).toEqual([[
+      { method: 'from', args: ['google_accounts'] },
+      { method: 'update', args: [{ token_status: 'revoked', refresh_token_ciphertext: null }] },
+      { method: 'eq', args: ['id', 'a1'] },
+      { method: 'eq', args: ['token_status', 'valid'] },
+      { method: 'eq', args: ['refresh_token_ciphertext', 'v1.old'] },
+      { method: 'select', args: ['id'] },
+    ]])
+  })
+
+  it('markGoogleAccountRevoked answers false when the UPDATE matched no row', async () => {
+    const { store } = stubDb([ok([])])
+    expect(await store.markGoogleAccountRevoked('a1', 'v1.old')).toEqual({ revoked: false })
+  })
 })
 
 describe('SupabaseStore.getDriveContext', () => {

@@ -5,9 +5,10 @@ import { fetchGoogleStatus as fetchStatus, phaseOnOpen, phaseOnReturn, returnVis
 import type { LiffViewProps } from './liff-sdk'
 
 type Phase =
-  | 'checking' | 'starting' | 'opened' | 'connected' | 'sign_in_again' | 'not_connected' | 'unauthorized' | 'failed'
+  | 'checking' | 'starting' | 'opened' | 'connected' | 'sign_in_again' | 'change_unfinished'
+  | 'not_connected' | 'unauthorized' | 'failed'
 
-const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected' | 'sign_in_again'>, string> = {
+const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected' | 'sign_in_again' | 'change_unfinished'>, string> = {
   opened: 'เปิดเบราว์เซอร์เพื่อเข้าสู่ระบบ Google แล้ว เมื่อเสร็จให้กลับมาที่แชท LINE',
   not_connected: 'ยังไม่ได้เชื่อม Google Drive กรุณาลองใหม่',
   unauthorized: 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง',
@@ -135,6 +136,19 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
             </button>
           </div>
         )}
+      </div>
+    )
+  }
+  if (phase === 'change_unfinished') {
+    // The new account is stored, but a Project is still connected to the old one: the
+    // same sign-in again finishes the change.
+    return (
+      <div className="p-4 text-base">
+        <p className="text-lg font-bold">เปลี่ยนบัญชี Google ยังไม่เสร็จ</p>
+        <p className="mt-2">กรุณาเข้าสู่ระบบด้วยบัญชี Google ที่ต้องการใช้อีกครั้ง งานและไฟล์ที่เก็บไว้แล้วยังอยู่ครบ</p>
+        <button type="button" className="mt-4 rounded border px-4 py-2 font-bold" onClick={() => signIn(true)}>
+          เปลี่ยนบัญชี Google
+        </button>
       </div>
     )
   }

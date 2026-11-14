@@ -1128,6 +1128,26 @@ export class SupabaseStore implements StorePort {
 
   async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
     const m = 'retireDriveConnection'
+    // The folder IDs are read BEFORE the active row. A new account stores folder IDs only
+    // after the old row is retired and it has claimed the Project, so if the old row is
+    // still active after these reads, every ID read here belongs to the old account. The
+    // clears below match those IDs only: a call that overlaps a change another call has
+    // already finished can never erase the new account's IDs.
+    const { data: p, error: projectError } = await this.db
+      .from('projects')
+      .select('drive_project_folder_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check(m, projectError)
+    const projectFolderId = (p as { drive_project_folder_id: string | null } | null)?.drive_project_folder_id ?? null
+    const groupFolderIds = (await readAllPages<{ drive_folder_id: string }>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('drive_folder_id')
+        .eq('project_id', projectId)
+        .not('drive_folder_id', 'is', null)
+        .order('id')
+        .range(from, to))).map((g) => g.drive_folder_id)
     const { data, error } = await this.db
       .from('drive_connections')
       .select('id, google_account_id')
@@ -1139,10 +1159,22 @@ export class SupabaseStore implements StorePort {
     if (!active || active.google_account_id === keepGoogleAccountId) return { retired: false }
     // Cleared first, retired last: until the last statement the row is still active, so a
     // run that stops here is seen and repeated by the next sign-in.
-    const project = await this.db.from('projects').update({ drive_project_folder_id: null }).eq('id', projectId)
-    check(m, project.error)
-    const groups = await this.db.from('groups').update({ drive_folder_id: null }).eq('project_id', projectId)
-    check(m, groups.error)
+    if (projectFolderId !== null) {
+      const { error: clearError } = await this.db
+        .from('projects')
+        .update({ drive_project_folder_id: null })
+        .eq('id', projectId)
+        .eq('drive_project_folder_id', projectFolderId)
+      check(m, clearError)
+    }
+    for (const chunk of chunks(groupFolderIds)) {
+      const { error: clearError } = await this.db
+        .from('groups')
+        .update({ drive_folder_id: null })
+        .eq('project_id', projectId)
+        .in('drive_folder_id', chunk)
+      check(m, clearError)
+    }
     const retired = await this.db
       .from('drive_connections')
       .update({ status: 'replaced', status_changed_at: at.toISOString() })

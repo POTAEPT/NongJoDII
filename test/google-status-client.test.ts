@@ -27,6 +27,10 @@ describe('phaseOnOpen (first load of the Google view)', () => {
     expect(phaseOnOpen(result('not_connected'), false)).toBe('start')
     expect(phaseOnOpen(result('not_connected'), true)).toBe('not_connected')
   })
+  it('a change of account that did not finish shows its own notice, never the connected screen (#14)', () => {
+    expect(phaseOnOpen(result('change_unfinished', 't1', true), false)).toBe('change_unfinished')
+    expect(phaseOnOpen(result('change_unfinished', 't1', true), true)).toBe('change_unfinished')
+  })
   it('unauthorized and failed show their errors', () => {
     expect(phaseOnOpen(result('unauthorized'), false)).toBe('unauthorized')
     expect(phaseOnOpen(result('failed'), false)).toBe('failed')
@@ -39,6 +43,10 @@ describe('phaseOnReturn (back in LINE while sign-in is open in the browser)', ()
     expect(phaseOnReturn(result('connected', 't2'), 't1')).toBe('connected'))
   it('a change of account that has not finished stays in opened: the old account is still connected (#14)', () =>
     expect(phaseOnReturn(result('connected', 't1'), 't1')).toBeNull())
+  it('a sign-in that ended while the Project is still on the old account is not a success (#14)', () => {
+    expect(phaseOnReturn(result('change_unfinished', 't2', true), 't1')).toBe('change_unfinished')
+    expect(phaseOnReturn(result('change_unfinished', 't1', true), 't1')).toBeNull() // no sign-in has ended yet
+  })
   it('unauthorized shows the reopen-from-LINE error', () => expect(phaseOnReturn(result('unauthorized'), null)).toBe('unauthorized'))
   it('failed shows the retry error', () => expect(phaseOnReturn(result('failed'), null)).toBe('failed'))
   it('not_connected stays in opened', () => expect(phaseOnReturn(result('not_connected'), null)).toBeNull())
@@ -69,6 +77,10 @@ describe('fetchGoogleStatus', () => {
   it('200 signInAgain true gives sign_in_again', async () => {
     respond(200, { connected: false, signInAgain: true, canChange: false, signedInAt: '2026-11-14T03:00:00.000Z' })
     expect(await fetchGoogleStatus('tok')).toMatchObject({ status: 'sign_in_again', signedInAt: '2026-11-14T03:00:00.000Z' })
+  })
+  it('200 changePending true gives change_unfinished, even though the account is connected', async () => {
+    respond(200, { connected: true, signInAgain: false, canChange: true, changePending: true, signedInAt: 't2' })
+    expect(await fetchGoogleStatus('tok')).toEqual({ status: 'change_unfinished', canChange: true, signedInAt: 't2' })
   })
   it('401 gives unauthorized', async () => {
     respond(401, { error: 'unauthorized' })

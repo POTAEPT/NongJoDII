@@ -278,7 +278,7 @@ describe('google status', () => {
     }
   })
 
-  const NONE = { connected: false, signInAgain: false, canChange: false, signedInAt: null }
+  const NONE = { connected: false, signInAgain: false, canChange: false, changePending: false, signedInAt: null }
 
   it('13. no Google account gives connected false', async () => {
     const h = setup()
@@ -289,7 +289,7 @@ describe('google status', () => {
     const h = setup()
     expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
     expect(await status(h)).toEqual({
-      status: 200, body: { connected: true, signInAgain: false, canChange: false, signedInAt: TEST_NOW.toISOString() },
+      status: 200, body: { connected: true, signInAgain: false, canChange: false, changePending: false, signedInAt: TEST_NOW.toISOString() },
     })
   })
 
@@ -299,7 +299,7 @@ describe('google status', () => {
     for (const tokenStatus of ['revoked', 'expired'] as const) {
       h.store.tables.google_accounts[0].tokenStatus = tokenStatus
       expect(await status(h)).toEqual({
-        status: 200, body: { connected: false, signInAgain: true, canChange: false, signedInAt: TEST_NOW.toISOString() },
+        status: 200, body: { connected: false, signInAgain: true, canChange: false, changePending: false, signedInAt: TEST_NOW.toISOString() },
       })
     }
   })
@@ -316,6 +316,34 @@ describe('google status', () => {
     h.setNow(new Date(TEST_NOW.getTime() + MIN))
     expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
     expect((await status(h)).body).toMatchObject({ signedInAt: new Date(TEST_NOW.getTime() + MIN).toISOString() })
+  })
+
+  it('15c. a change of account that did not finish is reported, until a sign-in finishes it (#14)', async () => {
+    const h = setup()
+    const g = h.store.seedGroup({ lineGroupId: 'Cmain', nominatedOwnerLineUserId: OWNER })
+    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+    expect((await h.store.confirmGroupOwner(g.id, OWNER, TEST_NOW)).outcome).toBe('confirmed')
+    const signIn = async (subject: string) => {
+      h.google.exchangeResult = { ...(h.google.exchangeResult as object), subject, refreshToken: `rt-${subject}` } as never
+      const outcome = await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)
+      await h.runDeferred()
+      return outcome
+    }
+    expect(await signIn('g-sub-1')).toBe('ok')
+    expect((await status(h)).body).toMatchObject({ connected: true, canChange: true, changePending: false })
+
+    // The store fails while the old connection is retired: the new account is stored and
+    // valid, but the Project is still connected to the old one.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.store.failNext('retireDriveConnection')
+    h.setNow(new Date(TEST_NOW.getTime() + MIN))
+    expect(await signIn('g-sub-2')).toBe('failed')
+    expect((await status(h)).body).toMatchObject({ connected: true, canChange: true, changePending: true })
+
+    h.setNow(new Date(TEST_NOW.getTime() + 2 * MIN))
+    expect(await signIn('g-sub-2')).toBe('ok')
+    expect((await status(h)).body).toMatchObject({ connected: true, changePending: false })
+    vi.restoreAllMocks()
   })
 
   it('16. another user sees only their own status (client lineUserId ignored)', async () => {

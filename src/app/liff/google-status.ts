@@ -1,8 +1,11 @@
 import { GOOGLE_RETURN } from '@/server/liff-links'
 
 /** Result of POST /api/google/status as seen by the LIFF page. 'sign_in_again': the
- *  person has a Google account here, but Google no longer accepts its grant (#14). */
-export type GoogleStatus = 'connected' | 'sign_in_again' | 'not_connected' | 'unauthorized' | 'failed'
+ *  person has a Google account here, but Google no longer accepts its grant (#14).
+ *  'change_unfinished': their latest account is usable, but a Project of theirs is still
+ *  connected to another one, because a change of account stopped part-way (#14). */
+export type GoogleStatus =
+  | 'connected' | 'sign_in_again' | 'change_unfinished' | 'not_connected' | 'unauthorized' | 'failed'
 
 export type GoogleStatusResult = {
   status: GoogleStatus
@@ -19,8 +22,9 @@ export function returnVisit(id: string | null): { returning: boolean; signedIn: 
   return { returning: id === GOOGLE_RETURN.done || id === GOOGLE_RETURN.back, signedIn: id === GOOGLE_RETURN.done }
 }
 
-export type OpenPhase = 'connected' | 'sign_in_again' | 'not_connected' | 'unauthorized' | 'failed' | 'start'
-export type ReturnPhase = 'connected' | 'unauthorized' | 'failed'
+export type OpenPhase =
+  | 'connected' | 'sign_in_again' | 'change_unfinished' | 'not_connected' | 'unauthorized' | 'failed' | 'start'
+export type ReturnPhase = 'connected' | 'change_unfinished' | 'unauthorized' | 'failed'
 
 /** Where GoogleView goes on its first load. 'start' = begin sign-in at once: only for a
  *  person with no Google account, and not on the return visit from the callback page
@@ -33,11 +37,13 @@ export function phaseOnOpen(result: GoogleStatusResult, returning: boolean): Ope
 /** Where GoogleView goes when the user comes back to LINE while sign-in is open in the
  *  external browser. null = stay in 'opened' (sign-in not finished yet). `knownSignedInAt`
  *  is the sign-in time the page saw before this sign-in started: during a change of
- *  account the old account is still connected, so only a newer sign-in counts as done. */
+ *  account the old account is still connected, so only a newer sign-in counts as done.
+ *  And a newer sign-in whose change did not finish is not a success: it asks again. */
 export function phaseOnReturn(result: GoogleStatusResult, knownSignedInAt: string | null): ReturnPhase | null {
   switch (result.status) {
     case 'connected':
-      return result.signedInAt !== knownSignedInAt ? 'connected' : null
+    case 'change_unfinished':
+      return result.signedInAt !== knownSignedInAt ? result.status : null
     case 'unauthorized':
       return 'unauthorized' // LINE rejected the saved token: reopen from the chat
     case 'failed':
@@ -59,9 +65,13 @@ export async function fetchGoogleStatus(idToken: string): Promise<GoogleStatusRe
     })
     if (res.status === 401) return result('unauthorized')
     if (res.status !== 200) return result('failed')
-    const body = (await res.json()) as { connected?: unknown; signInAgain?: unknown; canChange?: unknown; signedInAt?: unknown }
+    const body = (await res.json()) as {
+      connected?: unknown; signInAgain?: unknown; canChange?: unknown; changePending?: unknown; signedInAt?: unknown
+    }
     return {
-      status: body.connected === true ? 'connected' : body.signInAgain === true ? 'sign_in_again' : 'not_connected',
+      status: body.connected === true
+        ? (body.changePending === true ? 'change_unfinished' : 'connected')
+        : body.signInAgain === true ? 'sign_in_again' : 'not_connected',
       canChange: body.canChange === true,
       signedInAt: typeof body.signedInAt === 'string' ? body.signedInAt : null,
     }

@@ -1126,6 +1126,33 @@ export class SupabaseStore implements StorePort {
     return { created: true, accountId: googleAccountId }
   }
 
+  async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
+    const m = 'retireDriveConnection'
+    const { data, error } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, error)
+    const active = data as { id: string; google_account_id: string } | null
+    if (!active || active.google_account_id === keepGoogleAccountId) return { retired: false }
+    // Cleared first, retired last: until the last statement the row is still active, so a
+    // run that stops here is seen and repeated by the next sign-in.
+    const project = await this.db.from('projects').update({ drive_project_folder_id: null }).eq('id', projectId)
+    check(m, project.error)
+    const groups = await this.db.from('groups').update({ drive_folder_id: null }).eq('project_id', projectId)
+    check(m, groups.error)
+    const retired = await this.db
+      .from('drive_connections')
+      .update({ status: 'replaced', status_changed_at: at.toISOString() })
+      .eq('id', active.id)
+      .eq('status', 'active')
+      .select('id')
+    check(m, retired.error)
+    return { retired: ((retired.data ?? []) as unknown[]).length > 0 }
+  }
+
   /** Flat reads joined here, no embedded filters: the Owners with a confirm or a Google
    *  account write since `from`, then their accounts and main groups, then, for the
    *  Projects in the window, the empty folder IDs and the active connection holders. Every

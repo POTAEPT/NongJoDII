@@ -1,7 +1,8 @@
 import { openState, seal } from '../crypto/secretbox'
-import { log } from '../log'
+import { log, logError } from '../log'
 import { liffUrl } from '../liff-links'
 import type { Defer, Deps } from '../ports'
+import { retireOtherAccountConnections } from './change-account'
 import { DRIVE_FILE_SCOPE } from './client'
 import { driveDeadline, syncDriveForOwner } from './drive-folders'
 
@@ -46,21 +47,26 @@ async function decide(deps: Deps, params: URLSearchParams, defer: Defer, deadlin
   if (!token.scopes.includes(DRIVE_FILE_SCOPE)) return 'missing_scope'
   if (token.refreshToken === null) return 'no_refresh_token'
 
+  const lineUserId = opened.lineUserId
   try {
-    await deps.store.upsertGoogleAccount({
-      lineUserId: opened.lineUserId,
+    const { id } = await deps.store.upsertGoogleAccount({
+      lineUserId,
       googleSubject: token.subject,
       email: token.email,
       grantedScopes: token.scopes,
       refreshTokenCiphertext: seal(token.refreshToken, deps.config.tokenEncryptionKey),
       signedInAt: deps.now(),
     })
-  } catch {
+    // #14: a sign-in with another Google account than the one a Project is connected to
+    // is a change of account. Done before the page is answered, so a failure shows as
+    // 'failed' and the Owner tries again; a repeat finishes what was left.
+    await retireOtherAccountConnections(deps, lineUserId, id)
+  } catch (err) {
+    logError('google_signin_store_failed', {}, err)
     return 'failed'
   }
   // #13: the Drive folders are made after the page is sent. A Drive failure is logged
   // there and never changes this outcome: the account is stored either way.
-  const lineUserId = opened.lineUserId
   defer(() => syncDriveForOwner(deps, lineUserId, deadline))
   return 'ok'
 }

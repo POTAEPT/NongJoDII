@@ -74,6 +74,7 @@ export type GoogleAccountRecord = {
 }
 export type DriveConnectionRecord = {
   id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
+  statusChangedAt?: Date | null   // absent = null; set when the row is retired (#14)
 }
 
 /** The groups columns the weekly insight reads (left_at, feature_weekly_summary and the
@@ -770,6 +771,23 @@ export class FakeStore implements StorePort {
     if (!held) this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
     this.driveWrites.push({ op: 'claim', projectId, accountId: googleAccountId, holder: result.accountId })
     return result
+  }
+
+  /** As SupabaseStore: nothing unless another account holds the active row; then the folder
+   *  IDs of the Project and of every one of its groups are cleared and the row is retired. */
+  async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
+    this.fault('retireDriveConnection')
+    const active = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    if (!active || active.googleAccountId === keepGoogleAccountId) return { retired: false }
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (project) project.driveProjectFolderId = null
+    for (const g of this.tables.groups.filter((row) => row.projectId === projectId)) {
+      const setup = this.tables.group_setups.find((r) => r.groupId === g.id)
+      if (setup) setup.driveFolderId = null
+    }
+    active.status = 'replaced'
+    active.statusChangedAt = new Date(at.getTime())
+    return { retired: true }
   }
 
   /** Same rule as SupabaseStore, read straight from the tables. */

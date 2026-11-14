@@ -387,6 +387,16 @@ export interface StorePort {
    *  23505 it reads the holder again). created: this call inserted the row. Never updates
    *  or deletes a row. */
   claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }>
+  /** #14, change of account: when the Project's active drive_connections row belongs to
+   *  another Google account than `keepGoogleAccountId`, clears the folder IDs
+   *  (projects.drive_project_folder_id, and groups.drive_folder_id of every group of the
+   *  Project), then marks that row 'replaced' with status_changed_at = `at`, the same way
+   *  change_project_owner retires a connection. The row is never deleted or re-pointed, so
+   *  it stays as history for the files saved through it. No active row, or one of
+   *  `keepGoogleAccountId`: writes nothing. retired: this call retired the row.
+   *  Separate statements, cleared first and retired last: a call that stopped part-way
+   *  leaves the row active, so the same call again finishes it. */
+  retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }>
   /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
    *  listed when its main group has a confirmed Owner and the bot, a folder ID is still
    *  empty (the Project folder, or a group that getDriveContext lists: confirmed Owner, bot

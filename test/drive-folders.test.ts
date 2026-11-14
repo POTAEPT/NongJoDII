@@ -406,7 +406,8 @@ describe('failures and skips', () => {
   it('a store failure in the Drive job is logged and the outcome stays ok', async () => {
     const h = setup()
     await seedProject(h)
-    h.store.failNext('listConfirmedOwnerProjects')
+    // The callback reads the Owner's Projects once itself (#14); the Drive job's read fails.
+    h.store.failNext('listConfirmedOwnerProjects', undefined, { after: 1 })
     expect(await signIn(h)).toBe('ok')
     expect(errorEvents().map((e) => e.event)).toContain('drive_sync_failed')
     expect(h.google.driveCalls).toEqual([])
@@ -423,7 +424,7 @@ describe('failures and skips', () => {
     expect(h.store.tables.drive_connections).toHaveLength(0)
   })
 
-  it('a Project whose active connection is another Google account is left alone', async () => {
+  it('a sign-in with a second Google account moves the Project to it (#14, see drive-lost-access.test.ts)', async () => {
     const h = setup()
     const { projectId } = await seedProject(h)
     await signIn(h)
@@ -433,8 +434,25 @@ describe('failures and skips', () => {
     h.google.driveCalls = []
     await signIn(h)
     expect(h.store.tables.google_accounts).toHaveLength(2)
+    // A whole new tree in the second account's Drive; the first one's folders all stay.
+    expect(h.google.driveCalls.map((c) => c.split(':')[0])).toEqual(['create', 'create', 'share', 'create'])
+    expect(h.google.folders.size).toBe(before + 3)
+    expect(h.store.tables.drive_connections).toEqual([
+      expect.objectContaining({ projectId, status: 'replaced' }),
+      expect.objectContaining({ projectId, status: 'active', googleAccountId: h.store.tables.google_accounts[1].id }),
+    ])
+  })
+
+  it('a Project that another account holds is left alone by a run of the Owner\'s latest account', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    await signIn(h)
+    // The state a lost claim race can leave (no sign-in callback ran for account 2).
+    await signInAccount(h, 2)
+    h.google.driveCalls = []
+    await ensureDriveFolders(h.deps, projectId, fullTime(h))
     expect(h.google.driveCalls).toEqual([])
-    expect(h.google.folders.size).toBe(before)
+    expect(infoEvents()).toContainEqual({ event: 'drive_folders_skipped', projectId, reason: 'other_account' })
     expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId, status: 'active' })])
   })
 

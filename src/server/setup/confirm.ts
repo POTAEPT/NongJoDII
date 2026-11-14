@@ -1,4 +1,4 @@
-import { syncDriveForOwner } from '../google/drive-folders'
+import { driveDeadline, syncDriveForOwner } from '../google/drive-folders'
 import { log } from '../log'
 import type { ApiResult, Defer, Deps } from '../ports'
 import { openSetupGroup } from './load'
@@ -10,6 +10,8 @@ import type { OwnerConfirmResult } from './types'
  *  the #2e card already told the group. An Owner already signed in to Google gets the
  *  Project's Drive folders (#13) after the response. */
 export async function confirmOwner(deps: Deps, body: unknown, defer: Defer): Promise<ApiResult> {
+  // The route's 60 s cover this handler and its after() work: the Drive work is timed from here.
+  const deadline = driveDeadline(deps.now())
   const gate = await openSetupGroup(deps, body)
   if (!gate.ok) return gate.result
   const { group, requester } = gate
@@ -19,7 +21,7 @@ export async function confirmOwner(deps: Deps, body: unknown, defer: Defer): Pro
   if (outcome === 'closed') return { status: 409, body: { error: 'setup_closed' } }
   if (outcome === 'confirmed') {
     log('owner_confirmed', { groupId: group.groupId })
-    defer(() => syncDriveForOwner(deps, requester))
+    defer(() => syncDriveForOwner(deps, requester, deadline))
   }
   const result: OwnerConfirmResult = { state: 'confirmed', alreadyConfirmed: outcome === 'already_confirmed' }
   return { status: 200, body: result }

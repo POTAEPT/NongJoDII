@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { finishGoogleSignIn } from '@/server/google/callback'
-import { ensureDriveFolders, ensureGroupFolder, MAIN_GROUP_FOLDER, ROOT_FOLDER } from '@/server/google/drive-folders'
+import {
+  DRIVE_CALL_MAX_MS, DRIVE_HARD_STOP_MS, driveDeadline, DriveTimeUp, ensureDriveFolders, ensureGroupFolder,
+  MAIN_GROUP_FOLDER, ROOT_FOLDER,
+} from '@/server/google/drive-folders'
 import { startGoogleSignIn } from '@/server/google/start'
 import { AdapterError } from '@/server/log'
 import { seal } from '@/server/crypto/secretbox'
@@ -16,9 +19,10 @@ const OWNER = 'Uowner1'
 const OWNER_TOKEN = 'idtok-owner'
 const MAIN_LINE_GROUP = 'Cmain'
 
+let infos: MockInstance<typeof console.info>
 let errors: MockInstance<typeof console.error>
 beforeEach(() => {
-  vi.spyOn(console, 'info').mockImplementation(() => {})
+  infos = vi.spyOn(console, 'info').mockImplementation(() => {})
   errors = vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
@@ -28,8 +32,14 @@ afterEach(() => {
 function errorEvents(): Record<string, unknown>[] {
   return errors.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>)
 }
+function infoEvents(): Record<string, unknown>[] {
+  return infos.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>)
+}
 
 type H = ReturnType<typeof makeTestDeps>
+
+/** The deadline of a request that starts now: the whole time a route allows. */
+const fullTime = (h: H) => driveDeadline(h.deps.now())
 
 function setup() {
   const h = makeTestDeps()
@@ -59,11 +69,16 @@ function seedSubGroup(h: H, projectId: string, p: { lineGroupId: string; name: s
   return g.id
 }
 
-/** Google sign-in from start to callback, then the deferred Drive work. */
-async function signIn(h: H) {
+/** Google sign-in from start to callback; the deferred Drive work stays queued. */
+async function finishSignIn(h: H) {
   const res = await startGoogleSignIn(h.deps, { idToken: OWNER_TOKEN })
   const state = new URL((res.body as { url: string }).url).searchParams.get('state') as string
-  const outcome = await finishGoogleSignIn(h.deps, new URLSearchParams({ code: 'code-1', state }), h.defer)
+  return finishGoogleSignIn(h.deps, new URLSearchParams({ code: 'code-1', state }), h.defer)
+}
+
+/** Google sign-in from start to callback, then the deferred Drive work. */
+async function signIn(h: H) {
+  const outcome = await finishSignIn(h)
   await h.runDeferred()
   return outcome
 }
@@ -202,7 +217,7 @@ describe('ensureGroupFolder (a Sub group attached later)', () => {
     await signIn(h)
     const before = h.google.folders.size
     const sub = seedSubGroup(h, projectId, { lineGroupId: 'Csub1', name: 'ทีมย่อย' })
-    const id = await ensureGroupFolder(h.deps, sub)
+    const id = await ensureGroupFolder(h.deps, sub, fullTime(h))
     expect(id).toBe(groupFolderId(h, sub))
     expect(h.google.folders.get(id as string)).toMatchObject({
       name: 'ทีมย่อย', parentId: projectRow(h, projectId).driveProjectFolderId,
@@ -210,7 +225,7 @@ describe('ensureGroupFolder (a Sub group attached later)', () => {
     expect(h.google.folders.size).toBe(before + 1)
     expect(h.google.shares).toHaveLength(1)
     // Again: the stored folder is kept.
-    expect(await ensureGroupFolder(h.deps, sub)).toBe(id)
+    expect(await ensureGroupFolder(h.deps, sub, fullTime(h))).toBe(id)
     expect(h.google.folders.size).toBe(before + 1)
   })
 
@@ -220,7 +235,7 @@ describe('ensureGroupFolder (a Sub group attached later)', () => {
     await signIn(h)
     h.google.trash(account(h).driveRootFolderId as string)
     const sub = seedSubGroup(h, projectId, { lineGroupId: 'Csub1', name: 'ทีมย่อย' })
-    const id = await ensureGroupFolder(h.deps, sub)
+    const id = await ensureGroupFolder(h.deps, sub, fullTime(h))
     const root = account(h).driveRootFolderId as string
     const project = projectRow(h, projectId).driveProjectFolderId as string
     expect(h.google.folders.get(root)?.trashed).toBe(false)
@@ -236,8 +251,8 @@ describe('ensureGroupFolder (a Sub group attached later)', () => {
     h.google.driveCalls = []
     const loose = h.store.seedGroup({ lineGroupId: 'Cloose' })
     const pending = seedSubGroup(h, projectId, { lineGroupId: 'Cpend', name: 'x', confirmed: false })
-    expect(await ensureGroupFolder(h.deps, loose.id)).toBeNull()
-    expect(await ensureGroupFolder(h.deps, pending)).toBeNull()
+    expect(await ensureGroupFolder(h.deps, loose.id, fullTime(h))).toBeNull()
+    expect(await ensureGroupFolder(h.deps, pending, fullTime(h))).toBeNull()
     expect(h.google.driveCalls).toEqual([])
   })
 })
@@ -329,7 +344,7 @@ describe('failures and skips', () => {
     const { groupId, projectId } = await seedProject(h)
     await signIn(h) // the account exists; now lose every folder and run twice at once
     for (const f of [...h.google.folders.values()]) h.google.remove(f.id)
-    await Promise.all([ensureDriveFolders(h.deps, projectId), ensureDriveFolders(h.deps, projectId)])
+    await Promise.all([ensureDriveFolders(h.deps, projectId, fullTime(h)), ensureDriveFolders(h.deps, projectId, fullTime(h))])
     const root = account(h).driveRootFolderId as string
     const project = projectRow(h, projectId).driveProjectFolderId as string
     expect(h.google.folders.get(project)?.parentId).toBe(root)
@@ -388,5 +403,153 @@ describe('Owner confirm', () => {
     expect(groupFolderId(h, g.id)).not.toBeNull()
     expect(h.google.shares).toHaveLength(1)
     expect(h.store.tables.drive_connections).toHaveLength(1)
+  })
+})
+
+describe('time limit: each route allows 60 s, its after() work included', () => {
+  /** Every folder ID the store holds. */
+  const storedFolderIds = (h: H) => [
+    ...h.store.tables.google_accounts.map((a) => a.driveRootFolderId),
+    ...h.store.tables.projects.map((p) => p.driveProjectFolderId),
+    ...h.store.tables.group_setups.map((r) => r.driveFolderId),
+  ].filter((id): id is string => !!id).sort()
+  /** Every folder in the fake Drive. Equal to storedFolderIds: no folder was left behind. */
+  const driveFolderIds = (h: H) => [...h.google.folders.keys()].sort()
+  /** No Google call started too late to end by the hard stop if it ran to its 10 s timeout. */
+  const expectEveryCallInTime = (h: H, requestStart: number) => {
+    expect(h.google.callLog.length).toBeGreaterThan(0)
+    for (const c of h.google.callLog) {
+      expect(c.at + DRIVE_CALL_MAX_MS).toBeLessThanOrEqual(requestStart + DRIVE_HARD_STOP_MS)
+    }
+  }
+
+  /** A main group whose nominee OWNER already signed in to Google. */
+  async function seedSignedInNominee(h: H) {
+    const g = h.store.seedGroup({ lineGroupId: MAIN_LINE_GROUP, name: 'ทีมหลัก', nominatedOwnerLineUserId: OWNER })
+    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+    h.line.groupMemberCounts.set(MAIN_LINE_GROUP, 1)
+    await h.store.upsertGoogleAccount({
+      lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
+      grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+    })
+    return g.id
+  }
+  const projectOf = (h: H, groupId: string) => h.store.tables.groups.find((r) => r.id === groupId)!.projectId as string
+
+  it('with 5 s Drive calls, starts no call that could end late, leaves no folder behind, and the next sign-in finishes', async () => {
+    const h = setup()
+    for (const [name, lineGroupId] of [['A', 'Ca'], ['B', 'Cb'], ['C', 'Cc']]) await seedProject(h, { name, lineGroupId })
+    const order = await h.store.listConfirmedOwnerProjects(OWNER) // the order the sync walks
+    h.google.callMs = 5_000
+    const start = h.deps.now().getTime()
+    expect(await signIn(h)).toBe('ok')
+
+    expectEveryCallInTime(h, start)
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+    // A stored Project folder is always a shared one.
+    for (const p of h.store.tables.projects.filter((x) => x.driveProjectFolderId)) {
+      expect(h.google.shares.map((s) => s.fileId)).toContain(p.driveProjectFolderId)
+    }
+    // The first Project is done. The second stopped before its root folder step, and the
+    // stop is logged once, with the IDs and counts only.
+    expect(h.store.tables.drive_connections.map((c) => c.projectId)).toEqual([order[0]])
+    expect(infoEvents().filter((e) => e.event === 'drive_sync_incomplete')).toEqual([
+      { event: 'drive_sync_incomplete', projectId: order[1], projectsLeft: 2 },
+    ])
+    expect(errorEvents()).toEqual([])
+
+    h.google.callMs = 0
+    await signIn(h)
+    expect(h.store.tables.drive_connections).toHaveLength(3)
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+  })
+
+  it('with every call running to its 10 s timeout, the last call still ends by the hard stop', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    h.google.callMs = DRIVE_CALL_MAX_MS
+    const start = h.deps.now().getTime()
+    await signIn(h)
+    const last = h.google.callLog.at(-1)!
+    expect(last.at + DRIVE_CALL_MAX_MS).toBeLessThanOrEqual(start + DRIVE_HARD_STOP_MS)
+    // The code exchange, the refresh, the root and the shared Project folder fit. The Main
+    // group files step would have run past the hard stop, so it never started.
+    expect(h.google.callLog.map((c) => c.call.split(':')[0])).toEqual(['exchange', 'refresh', 'create', 'create', 'share'])
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+    expect(groupFolderId(h, groupId)).toBeNull()
+    expect(h.store.tables.drive_connections).toHaveLength(0)
+    expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId, projectsLeft: 1 })
+  })
+
+  it('checks each folder step, so one Project with many Sub groups stops in time too', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    for (let i = 1; i <= 6; i++) seedSubGroup(h, projectId, { lineGroupId: `Csub${i}`, name: `ทีมย่อย ${i}` })
+    h.google.callMs = 5_000
+    const start = h.deps.now().getTime()
+    await signIn(h)
+    expectEveryCallInTime(h, start)
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+    // The root, the Project, Main group files and 3 of the 6 Sub groups. The connection
+    // comes last, so the Project still counts as unfinished.
+    expect(h.google.folders.size).toBe(6)
+    expect(h.store.tables.drive_connections).toHaveLength(0)
+    expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId, projectsLeft: 1 })
+  })
+
+  it.each([
+    { name: 'ทีมหลัก', made: true },
+    { name: null, made: false },
+  ])('counts the LINE name lookup in the Project folder step (stored name: $name)', async ({ name, made }) => {
+    const h = setup()
+    const { projectId } = await seedProject(h, { name })
+    h.line.groupNames.set(MAIN_LINE_GROUP, 'ชื่อจาก LINE')
+    await finishSignIn(h)
+    // 25 s left when the after() work starts: enough for the refresh, the root folder and a
+    // named Project folder (create, share); not for one that asks LINE for its name first.
+    h.setNow(new Date(TEST_NOW.getTime() + DRIVE_HARD_STOP_MS - 25_000))
+    await h.runDeferred()
+    expect(Boolean(projectRow(h, projectId).driveProjectFolderId)).toBe(made)
+    expect(h.line.groupSummaryCalls).toEqual([])
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+  })
+
+  it('counts from the start of the setup form request, not from its after() work', async () => {
+    const h = setup()
+    const groupId = await seedSignedInNominee(h)
+    const res = await submitSetup(h.deps, {
+      idToken: OWNER_TOKEN, groupId, workDescription: 'งาน',
+      features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
+      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
+      members: [{ lineUserId: OWNER, nicknames: [], role: '' }], ownerLineUserId: OWNER,
+    }, h.defer)
+    expect(res).toMatchObject({ status: 200, body: { state: 'confirmed' } })
+    // The handler's LINE calls (access check, push budget, push) took 50 s: 5 s are left.
+    h.setNow(new Date(TEST_NOW.getTime() + 50_000))
+    await h.runDeferred()
+    expect(h.google.callLog).toEqual([])
+    expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId: projectOf(h, groupId), projectsLeft: 1 })
+  })
+
+  it('counts from the start of the Owner confirm request, not from its after() work', async () => {
+    const h = setup()
+    const groupId = await seedSignedInNominee(h)
+    expect((await confirmOwner(h.deps, { idToken: OWNER_TOKEN, groupId }, h.defer)).status).toBe(200)
+    h.setNow(new Date(TEST_NOW.getTime() + 50_000))
+    await h.runDeferred()
+    expect(h.google.callLog).toEqual([])
+    expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId: projectOf(h, groupId), projectsLeft: 1 })
+  })
+
+  it('ensureGroupFolder throws DriveTimeUp before any call when its caller has too little time left', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    await signIn(h)
+    const sub = seedSubGroup(h, projectId, { lineGroupId: 'Csub1', name: 'ทีมย่อย' })
+    h.google.callLog = []
+    const almostOver = new Date(h.deps.now().getTime() + 5_000)
+    await expect(ensureGroupFolder(h.deps, sub, almostOver)).rejects.toBeInstanceOf(DriveTimeUp)
+    expect(h.google.callLog).toEqual([])
+    expect(groupFolderId(h, sub)).toBeNull()
   })
 })

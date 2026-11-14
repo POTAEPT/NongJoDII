@@ -651,11 +651,13 @@ export class FakeStore implements StorePort {
     return this.tables.group_setups.find((r) => r.groupId === groupId)?.isMain === true
   }
 
+  /** Ordered by group id, as SupabaseStore pages it. */
   async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
     this.fault('listConfirmedOwnerProjects')
     return this.tables.groups
       .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.nominatedOwnerLineUserId === lineUserId &&
         g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
       .map((g) => g.projectId as string)
   }
 
@@ -663,7 +665,9 @@ export class FakeStore implements StorePort {
     this.fault('getDriveContext')
     const project = this.tables.projects.find((p) => p.id === projectId)
     if (!project) return null
-    const groups = this.tables.groups.filter((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+    const groups = this.tables.groups
+      .filter((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
     const toDrive = (g: GroupRow): DriveGroup => ({
       groupId: g.id, lineGroupId: g.lineGroupId, name: g.name,
       folderId: this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId ?? null,

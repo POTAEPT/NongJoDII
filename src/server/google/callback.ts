@@ -3,7 +3,7 @@ import { log } from '../log'
 import { liffUrl } from '../liff-links'
 import type { Defer, Deps } from '../ports'
 import { DRIVE_FILE_SCOPE } from './client'
-import { syncDriveForOwner } from './drive-folders'
+import { driveDeadline, syncDriveForOwner } from './drive-folders'
 
 export type CallbackOutcome = 'ok' | 'cancelled' | 'expired' | 'missing_scope' | 'no_refresh_token' | 'failed'
 
@@ -16,12 +16,15 @@ export type CallbackOutcome = 'ok' | 'cancelled' | 'expired' | 'missing_scope' |
  *  state comes only from a server-verified LIFF ID token, the state expires in 10
  *  minutes, and the scope is drive.file (only files the app created). */
 export async function finishGoogleSignIn(deps: Deps, params: URLSearchParams, defer: Defer): Promise<CallbackOutcome> {
-  const outcome = await decide(deps, params, defer)
+  // The route's 60 s cover this handler and its after() work, so the Drive work is timed
+  // from here.
+  const deadline = driveDeadline(deps.now())
+  const outcome = await decide(deps, params, defer, deadline)
   log('google_signin', { outcome })
   return outcome
 }
 
-async function decide(deps: Deps, params: URLSearchParams, defer: Defer): Promise<CallbackOutcome> {
+async function decide(deps: Deps, params: URLSearchParams, defer: Defer, deadline: Date): Promise<CallbackOutcome> {
   const error = params.get('error')
   if (error !== null) return error === 'access_denied' ? 'cancelled' : 'failed'
 
@@ -57,7 +60,7 @@ async function decide(deps: Deps, params: URLSearchParams, defer: Defer): Promis
   // #13: the Drive folders are made after the page is sent. A Drive failure is logged
   // there and never changes this outcome: the account is stored either way.
   const lineUserId = opened.lineUserId
-  defer(() => syncDriveForOwner(deps, lineUserId))
+  defer(() => syncDriveForOwner(deps, lineUserId, deadline))
   return 'ok'
 }
 

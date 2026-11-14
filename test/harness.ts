@@ -27,6 +27,13 @@ export function makeTestDeps(opts?: { now?: Date }): {
   const google = new FakeGoogle()
   const store = new FakeStore()
   let current = new Date((opts?.now ?? TEST_NOW).getTime())
+  // The clock stands still unless a test moves it, or sets google.callMs so Google calls take time.
+  google.clock = {
+    now: () => new Date(current.getTime()),
+    advance: (ms) => {
+      current = new Date(current.getTime() + ms)
+    },
+  }
   const deferred: Array<() => Promise<void>> = []
   const deps: Deps = {
     line, llm, google, store,

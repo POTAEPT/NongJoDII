@@ -1,4 +1,4 @@
-import { syncDriveForOwner } from '../google/drive-folders'
+import { driveDeadline, syncDriveForOwner } from '../google/drive-folders'
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import { log, logError } from '../log'
 import type { ApiResult, Defer, Deps, GroupSetup, Member, SetupMemberWrite, SetupOutcome } from '../ports'
@@ -87,6 +87,9 @@ const closed: ApiResult = { status: 409, body: { error: 'setup_closed' } }
  *  edits belong to Settings (#28). Then pushes the #2e card to the group. A self-confirmed
  *  Owner already signed in to Google gets the Drive folders (#13) after the response. */
 export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Promise<ApiResult> {
+  // The route's 60 s cover this handler, its LINE calls and its after() work: the Drive
+  // work is timed from here.
+  const deadline = driveDeadline(deps.now())
   const gate = await openSetupGroup(deps, body)
   if (!gate.ok) return gate.result
   const { group, requester } = gate
@@ -118,7 +121,7 @@ export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Prom
   if (outcome === 'owner_not_member') return badRequest('ownerLineUserId')
   const confirmed = outcome === 'confirmed'
   log('setup_saved', { groupId: group.groupId, ownerConfirmed: confirmed })
-  if (confirmed) defer(() => syncDriveForOwner(deps, requester))
+  if (confirmed) defer(() => syncDriveForOwner(deps, requester, deadline))
   const nominatedAt = await storedNominationTime(deps, group.groupId, v.ownerLineUserId, at)
 
   // Every send pushes the #2e card, under a LINE retry key made from the nominee, the

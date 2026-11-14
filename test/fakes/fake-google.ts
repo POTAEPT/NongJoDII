@@ -3,7 +3,24 @@ import type { DriveFolderState, GooglePort, GoogleTokenResult } from '@/server/p
 
 export type FakeFolder = { id: string; name: string; parentId: string | null; trashed: boolean }
 
+/** The test clock (makeTestDeps wires the harness clock in). */
+export type FakeClock = { now(): Date; advance(ms: number): void }
+
 export class FakeGoogle implements GooglePort {
+  // ---- time (#13 time limit) ----
+  /** How long every Google call takes on `clock`; 0 (the default) = instant. */
+  callMs = 0
+  clock: FakeClock | null = null
+  /** Every Google call with the clock time (ms) it started at, in order: 'exchange',
+   *  'refresh' or the Drive call ('create:NongJoDII', 'get:folder-1', ...). */
+  callLog: { call: string; at: number }[] = []
+
+  /** Records the call's start, then lets `callMs` pass: the answer comes back that much later. */
+  private spend(call: string): void {
+    this.callLog.push({ call, at: this.clock?.now().getTime() ?? 0 })
+    if (this.callMs > 0) this.clock?.advance(this.callMs)
+  }
+
   exchangedCodes: string[] = []
   /** What exchangeCode answers; an Error makes it reject. */
   exchangeResult: GoogleTokenResult | Error = {
@@ -32,18 +49,21 @@ export class FakeGoogle implements GooglePort {
 
   async exchangeCode(code: string): Promise<GoogleTokenResult> {
     this.exchangedCodes.push(code)
+    this.spend('exchange')
     if (this.exchangeResult instanceof Error) throw this.exchangeResult
     return { ...this.exchangeResult, scopes: [...this.exchangeResult.scopes] }
   }
 
   async accessToken(refreshToken: string): Promise<string> {
     this.refreshCalls.push(refreshToken)
+    this.spend('refresh')
     if (this.revokedRefreshTokens.has(refreshToken)) throw new GoogleTokenRevoked()
     return `at:${refreshToken}`
   }
 
   private drive(call: string, accessToken: string): void {
     this.driveCalls.push(call)
+    this.spend(call)
     if (this.driveError) throw this.driveError
     if (!accessToken.startsWith('at:')) throw new AdapterError('google drive 401')
   }

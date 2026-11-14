@@ -1,7 +1,7 @@
 import { open } from '../crypto/secretbox'
 import { GoogleTokenRevoked, log, logError } from '../log'
 import type { TickJob } from '../tick/run-tick'
-import { bangkokParts, parseTimeOfDay } from '../time/bangkok'
+import { BKK_OFFSET_MS, bangkokParts, parseTimeOfDay } from '../time/bangkok'
 import { checkTime, driveDeadline, DriveTimeUp } from './drive-folders'
 import { LOST_ACCESS_CALLS, markAccessLost } from './lost-access'
 
@@ -28,6 +28,21 @@ export function isAccessCheckSlot(now: Date): boolean {
   return sinceSlot >= 0 && sinceSlot < SLOT_MINUTES
 }
 
+/** How far the start of the list moves each day. A day of slow Google calls (10 s each)
+ *  still reaches this many accounts inside the tick's time, so with this step every
+ *  account is reached within ceil(n / step) days, with no stored resume point. */
+export const ACCESS_CHECK_STEP = 5
+
+/** `ids` starting at a place that moves by ACCESS_CHECK_STEP each Bangkok day, wrapping
+ *  around. Without it a slow check would stop at the same place every day, and the
+ *  accounts after it would never be tried. */
+export function rotateForDay<T>(ids: T[], now: Date): T[] {
+  if (ids.length === 0) return []
+  const day = Math.floor((now.getTime() + BKK_OFFSET_MS) / 86_400_000)
+  const start = (day * ACCESS_CHECK_STEP) % ids.length
+  return [...ids.slice(start), ...ids.slice(0, start)]
+}
+
 /** Tick job. Timed from the tick's start like the Drive finisher, one Google call per
  *  account (plus the card's LINE calls for a revoked one), and it starts no call that
  *  could end after the hard stop. Any failure but invalid_grant (a timeout, a 5xx, a store
@@ -37,7 +52,7 @@ export const driveAccessCheckJob: TickJob = {
   async run(deps, now) {
     if (!isAccessCheckSlot(now)) return
     const deadline = driveDeadline(now)
-    const projectIds = await deps.store.listDriveConnectedProjects()
+    const projectIds = rotateForDay(await deps.store.listDriveConnectedProjects(), now)
     const seen = new Set<string>() // an account that holds several Projects is tried once
     let accounts = 0
     let revoked = 0

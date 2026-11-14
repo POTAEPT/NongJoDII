@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { seal } from '@/server/crypto/secretbox'
-import { ACCESS_CHECK_TIME, driveAccessCheckJob, isAccessCheckSlot } from '@/server/google/access-check'
+import { ACCESS_CHECK_STEP, ACCESS_CHECK_TIME, driveAccessCheckJob, isAccessCheckSlot, rotateForDay } from '@/server/google/access-check'
 import { DRIVE_CALL_MAX_MS, driveDeadline, ensureDriveFolders } from '@/server/google/drive-folders'
 import { liffUrl } from '@/server/liff-links'
 import { AdapterError } from '@/server/log'
@@ -74,6 +74,19 @@ describe('isAccessCheckSlot', () => {
   it('is a daytime slot on the quarter hour', () => {
     expect(ACCESS_CHECK_TIME).toMatch(/^(0[8-9]|1[0-9]):(00|15|30|45)$/)
   })
+})
+
+describe('rotateForDay', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+  const day = (n: number) => new Date(SLOT.getTime() + n * 24 * 60 * MIN)
+  it('keeps every item, and moves the start by ACCESS_CHECK_STEP each Bangkok day', () => {
+    const first = rotateForDay(ids, day(0))
+    const next = rotateForDay(ids, day(1))
+    expect([...first].sort()).toEqual(ids)
+    expect(next[0]).toBe(first[ACCESS_CHECK_STEP % ids.length])
+    expect(rotateForDay(ids, new Date(day(0).getTime() + 5 * MIN))).toEqual(first) // same day, same order
+  })
+  it('handles an empty list', () => expect(rotateForDay([], day(0))).toEqual([]))
 })
 
 describe('daily Drive access check', () => {
@@ -212,6 +225,19 @@ describe('daily Drive access check', () => {
     expect(h.store.tables.google_accounts.every((x) => x.tokenStatus === 'valid')).toBe(true)
     expect(infoEvents()).toContainEqual({ event: 'drive_access_check', accounts: 5, revoked: 0, skipped: 0, complete: false })
     expect(errors.mock.calls).toEqual([]) // not a failed job
+  })
+
+  it('starts further down the list each day, so accounts a slow day did not reach are reached on the next days', async () => {
+    const h = makeTestDeps()
+    for (let n = 1; n <= 12; n++) await seedConnectedOwner(h, n)
+    h.google.callMs = DRIVE_CALL_MAX_MS // every day is slow: 5 accounts fit
+    const tried = new Set<string>()
+    for (let day = 0; day < 3; day++) {
+      await tick(h, new Date(SLOT.getTime() + day * 24 * 60 * MIN))
+      expect(h.google.refreshCalls).toHaveLength(5)
+      for (const t of h.google.refreshCalls) tried.add(t)
+    }
+    expect(tried.size).toBe(12) // ceil(12 / 5) = 3 days reach every account
   })
 
   it('logs counts and IDs only', async () => {

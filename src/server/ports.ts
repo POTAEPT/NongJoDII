@@ -106,6 +106,19 @@ export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
   dueAt: Date | null; lastEditedByLineUserId: string; lastActivityAt: Date
 }
+// #17 Dashboard read. Names are LINE names (line_users.display_name), never nicknames.
+/** One of the requester's group_members rows, for a group that is in a Project and still
+ *  has the bot. `left` = left_at is set. isPm = group_members.is_pm. */
+export type DashboardMembership = {
+  groupId: string; projectId: string; projectOwnerLineUserId: string; isPm: boolean; left: boolean
+}
+export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
+export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
+/** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
+export type DashboardTaskRow = {
+  id: string; groupId: string; title: string; status: TaskStatus
+  assigneeLineUserId: string | null; assigneeName: string | null; dueAt: Date | null
+}
 export type AiPurpose = 'summary' | 'progress_decision'
 export type NewAiUsage = {
   ownerLineUserId: string; projectId: string | null; groupId: string | null; purpose: AiPurpose
@@ -354,6 +367,15 @@ export interface StorePort {
    *  confirms; this creates the Project (owner = the nominee) with the group as its main
    *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
   confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }>
+  // #17 Dashboard read. The id lists are groups the caller already decided the requester may see.
+  /** The requester's rows (live and left) in groups that belong to a Project and still have the bot. */
+  listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]>
+  /** Groups of these Projects that still have the bot: main group first, then by join time, then id. */
+  listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]>
+  /** Live Members (left_at is null) of these groups, by LINE name. */
+  listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]>
+  /** Live Tasks of these groups, oldest first. */
+  listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]>
   // #12 Google
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>

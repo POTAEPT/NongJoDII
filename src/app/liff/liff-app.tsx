@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { DashboardView } from './dashboard-view'
 import { GoogleView } from './google-view'
 import { OwnerView } from './owner-view'
 import { ProgressView } from './progress-view'
@@ -49,6 +50,7 @@ export function LiffApp({ liffId }: { liffId: string }) {
   if (params.view === 'review') return <ReviewView {...viewProps} />
   if (params.view === 'task') return <TaskView {...viewProps} />
   if (params.view === 'progress') return <ProgressView {...viewProps} />
+  if (params.view === 'dashboard') return <DashboardView {...viewProps} />
   if (params.view === 'setup') return <SetupView {...viewProps} />
   if (params.view === 'owner') return <OwnerView {...viewProps} />
   return <p className="p-4 text-base">{OPEN_FAILED}</p>

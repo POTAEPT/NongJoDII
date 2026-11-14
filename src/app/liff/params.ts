@@ -1,4 +1,4 @@
-const VIEWS = ['google', 'review', 'task', 'progress', 'setup', 'owner'] as const
+const VIEWS = ['google', 'review', 'task', 'progress', 'dashboard', 'setup', 'owner'] as const
 
 export type LiffParams = { view: (typeof VIEWS)[number] | null; id: string | null }
 

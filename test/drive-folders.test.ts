@@ -308,7 +308,11 @@ describe('ensureGroupFolder (a Sub group attached later)', () => {
     await signIn(h)
     const before = h.google.folders.size
     const sub = seedSubGroup(h, projectId, { lineGroupId: 'Csub1', name: 'ทีมย่อย' })
+    h.store.driveWrites = []
     const id = await ensureGroupFolder(h.deps, sub, fullTime(h))
+    // The Project folder was still there, so the group folder is this run's first folder ID
+    // write: the run claims the Project right before it, then reads that claim from memory.
+    expect(h.store.driveWrites.map((w) => w.op)).toEqual(['claim', 'group'])
     expect(id).toBe(groupFolderId(h, sub))
     expect(h.google.folders.get(id as string)).toMatchObject({
       name: 'ทีมย่อย', parentId: projectRow(h, projectId).driveProjectFolderId,
@@ -921,6 +925,20 @@ describe('retries reach the missing folders: the finisher trusts stored group fo
     await signIn(h) // the 3 missing ones come first; it runs out of time while verifying
     expect(storedGroupFolders(h, projectId)).toBe(7)
     expect(infoEvents().filter((e) => e.event === 'drive_sync_incomplete')).toHaveLength(2)
+  })
+
+  it('sizes a verify as one call: with 25 s left, the finisher checks the Project folder, then makes the missing group folder', async () => {
+    const h = setup()
+    const { groupId } = await seedProject(h)
+    h.google.callMs = DRIVE_CALL_MAX_MS
+    await signIn(h) // stores the shared Project folder, then runs out of time before Main group files
+    expect(groupFolderId(h, groupId)).toBeNull()
+    h.google.callMs = 0
+    // The jobs before it took 30 s of the tick: 25 s are left. Enough for a verify (11 s)
+    // and then a make (11 s), not for one step sized as both plus a share (31 s).
+    const slow: TickJob = { name: 'slow', run: async () => h.setNow(new Date(h.deps.now().getTime() + 30_000)) }
+    await tick(h, after(15 * MIN), [slow, driveSetupJob])
+    expect(groupFolderId(h, groupId)).not.toBeNull()
   })
 
   it('two unfinished Projects: the finisher stays on the first until it is done, then finishes the second', async () => {

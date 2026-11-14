@@ -75,6 +75,46 @@ describe('SupabaseStore.listConfirmedOwnerProjects', () => {
   })
 })
 
+describe('SupabaseStore Google accounts (#14: the latest account is the last sign-in)', () => {
+  const AT = new Date('2026-11-14T03:00:00Z')
+
+  it('upsertGoogleAccount stamps connected_at with the sign-in time and answers the row ID', async () => {
+    const { store, chains } = stubDb([ok({ id: 'a1' })])
+    expect(await store.upsertGoogleAccount({
+      lineUserId: 'U1', googleSubject: 'g1', email: null, grantedScopes: ['s'], refreshTokenCiphertext: 'v1.x', signedInAt: AT,
+    })).toEqual({ id: 'a1' })
+    expect(chains[0].slice(0, 2)).toEqual([
+      { method: 'from', args: ['google_accounts'] },
+      {
+        method: 'upsert',
+        args: [
+          {
+            line_user_id: 'U1', google_subject: 'g1', email: null, granted_scopes: ['s'],
+            refresh_token_ciphertext: 'v1.x', token_status: 'valid', connected_at: AT.toISOString(),
+          },
+          { onConflict: 'google_subject' },
+        ],
+      },
+    ])
+    expect(chains[0]).toContainEqual({ method: 'select', args: ['id'] })
+  })
+
+  it('upsertGoogleAccount throws when no row comes back', async () => {
+    const { store } = stubDb([ok(null)])
+    await expect(store.upsertGoogleAccount({
+      lineUserId: 'U1', googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.x', signedInAt: AT,
+    })).rejects.toBeInstanceOf(AdapterError)
+  })
+
+  it('findGoogleAccountByLineUser reads the account that signed in last', async () => {
+    const { store, chains } = stubDb([ok({ id: 'a1', token_status: 'revoked' })])
+    expect(await store.findGoogleAccountByLineUser('U1')).toMatchObject({ id: 'a1', tokenStatus: 'revoked' })
+    expect(chains[0]).toContainEqual({ method: 'eq', args: ['line_user_id', 'U1'] })
+    expect(chains[0]).toContainEqual({ method: 'order', args: ['connected_at', { ascending: false }] })
+    expect(chains[0]).toContainEqual({ method: 'limit', args: [1] })
+  })
+})
+
 describe('SupabaseStore.getDriveContext', () => {
   it('maps the project, its confirmed live groups, the Owner\'s account and the active connection', async () => {
     const { store, chains } = stubDb([
@@ -97,6 +137,8 @@ describe('SupabaseStore.getDriveContext', () => {
     expect(chains[1]).toContainEqual({ method: 'is', args: ['left_at', null] })
     expect(chains[1]).toContainEqual({ method: 'order', args: ['id'] })
     expect(chains[2]).toContainEqual({ method: 'eq', args: ['line_user_id', 'U1'] })
+    // #14: the Owner's latest account is the last one to sign in, not the last one written.
+    expect(chains[2]).toContainEqual({ method: 'order', args: ['connected_at', { ascending: false }] })
     expect(chains[3]).toContainEqual({ method: 'eq', args: ['status', 'active'] })
   })
 
@@ -219,11 +261,13 @@ describe('SupabaseStore.listUnfinishedDriveProjects (#13 tick finisher)', () => 
       ok([{ line_user_id: 'U2' }, { line_user_id: 'U1' }, { line_user_id: 'U4' }]),
       // Their accounts, then their main groups.
       ok([
-        { id: 'a1', line_user_id: 'U1', token_status: 'valid', updated_at: at('09:00') },
-        { id: 'a2-old', line_user_id: 'U2', token_status: 'revoked', updated_at: at('08:00') },
-        { id: 'a2', line_user_id: 'U2', token_status: 'valid', updated_at: at('11:00') },
-        { id: 'a4-old', line_user_id: 'U4', token_status: 'valid', updated_at: at('05:00') },
-        { id: 'a4', line_user_id: 'U4', token_status: 'revoked', updated_at: at('11:30') },
+        { id: 'a1', line_user_id: 'U1', token_status: 'valid', updated_at: at('09:00'), connected_at: at('09:00') },
+        { id: 'a2-old', line_user_id: 'U2', token_status: 'revoked', updated_at: at('08:00'), connected_at: at('08:00') },
+        { id: 'a2', line_user_id: 'U2', token_status: 'valid', updated_at: at('11:00'), connected_at: at('11:00') },
+        // Written last (its root folder ID), but not the last to sign in: never the latest (#14).
+        { id: 'a2-loser', line_user_id: 'U2', token_status: 'valid', updated_at: at('11:50'), connected_at: at('07:00') },
+        { id: 'a4-old', line_user_id: 'U4', token_status: 'valid', updated_at: at('05:00'), connected_at: at('05:00') },
+        { id: 'a4', line_user_id: 'U4', token_status: 'revoked', updated_at: at('11:30'), connected_at: at('11:30') },
       ]),
       ok([
         { project_id: 'p1', nominated_owner_line_user_id: 'U1', owner_confirmed_at: at('11:00') }, // confirm in the window; no Project folder
@@ -264,7 +308,7 @@ describe('SupabaseStore.listUnfinishedDriveProjects (#13 tick finisher)', () => 
     ])
     expect(chains[2]).toEqual([
       { method: 'from', args: ['google_accounts'] },
-      { method: 'select', args: ['id, line_user_id, token_status, updated_at'] },
+      { method: 'select', args: ['id, line_user_id, token_status, updated_at, connected_at'] },
       { method: 'in', args: ['line_user_id', ['U1', 'U2', 'U4']] },
       { method: 'order', args: ['id'] },
       { method: 'range', args: [0, PAGE_SIZE - 1] },

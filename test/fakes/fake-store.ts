@@ -70,6 +70,7 @@ export type GoogleAccountRecord = {
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
   driveRootFolderId?: string | null   // absent = null (#13)
   updatedAt: Date                     // set on every write, like the table's trigger
+  signedInAt?: Date                   // google_accounts.connected_at: the last sign-in (#14)
 }
 export type DriveConnectionRecord = {
   id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
@@ -160,9 +161,10 @@ export class FakeStore implements StorePort {
   )[] = []
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
-  // Write order of google_accounts rows, so the newest connection wins on lookup.
-  private googleWrites = new Map<string, number>()
-  private googleWriteSeq = 0
+  // Sign-in order of google_accounts rows (ORDER BY connected_at DESC), kept as a sequence
+  // because tests sign several accounts in at the same clock time.
+  private googleSignIns = new Map<string, number>()
+  private googleSignInSeq = 0
 
   /** Fault injection: skips `after` calls of `method` (default 0), then the next one rejects. */
   failNext(method: keyof StorePort, err?: Error, opts?: { after?: number }): void {
@@ -634,7 +636,7 @@ export class FakeStore implements StorePort {
   }
 
   // ---- #12 Google ----
-  async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
+  async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     this.fault('upsertGoogleAccount')
     fk(this.hasLineUser(a.lineUserId), 'google_accounts.line_user_id')
     let row = this.tables.google_accounts.find((g) => g.googleSubject === a.googleSubject)
@@ -645,23 +647,24 @@ export class FakeStore implements StorePort {
       this.tables.google_accounts.push(row)
     }
     this.touchGoogleAccount(row)
+    this.googleSignIns.set(row.id, ++this.googleSignInSeq) // connected_at = this sign-in
+    return { id: row.id }
   }
 
   /** What the google_accounts_updated_at trigger does on every write (the column default on
-   *  insert): updated_at = now(). It also makes the row the most recently written one. */
+   *  insert): updated_at = now(). It never changes which account signed in last. */
   private touchGoogleAccount(row: GoogleAccountRecord): void {
     row.updatedAt = this.clock()
-    this.googleWrites.set(row.id, ++this.googleWriteSeq)
   }
 
-  /** The person's most recently written Google account (ORDER BY updated_at DESC). */
+  /** The person's latest Google account: the last one to sign in (ORDER BY connected_at DESC). */
   private latestGoogleAccount(lineUserId: string | null): GoogleAccountRecord | undefined {
     return this.tables.google_accounts
       .filter((g) => g.lineUserId === lineUserId)
-      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))[0]
+      .sort((a, b) => (this.googleSignIns.get(b.id) ?? 0) - (this.googleSignIns.get(a.id) ?? 0))[0]
   }
 
-  /** A user with several Google accounts gets the most recently written one. */
+  /** A user with several Google accounts gets the one that signed in last. */
   async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
     this.fault('findGoogleAccountByLineUser')
     const row = this.latestGoogleAccount(lineUserId)

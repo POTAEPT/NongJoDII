@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { liffUrl } from '@/server/liff-links'
 import type { LineMessage } from '@/server/line/types'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
-import { ev, makeTestDeps, signedRequest, TEST_LIFF_ID, webhookBody } from './harness'
+import { ev, makeTestDeps, signedRequest, TEST_LIFF_ID, TEST_NOW, webhookBody } from './harness'
 
 const OWNER = 'Uowner1'
 
@@ -57,6 +57,7 @@ describe('connect card', () => {
     await store.upsertLineUser({ lineUserId: OWNER, displayName: null })
     await store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.x',
+      signedInAt: TEST_NOW,
     })
     await send(ev.follow({ userId: OWNER }))
     expect(line.replies[0].messages).toEqual([
@@ -69,6 +70,7 @@ describe('connect card', () => {
     await store.upsertLineUser({ lineUserId: OWNER, displayName: null })
     await store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.x',
+      signedInAt: TEST_NOW,
     })
     store.tables.google_accounts[0].tokenStatus = 'revoked'
     await send(ev.follow({ userId: OWNER }))

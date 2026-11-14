@@ -191,13 +191,15 @@ export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nomin
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
+  /** When this sign-in finished: stored as google_accounts.connected_at (#14). */
+  signedInAt: Date
 }
 
 /** A group that gets a Drive folder: attached, Owner confirmed, bot still in it. */
 export type DriveGroup = { groupId: string; lineGroupId: string; name: string | null; folderId: string | null }
-/** What #13 reads to lay out a Project's folders. `account` is the Owner's most recently
- *  written Google account; `activeAccountId` the account of the Project's active Drive
- *  connection (null = none yet). */
+/** What #13 reads to lay out a Project's folders. `account` is the Owner's latest Google
+ *  account (the last one to sign in); `activeAccountId` the account of the Project's active
+ *  Drive connection (null = none yet). */
 export type DriveContext = {
   projectId: string; ownerLineUserId: string; projectFolderId: string | null
   mainGroup: DriveGroup | null; subGroups: DriveGroup[]
@@ -355,7 +357,11 @@ export interface StorePort {
    *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
   confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }>
   // #12 Google
-  upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
+  /** Conflict on google_subject: update, token_status 'valid'. Every sign-in sets
+   *  connected_at = signedInAt, so a person's latest account is the one that signed in
+   *  last, whatever else wrote to the rows since (#14). Answers the row's ID. */
+  upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }>
+  /** The person's latest account: connected_at DESC. */
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>
   // #13 Drive folders
   /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still
@@ -379,7 +385,7 @@ export interface StorePort {
   /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
    *  listed when its main group has a confirmed Owner and the bot, a folder ID is still
    *  empty (the Project folder, or a group that getDriveContext lists: confirmed Owner, bot
-   *  still in it), the Owner's most recently written Google account is valid and no other
+   *  still in it), the Owner's latest Google account (connected_at) is valid and no other
    *  account holds the active drive_connections row, and the later of the Owner confirm
    *  (owner_confirmed_at) and that account's updated_at lies in [from, to]. updated_at
    *  moves on every sign-in, and also when the root folder ID is stored. */

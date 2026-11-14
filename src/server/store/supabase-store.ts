@@ -957,16 +957,21 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #12 Google ----
-  async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
+  async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     // refresh_token_ciphertext is text: the sealed 'v1.<iv>.<tag>.<ct>' string as-is.
-    const { error } = await this.db.from('google_accounts').upsert(
+    // connected_at is written on every sign-in (#14): it orders a person's accounts.
+    const { data, error } = await this.db.from('google_accounts').upsert(
       {
         line_user_id: a.lineUserId, google_subject: a.googleSubject, email: a.email,
         granted_scopes: a.grantedScopes, refresh_token_ciphertext: a.refreshTokenCiphertext, token_status: 'valid',
+        connected_at: a.signedInAt.toISOString(),
       },
       { onConflict: 'google_subject' },
-    )
+    ).select('id').maybeSingle()
     check('upsertGoogleAccount', error)
+    const row = data as { id: string } | null
+    if (!row) throw new AdapterError('supabase upsertGoogleAccount: no row')
+    return { id: row.id }
   }
 
   async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
@@ -974,7 +979,7 @@ export class SupabaseStore implements StorePort {
       .from('google_accounts')
       .select('id, token_status')
       .eq('line_user_id', lineUserId)
-      .order('updated_at', { ascending: false })
+      .order('connected_at', { ascending: false })
       .limit(1)
       .maybeSingle()
     check('findGoogleAccountByLineUser', error)
@@ -1020,12 +1025,12 @@ export class SupabaseStore implements StorePort {
           .is('left_at', null)
           .order('id')
           .range(from, to)),
-      // The Owner's most recently written account, as findGoogleAccountByLineUser.
+      // The Owner's latest account (last sign-in), as findGoogleAccountByLineUser.
       this.db
         .from('google_accounts')
         .select('id, token_status, refresh_token_ciphertext, drive_root_folder_id')
         .eq('line_user_id', project.owner_line_user_id)
-        .order('updated_at', { ascending: false })
+        .order('connected_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
       this.db
@@ -1139,7 +1144,7 @@ export class SupabaseStore implements StorePort {
       ...confirmed.map((r) => r.nominated_owner_line_user_id), ...signedIn.map((r) => r.line_user_id),
     ])]
 
-    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string }
+    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string; connected_at: string }
     type Main = { project_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
     const accounts: Account[] = []
     const mains: Main[] = []
@@ -1148,7 +1153,7 @@ export class SupabaseStore implements StorePort {
         readAllPages<Account>(m, (x, y) =>
           this.db
             .from('google_accounts')
-            .select('id, line_user_id, token_status, updated_at')
+            .select('id, line_user_id, token_status, updated_at, connected_at')
             .in('line_user_id', chunk)
             .order('id')
             .range(x, y)),
@@ -1168,11 +1173,12 @@ export class SupabaseStore implements StorePort {
       mains.push(...g)
     }
 
-    // Each Owner's most recently written account, as getDriveContext reads it.
+    // Each Owner's latest account (last sign-in), as getDriveContext reads it. The window
+    // below still runs on updated_at, which also moves when a root folder ID is stored.
     const latest = new Map<string, Account>()
     for (const a of accounts) {
       const seen = latest.get(a.line_user_id)
-      if (!seen || toDate(a.updated_at).getTime() > toDate(seen.updated_at).getTime()) latest.set(a.line_user_id, a)
+      if (!seen || toDate(a.connected_at).getTime() > toDate(seen.connected_at).getTime()) latest.set(a.line_user_id, a)
     }
     // Project ID -> the account that would run it: in the window, with a valid latest account.
     const inWindow = new Map<string, string>()

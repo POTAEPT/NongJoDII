@@ -107,6 +107,7 @@ async function seedSignedInNominee(h: H) {
   await h.store.upsertGoogleAccount({
     lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
     grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+    signedInAt: h.deps.now(),
   })
   return g.id
 }
@@ -125,6 +126,7 @@ async function signInAccount(h: H, n: 1 | 2): Promise<string> {
   await h.store.upsertGoogleAccount({
     lineUserId: OWNER, googleSubject: `g-sub-${n}`, email: null,
     grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal(`rt-${n}`, TEST_KEY),
+    signedInAt: h.deps.now(),
   })
   return h.store.tables.google_accounts.find((a) => a.googleSubject === `g-sub-${n}`)!.id
 }
@@ -483,6 +485,7 @@ describe('Owner confirm', () => {
     await h.store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
       grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+      signedInAt: h.deps.now(),
     })
     const res = await submitSetup(h.deps, {
       idToken: OWNER_TOKEN, groupId: g.id, workDescription: 'งาน',
@@ -731,6 +734,7 @@ describe('tick finisher: the 15-minute tick finishes what a request could not', 
     await h.store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
       grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+      signedInAt: h.deps.now(),
     })
     h.store.tables.google_accounts[0].tokenStatus = 'revoked'
     await tick(h, after(30 * MIN), [driveSetupJob])
@@ -783,9 +787,10 @@ describe('one Google account per Project: the active connection row is the lock'
     expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId, googleAccountId: a, status: 'active' })])
     expectClaimBeforeEveryWrite(h)
     // Root folders are per account and need no claim: B stored its own. That write moves B's
-    // updated_at, so B reads as the Owner's latest account again (see the PR's open points).
+    // updated_at, but not the order of sign-ins (#14): A, the last one to sign in, stays the
+    // Owner's latest account.
     expect(madeWith(h, h.store.tables.google_accounts.find((x) => x.id === b)?.driveRootFolderId)).toBe('at:rt-2')
-    expect(await h.store.findGoogleAccountByLineUser(OWNER)).toMatchObject({ id: b })
+    expect(await h.store.findGoogleAccountByLineUser(OWNER)).toMatchObject({ id: a })
   })
 
   it('two accounts that both start with no Project folder: the first claim wins and the other run writes nothing', async () => {

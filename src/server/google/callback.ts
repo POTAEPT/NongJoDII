@@ -53,6 +53,7 @@ async function decide(deps: Deps, params: URLSearchParams, defer: Defer, deadlin
       email: token.email,
       grantedScopes: token.scopes,
       refreshTokenCiphertext: seal(token.refreshToken, deps.config.tokenEncryptionKey),
+      signedInAt: deps.now(),
     })
   } catch {
     return 'failed'

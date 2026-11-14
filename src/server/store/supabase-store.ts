@@ -1082,28 +1082,37 @@ export class SupabaseStore implements StorePort {
     return { folderId: ((row as Record<string, string | null> | null)?.[column]) ?? null }
   }
 
-  async ensureDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean }> {
-    const { data, error } = await this.db
-      .from('drive_connections')
-      .select('id')
-      .eq('project_id', projectId)
-      .eq('status', 'active')
-      .limit(1)
-    check('ensureDriveConnection', error)
-    if (((data ?? []) as unknown[]).length > 0) return { created: false }
+  async claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }> {
+    const holder = async (): Promise<string | null> => {
+      const { data, error } = await this.db
+        .from('drive_connections')
+        .select('google_account_id')
+        .eq('project_id', projectId)
+        .eq('status', 'active')
+        .limit(1)
+      check('claimDriveConnection', error)
+      return ((data ?? []) as { google_account_id: string }[])[0]?.google_account_id ?? null
+    }
+    const held = await holder()
+    if (held !== null) return { created: false, accountId: held }
     // The partial unique index drive_connections_one_active cannot be an ON CONFLICT
-    // target through PostgREST, so a concurrent insert shows as 23505: one active row.
+    // target through PostgREST, so a concurrent claim shows as 23505: that claim holds it.
     const { error: insertError } = await this.db
       .from('drive_connections')
       .insert({ project_id: projectId, google_account_id: googleAccountId, status: 'active' })
-    if (insertError?.code === '23505') return { created: false }
-    check('ensureDriveConnection', insertError)
-    return { created: true }
+    if (insertError?.code === '23505') {
+      const winner = await holder()
+      if (winner === null) throw new AdapterError('supabase claimDriveConnection: no holder')
+      return { created: false, accountId: winner }
+    }
+    check('claimDriveConnection', insertError)
+    return { created: true, accountId: googleAccountId }
   }
 
   /** Flat reads joined here, no embedded filters: the Owners with a confirm or a Google
-   *  account write since `from`, then their accounts and main groups, then the active
-   *  connections of the Projects left. Every read is paged; every IN list is chunked. */
+   *  account write since `from`, then their accounts and main groups, then, for the
+   *  Projects in the window, the empty folder IDs and the active connection holders. Every
+   *  read is paged; every IN list is chunked. */
   async listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]> {
     const m = 'listUnfinishedDriveProjects'
     const since = from.toISOString()
@@ -1130,7 +1139,7 @@ export class SupabaseStore implements StorePort {
       ...confirmed.map((r) => r.nominated_owner_line_user_id), ...signedIn.map((r) => r.line_user_id),
     ])]
 
-    type Account = { line_user_id: string; token_status: string; updated_at: string }
+    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string }
     type Main = { project_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
     const accounts: Account[] = []
     const mains: Main[] = []
@@ -1139,7 +1148,7 @@ export class SupabaseStore implements StorePort {
         readAllPages<Account>(m, (x, y) =>
           this.db
             .from('google_accounts')
-            .select('line_user_id, token_status, updated_at')
+            .select('id, line_user_id, token_status, updated_at')
             .in('line_user_id', chunk)
             .order('id')
             .range(x, y)),
@@ -1165,25 +1174,54 @@ export class SupabaseStore implements StorePort {
       const seen = latest.get(a.line_user_id)
       if (!seen || toDate(a.updated_at).getTime() > toDate(seen.updated_at).getTime()) latest.set(a.line_user_id, a)
     }
-    const inWindow = mains.filter((g) => {
+    // Project ID -> the account that would run it: in the window, with a valid latest account.
+    const inWindow = new Map<string, string>()
+    for (const g of mains) {
       const account = latest.get(g.nominated_owner_line_user_id)
-      if (account?.token_status !== 'valid') return false
+      if (account?.token_status !== 'valid') continue
       const last = Math.max(toDate(g.owner_confirmed_at).getTime(), toDate(account.updated_at).getTime())
-      return last >= from.getTime() && last <= to.getTime()
-    }).map((g) => g.project_id)
-
-    const connected = new Set<string>()
-    for (const chunk of chunks(inWindow)) {
-      const rows = await readAllPages<{ project_id: string }>(m, (x, y) =>
-        this.db
-          .from('drive_connections')
-          .select('project_id')
-          .eq('status', 'active')
-          .in('project_id', chunk)
-          .order('id')
-          .range(x, y))
-      for (const r of rows) connected.add(r.project_id)
+      if (last >= from.getTime() && last <= to.getTime()) inWindow.set(g.project_id, account.id)
     }
-    return [...new Set(inWindow)].filter((id) => !connected.has(id)).sort()
+
+    const missing = new Set<string>() // a folder ID is still empty
+    const holders = new Map<string, string>()
+    for (const chunk of chunks([...inWindow.keys()])) {
+      const [noProjectFolder, noGroupFolder, active] = await Promise.all([
+        readAllPages<{ id: string }>(m, (x, y) =>
+          this.db
+            .from('projects')
+            .select('id')
+            .in('id', chunk)
+            .is('drive_project_folder_id', null)
+            .order('id')
+            .range(x, y)),
+        // The groups getDriveContext lists, so a Project is never pending for a group no run makes.
+        readAllPages<{ project_id: string }>(m, (x, y) =>
+          this.db
+            .from('groups')
+            .select('project_id')
+            .in('project_id', chunk)
+            .not('owner_confirmed_at', 'is', null)
+            .is('left_at', null)
+            .is('drive_folder_id', null)
+            .order('id')
+            .range(x, y)),
+        readAllPages<{ project_id: string; google_account_id: string }>(m, (x, y) =>
+          this.db
+            .from('drive_connections')
+            .select('project_id, google_account_id')
+            .eq('status', 'active')
+            .in('project_id', chunk)
+            .order('id')
+            .range(x, y)),
+      ])
+      for (const r of noProjectFolder) missing.add(r.id)
+      for (const r of noGroupFolder) missing.add(r.project_id)
+      for (const r of active) holders.set(r.project_id, r.google_account_id)
+    }
+    return [...inWindow]
+      .filter(([id, accountId]) => missing.has(id) && (holders.get(id) ?? accountId) === accountId)
+      .map(([id]) => id)
+      .sort()
   }
 }

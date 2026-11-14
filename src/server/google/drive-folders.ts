@@ -11,6 +11,10 @@ import type { TickJob } from '../tick/run-tick'
 // Every run is idempotent: a stored folder Drive still has is kept; a missing, trashed
 // or never-made one is created under its parent and its ID stored. Names are only
 // written to Drive, never read back. No code here deletes or moves anything in Drive.
+// One Google account per Project: before its first Project or group folder ID write (or
+// at the end, when it writes none), a run claims the Project's active drive_connections
+// row (claimDriveConnection). A run whose account does not hold that row stops and writes
+// nothing more. Root folder IDs are per account and need no claim.
 
 export const ROOT_FOLDER = 'NongJoDII'
 export const MAIN_GROUP_FOLDER = 'Main group files'
@@ -44,6 +48,17 @@ export function driveDeadline(startedAt: Date): Date {
 /** The run stopped before a step it had no time for. Nothing of that step ran. */
 export class DriveTimeUp extends Error {
   name = 'DriveTimeUp'
+}
+
+/** Another Google account holds the Project's active connection row: this run stops. */
+class DriveClaimLost extends Error {
+  name = 'DriveClaimLost'
+}
+
+/** A run that lost the claim: logged like the other_account pre-check, not as a failure. */
+function lostClaim(projectId: string): null {
+  log('drive_folders_skipped', { projectId, reason: 'other_account' })
+  return null
 }
 
 /** Throws DriveTimeUp unless a step of `calls` Google or LINE calls, each running to its
@@ -113,26 +128,32 @@ async function layOutProjects(deps: Deps, projectIds: string[], deadline: Date):
   }
 }
 
-/** Root, Project, main group and every Sub group folder of one Project, then its active
- *  Drive connection, by `deadline`. Throws on a Drive or store failure (the caller logs
- *  it) and DriveTimeUp when time runs out; a later run picks up where this one stopped. */
+/** Root, Project, main group and every Sub group folder of one Project, by `deadline`,
+ *  under the claim of one Google account. Throws on a Drive or store failure (the caller
+ *  logs it) and DriveTimeUp when time runs out; a later run picks up where this one
+ *  stopped. A run that loses the claim to another account logs it and returns. */
 export async function ensureDriveFolders(deps: Deps, projectId: string, deadline: Date): Promise<void> {
   const ctx = await deps.store.getDriveContext(projectId)
   if (!ctx) return
   const run = await openRun(deps, ctx, deadline)
   if (!run) return
-  const project = await run.project()
-  const groups = [ctx.mainGroup, ...ctx.subGroups].filter((g): g is DriveGroup => g !== null)
-  for (const g of groups) await run.group(g, project)
-  await run.connect()
+  try {
+    const project = await run.project()
+    const groups = [ctx.mainGroup, ...ctx.subGroups].filter((g): g is DriveGroup => g !== null)
+    for (const g of groups) await run.group(g, project)
+    await run.finish()
+  } catch (err) {
+    if (err instanceof DriveClaimLost) return void lostClaim(projectId)
+    throw err
+  }
 }
 
 /** The folder of one group (a Sub group just attached, or before a file is saved),
  *  making the root and Project folders first when needed, by `deadline`. null when the
  *  group has no Project or no confirmed Owner, the Owner has no usable Google account, or
- *  the Project's active connection is another Google account. Throws on a token, Drive or
- *  store failure, and DriveTimeUp when time runs out, so the caller (the Sub group attach
- *  flow, #4's file save) must catch. */
+ *  another Google account holds the Project. Throws on a token, Drive or store failure,
+ *  and DriveTimeUp when time runs out, so the caller (the Sub group attach flow, #4's file
+ *  save) must catch. */
 export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: Date): Promise<string | null> {
   const row = await deps.store.getGroupById(groupId)
   if (!row?.projectId) return null
@@ -142,13 +163,19 @@ export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: D
   if (!target) return null
   const run = await openRun(deps, ctx, deadline)
   if (!run) return null
-  const folderId = await run.group(target, await run.project())
-  await run.connect()
-  return folderId
+  try {
+    const folderId = await run.group(target, await run.project())
+    await run.finish()
+    return folderId
+  } catch (err) {
+    if (err instanceof DriveClaimLost) return lostClaim(ctx.projectId)
+    throw err
+  }
 }
 
 /** null (logged) when the Project's Drive cannot be used: no valid account, or the
- *  active connection belongs to another Google account (changing accounts is #3's flow). */
+ *  active connection belongs to another Google account (changing accounts is #3's flow).
+ *  That check is only a cheap first look: the claim decides. */
 async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
   const { projectId } = ctx
   const account = ctx.account
@@ -156,10 +183,7 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
     log('drive_folders_skipped', { projectId, reason: 'no_account' })
     return null
   }
-  if (ctx.activeAccountId !== null && ctx.activeAccountId !== account.id) {
-    log('drive_folders_skipped', { projectId, reason: 'other_account' })
-    return null
-  }
+  if (ctx.activeAccountId !== null && ctx.activeAccountId !== account.id) return lostClaim(projectId)
   const refreshToken = open(account.refreshTokenCiphertext, deps.config.tokenEncryptionKey)
   if (refreshToken === null) throw new AdapterError('drive refresh token unreadable')
   checkTime(deps, deadline, 1)
@@ -169,11 +193,21 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
   const storedRootId = account.rootFolderId
   let created = 0
 
+  // The claim: the Project's active drive_connections row, read once per run. It is taken
+  // after the Project folder is shared, so an account that cannot share never takes it.
+  let claim: { created: boolean; accountId: string } | null = null
+  async function claimProject(): Promise<{ created: boolean }> {
+    claim ??= await deps.store.claimDriveConnection(projectId, accountId)
+    if (claim.accountId !== accountId) throw new DriveClaimLost()
+    return claim
+  }
+
   /** Keeps `stored` while Drive still has it; otherwise makes one and stores it. A
    *  recreated parent means its children went with it, so they are made anew. One step:
-   *  `makeCalls` is how many Google or LINE calls `make` may need. */
+   *  `makeCalls` is how many Google or LINE calls `make` may need. `claimed`: the ID is a
+   *  Project or group folder, so the run claims the Project before it stores it. */
   async function ensure(
-    stored: string | null, parent: Folder | null, makeCalls: number, make: () => Promise<string>,
+    stored: string | null, parent: Folder | null, makeCalls: number, claimed: boolean, make: () => Promise<string>,
     save: (from: string | null, to: string) => Promise<{ folderId: string | null }>,
   ): Promise<Folder> {
     const verify = stored !== null && !parent?.recreated
@@ -183,16 +217,18 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
     }
     const id = await make()
     created++
+    if (claimed) await claimProject()
     const { folderId } = await save(stored, id)
     if (folderId === null) throw new AdapterError('drive folder owner row vanished')
-    // Another run stored its folder first: use that one (ours stays, empty, in Drive).
+    // Another run of this same account stored its folder first: use that one (ours
+    // stays, empty, in Drive). A run of another account never gets here: it lost the claim.
     return { id: folderId, recreated: folderId === id }
   }
 
   let root: Folder | null = null
   async function rootFolder(): Promise<Folder> {
     root ??= await ensure(
-      storedRootId, null, 1,
+      storedRootId, null, 1, false,
       () => google.createFolder(token, ROOT_FOLDER, null),
       (from, to) => deps.store.setDriveRootFolder(accountId, from, to),
     )
@@ -206,7 +242,7 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
       // The name lookup (when no name is stored), the create and the share.
       const lookup = ctx.mainGroup !== null && !ctx.mainGroup.name ? 1 : 0
       project ??= await ensure(
-        ctx.projectFolderId, parent, lookup + 2,
+        ctx.projectFolderId, parent, lookup + 2, true,
         async () => {
           const name = ctx.mainGroup ? await groupName(deps, ctx.mainGroup, PROJECT_FALLBACK) : PROJECT_FALLBACK
           const id = await google.createFolder(token, name, parent.id)
@@ -224,7 +260,7 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
       // The name lookup (a Sub group with no stored name) and the create.
       const lookup = !isMain && !g.name ? 1 : 0
       const folder = await ensure(
-        g.folderId, parent, lookup + 1,
+        g.folderId, parent, lookup + 1, true,
         async () => {
           const name = isMain ? MAIN_GROUP_FOLDER : await groupName(deps, g, SUB_GROUP_FALLBACK)
           return google.createFolder(token, name, parent.id)
@@ -233,9 +269,10 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
       )
       return folder.id
     },
-    async connect(): Promise<void> {
-      checkTime(deps, deadline, 0)
-      const { created: connected } = await deps.store.ensureDriveConnection(projectId, accountId)
+    /** The end of a run: a run that stored no folder ID claims the Project here. */
+    async finish(): Promise<void> {
+      if (claim === null) checkTime(deps, deadline, 0)
+      const { created: connected } = await claimProject()
       log('drive_folders', { projectId, created, connected })
     },
   }

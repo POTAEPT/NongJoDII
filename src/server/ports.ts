@@ -370,15 +370,19 @@ export interface StorePort {
   setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
   setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
   setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
-  /** Inserts the Project's active drive_connections row unless one exists (unique index
-   *  drive_connections_one_active); never updates or deletes a row. */
-  ensureDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean }>
+  /** The lock that binds a Project's folders to one Google account: the Project's active
+   *  drive_connections row (unique index drive_connections_one_active). Inserts it for
+   *  `googleAccountId` unless one exists, then answers the account that holds it (on a
+   *  23505 it reads the holder again). created: this call inserted the row. Never updates
+   *  or deletes a row. */
+  claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }>
   /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
-   *  listed when its main group has a confirmed Owner and the bot, it has no active
-   *  drive_connections row (that row is written last, so it marks a finished setup), the
-   *  Owner's most recently written Google account is valid, and the later of the Owner
-   *  confirm (owner_confirmed_at) and that account's updated_at lies in [from, to].
-   *  updated_at moves on every sign-in, and also when the root folder ID is stored. */
+   *  listed when its main group has a confirmed Owner and the bot, a folder ID is still
+   *  empty (the Project folder, or a group that getDriveContext lists: confirmed Owner, bot
+   *  still in it), the Owner's most recently written Google account is valid and no other
+   *  account holds the active drive_connections row, and the later of the Owner confirm
+   *  (owner_confirmed_at) and that account's updated_at lies in [from, to]. updated_at
+   *  moves on every sign-in, and also when the root folder ID is stored. */
   listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]>
 }
 

@@ -6,7 +6,7 @@ import {
 } from '@/server/google/drive-folders'
 import { startGoogleSignIn } from '@/server/google/start'
 import { AdapterError } from '@/server/log'
-import { seal } from '@/server/crypto/secretbox'
+import { open, seal } from '@/server/crypto/secretbox'
 import { confirmOwner } from '@/server/setup/confirm'
 import { submitSetup } from '@/server/setup/submit'
 import { handleTickRequest } from '@/server/tick/handle-request'
@@ -119,6 +119,48 @@ const selfConfirmForm = (groupId: string) => ({
   members: [{ lineUserId: OWNER, nicknames: [], role: '' }], ownerLineUserId: OWNER,
 })
 
+/** OWNER signs in with Google account `n` (subject g-sub-n, refresh token rt-n): it
+ *  becomes the Owner's most recently written account. Answers its ID. */
+async function signInAccount(h: H, n: 1 | 2): Promise<string> {
+  await h.store.upsertGoogleAccount({
+    lineUserId: OWNER, googleSubject: `g-sub-${n}`, email: null,
+    grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal(`rt-${n}`, TEST_KEY),
+  })
+  return h.store.tables.google_accounts.find((a) => a.googleSubject === `g-sub-${n}`)!.id
+}
+/** The access token the fake Google hands account `accountId`: 'at:' + its refresh token. */
+const accessTokenOf = (h: H, accountId: string) =>
+  `at:${open(h.store.tables.google_accounts.find((a) => a.id === accountId)!.refreshTokenCiphertext as string, TEST_KEY)}`
+/** Which account made a Drive folder, as its access token. */
+const madeWith = (h: H, folderId: string | null | undefined) => (folderId ? h.google.folders.get(folderId)?.createdWith : undefined)
+
+/** The claim comes first: each Project or group folder ID write follows a claim on that
+ *  Project won by the account that made the folder. */
+function expectClaimBeforeEveryWrite(h: H) {
+  const won = new Set<string>()
+  let writes = 0
+  for (const w of h.store.driveWrites) {
+    if (w.op === 'claim') {
+      if (w.holder === w.accountId) won.add(`${w.projectId} ${accessTokenOf(h, w.accountId)}`)
+      continue
+    }
+    const projectId = w.op === 'project' ? w.projectId : projectOf(h, w.groupId)
+    expect(won.has(`${projectId} ${madeWith(h, w.to)}`)).toBe(true)
+    writes++
+  }
+  expect(writes).toBeGreaterThan(0)
+}
+
+const MIN = 60_000
+const after = (ms: number) => new Date(TEST_NOW.getTime() + ms)
+
+/** One tick at `at`: the route answers, then its jobs run (every tick job unless `jobs` is given). */
+async function tick(h: H, at: Date, jobs?: TickJob[]) {
+  h.setNow(at)
+  expect((await handleTickRequest(tickRequest(), h.deps, h.defer, jobs)).status).toBe(200)
+  await h.runDeferred()
+}
+
 describe('first sign-in', () => {
   it('creates NongJoDII/<main group>/Main group files, stores the IDs, shares the Project folder once and records one active connection', async () => {
     const h = setup()
@@ -143,6 +185,9 @@ describe('first sign-in', () => {
       { id: expect.any(String), projectId, googleAccountId: account(h).id, status: 'active' },
     ])
     expect(h.google.refreshCalls).toEqual(['rt-1'])
+    // The account claims the Project (its active row) before it stores a folder ID in it.
+    expect(h.store.driveWrites[0]).toEqual({ op: 'claim', projectId, accountId: account(h).id, holder: account(h).id })
+    expectClaimBeforeEveryWrite(h)
   })
 
   it('creates a folder for every attached, confirmed Sub group, and none for an unconfirmed one', async () => {
@@ -488,7 +533,8 @@ describe('time limit: each route allows 60 s, its after() work included', () => 
     expect(h.google.callLog.map((c) => c.call.split(':')[0])).toEqual(['exchange', 'refresh', 'create', 'create', 'share'])
     expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
     expect(groupFolderId(h, groupId)).toBeNull()
-    expect(h.store.tables.drive_connections).toHaveLength(0)
+    // The account claimed the Project before it stored the Project folder ID.
+    expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId, googleAccountId: account(h).id })])
     expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId, projectsLeft: 1 })
   })
 
@@ -501,10 +547,10 @@ describe('time limit: each route allows 60 s, its after() work included', () => 
     await signIn(h)
     expectEveryCallInTime(h, start)
     expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
-    // The root, the Project, Main group files and 3 of the 6 Sub groups. The connection
-    // comes last, so the Project still counts as unfinished.
+    // The root, the Project, Main group files and 3 of the 6 Sub groups. The Project is
+    // claimed, but three group folder IDs are still empty: it stays unfinished.
     expect(h.google.folders.size).toBe(6)
-    expect(h.store.tables.drive_connections).toHaveLength(0)
+    expect(await h.store.listUnfinishedDriveProjects(after(-2 * 3600_000), after(15 * MIN))).toEqual([projectId])
     expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId, projectsLeft: 1 })
   })
 
@@ -561,16 +607,6 @@ describe('time limit: each route allows 60 s, its after() work included', () => 
 })
 
 describe('tick finisher: the 15-minute tick finishes what a request could not', () => {
-  const MIN = 60_000
-  const after = (ms: number) => new Date(TEST_NOW.getTime() + ms)
-
-  /** One tick at `at`: the route answers, then its jobs run (every tick job unless `jobs` is given). */
-  async function tick(h: H, at: Date, jobs?: TickJob[]) {
-    h.setNow(at)
-    expect((await handleTickRequest(tickRequest(), h.deps, h.defer, jobs)).status).toBe(200)
-    await h.runDeferred()
-  }
-
   it('finishes, tick by tick, the Projects a slow sign-in ran out of time for', async () => {
     const h = setup()
     for (const [name, lineGroupId] of [['A', 'Ca'], ['B', 'Cb'], ['C', 'Cc']]) await seedProject(h, { name, lineGroupId })
@@ -606,7 +642,7 @@ describe('tick finisher: the 15-minute tick finishes what a request could not', 
     expect(h.google.shares).toHaveLength(1)
   })
 
-  it('leaves a finished Project alone: its active connection marks it done', async () => {
+  it('leaves a finished Project alone: every folder ID is stored', async () => {
     const h = setup()
     await seedProject(h)
     await signIn(h)
@@ -667,12 +703,125 @@ describe('tick finisher: the 15-minute tick finishes what a request could not', 
     const h = setup()
     const { projectId } = await seedProject(h)
     h.google.driveError = new AdapterError('google drive create 500')
-    await signIn(h) // Drive was down: the Project is not connected
+    await signIn(h) // Drive was down: the Project has no folder yet
     h.google.driveError = null
     h.google.callLog = []
     const slow: TickJob = { name: 'slow', run: async () => h.setNow(new Date(h.deps.now().getTime() + 50_000)) }
     await tick(h, after(15 * MIN), [slow, driveSetupJob])
     expect(h.google.callLog).toEqual([])
     expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId, projectsLeft: 1 })
+  })
+})
+
+describe('one Google account per Project: the active connection row is the lock', () => {
+  /** The Project and group folder ID writes made with folders of `token`. */
+  const folderWritesWith = (h: H, token: string) =>
+    h.store.driveWrites.filter((w) => w.op !== 'claim' && madeWith(h, w.to) === token)
+  const claimsBy = (h: H, accountId: string) =>
+    h.store.driveWrites.filter((w) => w.op === 'claim' && w.accountId === accountId)
+
+  it('a run that read its context before another account stored the Project folder stops at its claim and writes nothing', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    const b = await signInAccount(h, 2) // the Owner's latest account for now
+    const parkedB = h.google.hold('refresh:rt-2')
+    const runB = ensureDriveFolders(h.deps, projectId, fullTime(h))
+    await parkedB.reached // B has read its context: account B, no Project folder, no connection
+    const a = await signInAccount(h, 1) // the Owner signs in again, with account A
+    await ensureDriveFolders(h.deps, projectId, fullTime(h)) // A claims, then stores its folders
+    parkedB.release()
+    await runB
+
+    // B made its own root and Project folder, then lost the claim to A: no Project, group
+    // or connection write. Its Project folder stays behind, empty (the known orphan case).
+    expect(claimsBy(h, b)).toEqual([{ op: 'claim', projectId, accountId: b, holder: a }])
+    expect(folderWritesWith(h, 'at:rt-2')).toEqual([])
+    expect(h.google.foldersNamed('ทีมหลัก').map((f) => f.createdWith).sort()).toEqual(['at:rt-1', 'at:rt-2'])
+    expect(infoEvents()).toContainEqual({ event: 'drive_folders_skipped', projectId, reason: 'other_account' })
+    // One account's tree and its active row.
+    const projectFolder = projectRow(h, projectId).driveProjectFolderId
+    expect(madeWith(h, projectFolder)).toBe('at:rt-1')
+    expect(h.google.folders.get(groupFolderId(h, groupId) as string)).toMatchObject({ parentId: projectFolder, createdWith: 'at:rt-1' })
+    expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId, googleAccountId: a, status: 'active' })])
+    expectClaimBeforeEveryWrite(h)
+    // Root folders are per account and need no claim: B stored its own. That write moves B's
+    // updated_at, so B reads as the Owner's latest account again (see the PR's open points).
+    expect(madeWith(h, h.store.tables.google_accounts.find((x) => x.id === b)?.driveRootFolderId)).toBe('at:rt-2')
+    expect(await h.store.findGoogleAccountByLineUser(OWNER)).toMatchObject({ id: b })
+  })
+
+  it('two accounts that both start with no Project folder: the first claim wins and the other run writes nothing', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    for (let i = 1; i <= 2; i++) seedSubGroup(h, projectId, { lineGroupId: `Csub${i}`, name: `ทีมย่อย ${i}` })
+    const b = await signInAccount(h, 2)
+    const parkedB = h.google.hold('refresh:rt-2')
+    const runB = ensureDriveFolders(h.deps, projectId, fullTime(h))
+    await parkedB.reached
+    const a = await signInAccount(h, 1)
+    const parkedA = h.google.hold('refresh:rt-1')
+    const runA = ensureDriveFolders(h.deps, projectId, fullTime(h))
+    await parkedA.reached
+    parkedA.release()
+    parkedB.release()
+    await Promise.all([runA, runB])
+
+    expect(h.store.tables.drive_connections).toHaveLength(1)
+    const winner = h.store.tables.drive_connections[0].googleAccountId
+    const loser = winner === a ? b : a
+    expect(claimsBy(h, loser)).toEqual([{ op: 'claim', projectId, accountId: loser, holder: winner }])
+    expect(folderWritesWith(h, accessTokenOf(h, loser))).toEqual([])
+    // Every stored Project and group folder is the winner's.
+    const stored = [projectRow(h, projectId).driveProjectFolderId,
+      ...h.store.tables.groups.filter((g) => g.projectId === projectId).map((g) => groupFolderId(h, g.id))]
+    expect(stored.map((id) => madeWith(h, id))).toEqual(stored.map(() => accessTokenOf(h, winner)))
+    expectClaimBeforeEveryWrite(h)
+  })
+})
+
+describe('finished setup: every folder ID stored, not the connection row', () => {
+  const window = () => [after(-2 * 3600_000), after(15 * MIN)] as const
+
+  it('a claimed Project with a group folder still missing stays unfinished, and the tick finishes it', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    h.google.callMs = DRIVE_CALL_MAX_MS // the sign-in stores the Project folder, then runs out of time
+    await signIn(h)
+    expect(h.store.tables.drive_connections).toHaveLength(1)
+    expect(groupFolderId(h, groupId)).toBeNull()
+    expect(await h.store.listUnfinishedDriveProjects(...window())).toEqual([projectId])
+
+    h.google.callMs = 0
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(groupFolderId(h, groupId)).not.toBeNull()
+    expect(await h.store.listUnfinishedDriveProjects(...window())).toEqual([])
+  })
+
+  it('leaves alone a Project that another account than the Owner\'s latest holds', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    h.google.callMs = DRIVE_CALL_MAX_MS
+    await signIn(h) // account 1 claims the Project, then runs out of time
+    expect(groupFolderId(h, groupId)).toBeNull()
+    expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId, googleAccountId: account(h).id })])
+    h.google.callMs = 0
+    await signInAccount(h, 2) // the Owner's latest account is now another one
+    expect(await h.store.listUnfinishedDriveProjects(...window())).toEqual([])
+    h.google.callLog = []
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+  })
+
+  it('an unconfirmed Sub group, or one the bot left, does not keep a Project unfinished', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    await signIn(h)
+    seedSubGroup(h, projectId, { lineGroupId: 'Cpend', name: 'รอยืนยัน', confirmed: false })
+    const left = seedSubGroup(h, projectId, { lineGroupId: 'Cleft', name: 'ออกแล้ว' })
+    h.store.seedSchedule(left, { leftAt: TEST_NOW })
+    expect(await h.store.listUnfinishedDriveProjects(...window())).toEqual([])
+    h.google.callLog = []
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
   })
 })

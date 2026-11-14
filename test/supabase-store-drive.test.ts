@@ -162,31 +162,48 @@ describe('SupabaseStore folder setters (compare-and-set)', () => {
   })
 })
 
-describe('SupabaseStore.ensureDriveConnection', () => {
-  it('inserts an active row when the Project has none', async () => {
+describe('SupabaseStore.claimDriveConnection (the lock that binds a Project to one Google account)', () => {
+  const holderRead = [
+    { method: 'from', args: ['drive_connections'] },
+    { method: 'select', args: ['google_account_id'] },
+    { method: 'eq', args: ['project_id', 'p1'] },
+    { method: 'eq', args: ['status', 'active'] },
+    { method: 'limit', args: [1] },
+  ]
+
+  it('inserts the active row when the Project has none, and answers this account as the holder', async () => {
     const { store, chains } = stubDb([ok([]), ok(null)])
-    expect(await store.ensureDriveConnection('p1', 'a1')).toEqual({ created: true })
+    expect(await store.claimDriveConnection('p1', 'a1')).toEqual({ created: true, accountId: 'a1' })
+    expect(chains[0]).toEqual(holderRead)
     expect(chains[1]).toEqual([
       { method: 'from', args: ['drive_connections'] },
       { method: 'insert', args: [{ project_id: 'p1', google_account_id: 'a1', status: 'active' }] },
     ])
   })
 
-  it('leaves an existing active row alone', async () => {
-    const { store, chains } = stubDb([ok([{ id: 'c1' }])])
-    expect(await store.ensureDriveConnection('p1', 'a1')).toEqual({ created: false })
+  it('answers the account that already holds the Project, and writes nothing', async () => {
+    const { store, chains } = stubDb([ok([{ google_account_id: 'a2' }])])
+    expect(await store.claimDriveConnection('p1', 'a1')).toEqual({ created: false, accountId: 'a2' })
     expect(chains).toHaveLength(1)
   })
 
-  it('reads a concurrent insert (23505 on drive_connections_one_active) as already there', async () => {
-    const { store } = stubDb([ok([]), { data: null, error: { code: '23505' } }])
-    expect(await store.ensureDriveConnection('p1', 'a1')).toEqual({ created: false })
+  it('reads the holder again when another claim won the insert (23505 on drive_connections_one_active)', async () => {
+    const { store, chains } = stubDb([ok([]), { data: null, error: { code: '23505' } }, ok([{ google_account_id: 'a2' }])])
+    expect(await store.claimDriveConnection('p1', 'a1')).toEqual({ created: false, accountId: 'a2' })
+    expect(chains[2]).toEqual(holderRead)
+  })
+
+  it('throws when the row it lost to is gone by the second read', async () => {
+    const { store } = stubDb([ok([]), { data: null, error: { code: '23505' } }, ok([])])
+    const err = await store.claimDriveConnection('p1', 'a1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as Error).message).toBe('supabase claimDriveConnection: no holder')
   })
 
   it('throws on another insert error', async () => {
     const { store } = stubDb([ok([]), { data: null, error: { code: '23503' } }])
-    expect(((await store.ensureDriveConnection('p1', 'a1').catch((e: unknown) => e)) as Error).message)
-      .toBe('supabase ensureDriveConnection: 23503')
+    expect(((await store.claimDriveConnection('p1', 'a1').catch((e: unknown) => e)) as Error).message)
+      .toBe('supabase claimDriveConnection: 23503')
   })
 })
 
@@ -195,30 +212,38 @@ describe('SupabaseStore.listUnfinishedDriveProjects (#13 tick finisher)', () => 
   const TO = new Date('2026-11-14T11:58:00Z')
   const at = (hhmm: string) => `2026-11-14T${hhmm}:00+00:00`
 
-  it('finds the Owners with a recent confirm or Google account write, then keeps their unconnected Projects whose later event is in the window', async () => {
+  it('finds the Owners with a recent confirm or Google account write, then keeps their Projects in the window that still miss a folder ID', async () => {
     const { store, chains } = stubDb([
       // Owners: main groups confirmed since FROM, and Google accounts written since FROM.
       ok([{ nominated_owner_line_user_id: 'U1' }]),
       ok([{ line_user_id: 'U2' }, { line_user_id: 'U1' }, { line_user_id: 'U4' }]),
       // Their accounts, then their main groups.
       ok([
-        { line_user_id: 'U1', token_status: 'valid', updated_at: at('09:00') },
-        { line_user_id: 'U2', token_status: 'revoked', updated_at: at('08:00') },
-        { line_user_id: 'U2', token_status: 'valid', updated_at: at('11:00') },
-        { line_user_id: 'U4', token_status: 'valid', updated_at: at('05:00') },
-        { line_user_id: 'U4', token_status: 'revoked', updated_at: at('11:30') },
+        { id: 'a1', line_user_id: 'U1', token_status: 'valid', updated_at: at('09:00') },
+        { id: 'a2-old', line_user_id: 'U2', token_status: 'revoked', updated_at: at('08:00') },
+        { id: 'a2', line_user_id: 'U2', token_status: 'valid', updated_at: at('11:00') },
+        { id: 'a4-old', line_user_id: 'U4', token_status: 'valid', updated_at: at('05:00') },
+        { id: 'a4', line_user_id: 'U4', token_status: 'revoked', updated_at: at('11:30') },
       ]),
       ok([
-        { project_id: 'p1', nominated_owner_line_user_id: 'U1', owner_confirmed_at: at('11:00') }, // confirm in the window
-        { project_id: 'p2', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('06:00') }, // sign-in in the window
+        { project_id: 'p1', nominated_owner_line_user_id: 'U1', owner_confirmed_at: at('11:00') }, // confirm in the window; no Project folder
+        { project_id: 'p2', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('06:00') }, // sign-in in the window; a group folder missing
         { project_id: 'p3', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('11:59') }, // sign-in in the window, but confirmed under 2 minutes ago
-        { project_id: 'p4', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('07:00') }, // already connected
+        { project_id: 'p4', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('07:00') }, // every folder ID stored
+        { project_id: 'p5', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('07:30') }, // held by another account
         { project_id: 'p6', nominated_owner_line_user_id: 'U4', owner_confirmed_at: at('10:30') }, // latest account revoked
+        { project_id: 'p7', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('08:00') }, // held by the latest account; group folders missing
       ]),
-      // Active connections of the Projects left.
-      ok([{ project_id: 'p4' }]),
+      // For the Projects in the window: no Project folder ID, a group with no folder ID, the holders.
+      ok([{ id: 'p1' }, { id: 'p5' }]),
+      ok([{ project_id: 'p2' }, { project_id: 'p7' }, { project_id: 'p7' }]),
+      ok([
+        { project_id: 'p4', google_account_id: 'a2' },
+        { project_id: 'p5', google_account_id: 'a-other' },
+        { project_id: 'p7', google_account_id: 'a2' },
+      ]),
     ])
-    expect(await store.listUnfinishedDriveProjects(FROM, TO)).toEqual(['p1', 'p2'])
+    expect(await store.listUnfinishedDriveProjects(FROM, TO)).toEqual(['p1', 'p2', 'p7'])
 
     expect(chains[0]).toEqual([
       { method: 'from', args: ['groups'] },
@@ -239,7 +264,7 @@ describe('SupabaseStore.listUnfinishedDriveProjects (#13 tick finisher)', () => 
     ])
     expect(chains[2]).toEqual([
       { method: 'from', args: ['google_accounts'] },
-      { method: 'select', args: ['line_user_id, token_status, updated_at'] },
+      { method: 'select', args: ['id, line_user_id, token_status, updated_at'] },
       { method: 'in', args: ['line_user_id', ['U1', 'U2', 'U4']] },
       { method: 'order', args: ['id'] },
       { method: 'range', args: [0, PAGE_SIZE - 1] },
@@ -255,11 +280,31 @@ describe('SupabaseStore.listUnfinishedDriveProjects (#13 tick finisher)', () => 
       { method: 'order', args: ['id'] },
       { method: 'range', args: [0, PAGE_SIZE - 1] },
     ])
+    const inWindow = ['p1', 'p2', 'p4', 'p5', 'p7']
     expect(chains[4]).toEqual([
-      { method: 'from', args: ['drive_connections'] },
+      { method: 'from', args: ['projects'] },
+      { method: 'select', args: ['id'] },
+      { method: 'in', args: ['id', inWindow] },
+      { method: 'is', args: ['drive_project_folder_id', null] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+    // The same groups getDriveContext lists: confirmed Owner, bot still in the group.
+    expect(chains[5]).toEqual([
+      { method: 'from', args: ['groups'] },
       { method: 'select', args: ['project_id'] },
+      { method: 'in', args: ['project_id', inWindow] },
+      { method: 'not', args: ['owner_confirmed_at', 'is', null] },
+      { method: 'is', args: ['left_at', null] },
+      { method: 'is', args: ['drive_folder_id', null] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+    expect(chains[6]).toEqual([
+      { method: 'from', args: ['drive_connections'] },
+      { method: 'select', args: ['project_id, google_account_id'] },
       { method: 'eq', args: ['status', 'active'] },
-      { method: 'in', args: ['project_id', ['p1', 'p2', 'p4']] },
+      { method: 'in', args: ['project_id', inWindow] },
       { method: 'order', args: ['id'] },
       { method: 'range', args: [0, PAGE_SIZE - 1] },
     ])

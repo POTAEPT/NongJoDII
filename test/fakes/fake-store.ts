@@ -151,6 +151,14 @@ export class FakeStore implements StorePort {
    *  makeTestDeps sets it to the harness clock. */
   clock: () => Date = () => new Date(SEED_NOW.getTime())
 
+  /** Test aid (#13): every claim and every Project or group folder ID write, in call
+   *  order, whether or not the compare-and-set matched. */
+  driveWrites: (
+    | { op: 'claim'; projectId: string; accountId: string; holder: string }
+    | { op: 'project'; projectId: string; to: string }
+    | { op: 'group'; groupId: string; to: string }
+  )[] = []
+
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
   // Write order of google_accounts rows, so the newest connection wins on lookup.
   private googleWrites = new Map<string, number>()
@@ -719,6 +727,7 @@ export class FakeStore implements StorePort {
 
   async setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
     this.fault('setProjectDriveFolder')
+    this.driveWrites.push({ op: 'project', projectId, to })
     const row = this.tables.projects.find((p) => p.id === projectId)
     if (!row) return { folderId: null }
     if ((row.driveProjectFolderId ?? null) === from) row.driveProjectFolderId = to
@@ -727,19 +736,26 @@ export class FakeStore implements StorePort {
 
   async setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
     this.fault('setGroupDriveFolder')
+    this.driveWrites.push({ op: 'group', groupId, to })
     if (!this.hasGroup(groupId)) return { folderId: null }
     const row = this.setupOf(groupId)
     if ((row.driveFolderId ?? null) === from) row.driveFolderId = to
     return { folderId: row.driveFolderId ?? null }
   }
 
-  async ensureDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean }> {
-    this.fault('ensureDriveConnection')
+  /** One active row per Project, as the unique index drive_connections_one_active: a
+   *  second claim answers the account that already holds it. */
+  async claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }> {
+    this.fault('claimDriveConnection')
     fk(this.tables.projects.some((p) => p.id === projectId), 'drive_connections.project_id')
     fk(this.tables.google_accounts.some((a) => a.id === googleAccountId), 'drive_connections.google_account_id')
-    if (this.tables.drive_connections.some((c) => c.projectId === projectId && c.status === 'active')) return { created: false }
-    this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
-    return { created: true }
+    const held = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    const result = held
+      ? { created: false, accountId: held.googleAccountId }
+      : { created: true, accountId: googleAccountId }
+    if (!held) this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
+    this.driveWrites.push({ op: 'claim', projectId, accountId: googleAccountId, holder: result.accountId })
+    return result
   }
 
   /** Same rule as SupabaseStore, read straight from the tables. */
@@ -747,15 +763,25 @@ export class FakeStore implements StorePort {
     this.fault('listUnfinishedDriveProjects')
     return this.tables.groups
       .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
-      .filter((g) => !this.tables.drive_connections.some((c) => c.projectId === g.projectId && c.status === 'active'))
       .filter((g) => {
         const account = this.latestGoogleAccount(g.nominatedOwnerLineUserId)
         if (account?.tokenStatus !== 'valid' || g.ownerConfirmedAt === null) return false
         const last = Math.max(g.ownerConfirmedAt.getTime(), account.updatedAt.getTime())
-        return last >= from.getTime() && last <= to.getTime()
+        if (last < from.getTime() || last > to.getTime()) return false
+        const held = this.tables.drive_connections.find((c) => c.projectId === g.projectId && c.status === 'active')
+        if (held && held.googleAccountId !== account.id) return false
+        return this.missesAFolder(g.projectId as string)
       })
       .map((g) => g.projectId as string)
       .sort()
+  }
+
+  /** The Project folder ID, or the folder ID of a group getDriveContext lists (confirmed
+   *  Owner, bot still in it), is still empty. */
+  private missesAFolder(projectId: string): boolean {
+    if (!this.tables.projects.find((p) => p.id === projectId)?.driveProjectFolderId) return true
+    return this.tables.groups.some((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id) &&
+      !this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId)
   }
 
   // ---- #20 weekly insight ----

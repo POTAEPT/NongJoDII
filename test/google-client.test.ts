@@ -32,9 +32,9 @@ describe('GoogleHttpClient.buildAuthUrl', () => {
     expect(q.get('redirect_uri')).toBe(REDIRECT)
     expect(q.get('response_type')).toBe('code')
     expect(q.get('access_type')).toBe('offline')
-    expect(q.get('prompt')).toBe('consent')
-    // #14, change of account: Google shows its account chooser first.
-    expect(new URL(client.buildAuthUrl('st-1', { chooseAccount: true })).searchParams.get('prompt')).toBe('select_account consent')
+    // #14: Google always shows its account chooser first, so the browser's default Google
+    // account is never used without the person picking it; then consent, for the refresh token.
+    expect(q.get('prompt')).toBe('select_account consent')
     expect(q.get('state')).toBe('st-1')
     const scopes = (q.get('scope') ?? '').split(' ')
     expect(scopes).toContain('openid')

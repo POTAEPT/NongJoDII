@@ -57,10 +57,14 @@ async function decide(deps: Deps, params: URLSearchParams, defer: Defer, deadlin
       refreshTokenCiphertext: seal(token.refreshToken, deps.config.tokenEncryptionKey),
       signedInAt: deps.now(),
     })
-    // #14: a sign-in with another Google account than the one a Project is connected to
-    // is a change of account. Done before the page is answered, so a failure shows as
-    // 'failed' and the Owner tries again; a repeat finishes what was left.
-    await retireOtherAccountConnections(deps, lineUserId, id)
+    // #14: only a sign-in started from the "change Google account" action (the intent is
+    // sealed in the state) may move a Project to another Google account. Any other sign-in
+    // with another account retires nothing: the status then reports the Project as still
+    // connected to another account and the page offers the change. The Owner role is
+    // checked again here, as retireOtherAccountConnections reads the confirmed Owner's
+    // Projects now. Done before the page is answered, so a failure shows as 'failed' and
+    // the Owner tries again; a repeat finishes what was left.
+    if (opened.change) await retireOtherAccountConnections(deps, lineUserId, id)
   } catch (err) {
     logError('google_signin_store_failed', {}, err)
     return 'failed'

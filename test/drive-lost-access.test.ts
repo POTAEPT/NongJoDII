@@ -5,6 +5,7 @@ import {
   DRIVE_CALL_MAX_MS, DRIVE_HARD_STOP_MS, driveDeadline, driveSetupJob, ensureDriveFolders, ensureGroupFolder,
 } from '@/server/google/drive-folders'
 import { startGoogleSignIn } from '@/server/google/start'
+import { googleStatus } from '@/server/google/status'
 import { liffUrl } from '@/server/liff-links'
 import type { LineMessage } from '@/server/line/types'
 import { handleTickRequest } from '@/server/tick/handle-request'
@@ -53,18 +54,22 @@ async function seedProject(h: H, lineGroupId = MAIN_LINE_GROUP) {
 }
 
 /** Google sign-in from start to callback with Google account `n` (subject g-sub-n, refresh
- *  token rt-n, or `refreshToken`), then the deferred Drive work. */
-async function signIn(h: H, n: 1 | 2 = 1, refreshToken = `rt-${n}`) {
+ *  token rt-n, or `refreshToken`), then the deferred Drive work. `change`: started from the
+ *  "change Google account" action. */
+async function signIn(h: H, n: 1 | 2 = 1, refreshToken = `rt-${n}`, opts?: { change?: boolean }) {
   h.google.exchangeResult = {
     refreshToken, scopes: ['openid', 'email', 'https://www.googleapis.com/auth/drive.file'],
     subject: `g-sub-${n}`, email: `owner${n}@example.com`,
   }
-  const res = await startGoogleSignIn(h.deps, { idToken: OWNER_TOKEN })
+  const res = await startGoogleSignIn(h.deps, opts?.change ? { idToken: OWNER_TOKEN, change: true } : { idToken: OWNER_TOKEN })
   const state = new URL((res.body as { url: string }).url).searchParams.get('state') as string
   const outcome = await finishGoogleSignIn(h.deps, new URLSearchParams({ code: 'code-1', state }), h.defer)
   await h.runDeferred()
   return outcome
 }
+
+/** The "change Google account" action, finished with Google account `n`. */
+const changeTo = (h: H, n: 1 | 2) => signIn(h, n, `rt-${n}`, { change: true })
 
 const accountOf = (h: H, n: 1 | 2) => h.store.tables.google_accounts.find((a) => a.googleSubject === `g-sub-${n}`)!
 const projectRow = (h: H, id: string) => h.store.tables.projects.find((p) => p.id === id)!
@@ -256,7 +261,7 @@ describe('change of Google account', () => {
     h.store.tables.drive_connections.filter((c) => c.projectId === projectId && c.status === 'active')
   const madeWith = (h: H, folderId: string | null | undefined) => (folderId ? h.google.folders.get(folderId)?.createdWith : undefined)
 
-  it('a sign-in with another account retires the old connection as history, clears the folder IDs and lays out new folders in the new Drive', async () => {
+  it('a change to another account retires the old connection as history, clears the folder IDs and lays out new folders in the new Drive', async () => {
     const h = setup()
     const { groupId, projectId } = await seedProject(h)
     expect(await signIn(h, 1)).toBe('ok')
@@ -268,7 +273,7 @@ describe('change of Google account', () => {
     const oldDrive = [...h.google.folders.keys()]
 
     h.setNow(new Date(TEST_NOW.getTime() + 60 * MIN))
-    expect(await signIn(h, 2)).toBe('ok')
+    expect(await changeTo(h, 2)).toBe('ok')
 
     // The old row is kept as it was, only retired: what a saved file's drive_connection_id
     // points at still names the Project and the old Google account.
@@ -306,7 +311,7 @@ describe('change of Google account', () => {
     expect(groupFolderId(h, sub.id)).not.toBeNull()
 
     h.google.exchangeResult = { ...(h.google.exchangeResult as object), subject: 'g-sub-2', refreshToken: 'rt-2' } as never
-    const res = await startGoogleSignIn(h.deps, { idToken: OWNER_TOKEN })
+    const res = await startGoogleSignIn(h.deps, { idToken: OWNER_TOKEN, change: true })
     const state = new URL((res.body as { url: string }).url).searchParams.get('state') as string
     expect(await finishGoogleSignIn(h.deps, new URLSearchParams({ code: 'c', state }), h.defer)).toBe('ok')
 
@@ -316,6 +321,49 @@ describe('change of Google account', () => {
     expect(groupFolderId(h, groupId)).toBeNull()
     expect(groupFolderId(h, sub.id)).toBeNull()
     expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ status: 'replaced' })])
+  })
+
+  it('a plain sign-in with another account retires nothing: only the change action does', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    expect(await signIn(h, 1)).toBe('ok')
+    const connections = structuredClone(h.store.tables.drive_connections)
+    const projectFolder = projectRow(h, projectId).driveProjectFolderId
+    const groupFolder = groupFolderId(h, groupId)
+    const folders = h.google.folders.size
+
+    // For example the sign-in-again card, answered with the browser's other Google account.
+    h.setNow(new Date(TEST_NOW.getTime() + 60 * MIN))
+    expect(await signIn(h, 2)).toBe('ok')
+
+    expect(h.store.tables.drive_connections).toEqual(connections)
+    expect(projectRow(h, projectId).driveProjectFolderId).toBe(projectFolder)
+    expect(groupFolderId(h, groupId)).toBe(groupFolder)
+    expect(h.google.folders.size).toBe(folders)
+    expect(infoEvents().map((e) => e.event)).not.toContain('drive_account_changed')
+    // The Owner sees it: the status reports a Project still connected to another account.
+    expect((await googleStatus(h.deps, { idToken: OWNER_TOKEN })).body).toMatchObject({ connected: true, changePending: true })
+    // Signing in with the first account again puts everything back as it was.
+    h.setNow(new Date(TEST_NOW.getTime() + 61 * MIN))
+    expect(await signIn(h, 1, 'rt-1b')).toBe('ok')
+    expect((await googleStatus(h.deps, { idToken: OWNER_TOKEN })).body).toMatchObject({ connected: true, changePending: false })
+    expect(h.store.tables.drive_connections).toEqual(connections)
+  })
+
+  it('a change started by someone who is no longer the confirmed Owner at the callback retires nothing', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    expect(await signIn(h, 1)).toBe('ok')
+    const connections = structuredClone(h.store.tables.drive_connections)
+    h.google.exchangeResult = { ...(h.google.exchangeResult as object), subject: 'g-sub-2', refreshToken: 'rt-2' } as never
+    const res = await startGoogleSignIn(h.deps, { idToken: OWNER_TOKEN, change: true })
+    const state = new URL((res.body as { url: string }).url).searchParams.get('state') as string
+    // Between the start and the callback the Owner leaves the role.
+    h.store.tables.groups.find((g) => g.id === groupId)!.ownerConfirmedAt = null
+    expect(await finishGoogleSignIn(h.deps, new URLSearchParams({ code: 'c', state }), h.defer)).toBe('ok')
+    await h.runDeferred()
+    expect(h.store.tables.drive_connections).toEqual(connections)
+    expect(projectRow(h, projectId).driveProjectFolderId).not.toBeNull()
   })
 
   it('a sign-in with the same account changes nothing', async () => {
@@ -354,7 +402,7 @@ describe('change of Google account', () => {
     await ensureDriveFolders(h.deps, otherProject, fullTime(h))
     const otherFolder = projectRow(h, otherProject).driveProjectFolderId
 
-    expect(await signIn(h, 2)).toBe('ok')
+    expect(await changeTo(h, 2)).toBe('ok')
 
     for (const p of [first, second]) {
       expect(activeRows(h, p.projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 2).id })])
@@ -372,7 +420,7 @@ describe('change of Google account', () => {
 
     // The store fails while it retires: the page says failed and no Drive work starts.
     h.store.failNext('retireDriveConnection')
-    expect(await signIn(h, 2)).toBe('failed')
+    expect(await changeTo(h, 2)).toBe('failed')
     expect(h.google.refreshCalls).not.toContain('rt-2')
     // Worst case of the real store's three statements: the folder IDs are already cleared
     // and the old row is still active.
@@ -380,7 +428,7 @@ describe('change of Google account', () => {
     h.store.tables.group_setups.find((r) => r.groupId === groupId)!.driveFolderId = null
     expect(activeRows(h, projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 1).id })])
 
-    expect(await signIn(h, 2)).toBe('ok')
+    expect(await changeTo(h, 2)).toBe('ok')
 
     expect(h.store.tables.drive_connections.map((c) => c.status).sort()).toEqual(['active', 'replaced'])
     expect(activeRows(h, projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 2).id })])
@@ -394,7 +442,7 @@ describe('change of Google account', () => {
     expect(await signIn(h, 1)).toBe('ok')
     h.setNow(new Date(TEST_NOW.getTime() + 60 * MIN))
     h.google.callMs = DRIVE_CALL_MAX_MS
-    expect(await signIn(h, 2)).toBe('ok') // the exchange and four folder calls do not fit
+    expect(await changeTo(h, 2)).toBe('ok') // the exchange and four folder calls do not fit
     expect(groupFolderId(h, groupId)).toBeNull()
 
     h.google.callMs = 0
@@ -415,7 +463,7 @@ describe('change of Google account', () => {
     expect(accountOf(h, 1).tokenStatus).toBe('revoked')
 
     h.setNow(new Date(TEST_NOW.getTime() + 60 * MIN))
-    expect(await signIn(h, 2)).toBe('ok')
+    expect(await changeTo(h, 2)).toBe('ok')
 
     expect(await h.store.findGoogleAccountByLineUser(OWNER)).toMatchObject({ id: accountOf(h, 2).id, tokenStatus: 'valid' })
     expect(activeRows(h, projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 2).id })])

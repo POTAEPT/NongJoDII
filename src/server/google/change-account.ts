@@ -1,11 +1,12 @@
 import { log } from '../log'
 import type { Deps } from '../ports'
 
-// #14: change of the connected Google account. The Owner starts a normal Google sign-in
-// (the LIFF Google view offers it). When the sign-in finishes with a Google account other
-// than the one that holds a Project's active Drive connection, the old connection is
-// retired and the Project's folder IDs are cleared, for every Project this person owns as
-// confirmed Owner. The Drive run that follows (syncDriveForOwner) then claims each Project
+// #14: change of the connected Google account. The Owner starts it from the "change
+// Google account" action in the LIFF Google view; POST /api/google/start seals that intent
+// into the OAuth state. When such a sign-in finishes with a Google account other than the
+// one that holds a Project's active Drive connection, the old connection is retired and
+// the Project's folder IDs are cleared, for every Project this person owns as confirmed
+// Owner at that moment. A sign-in without the intent never retires anything. The Drive run that follows (syncDriveForOwner) then claims each Project
 // for the new account and makes new folders in the new Drive. Nothing in the old Drive is
 // touched, and the retired row stays, so a saved file's drive_connection_id still tells
 // which Drive holds it. A sign-in with the account that already holds the connection

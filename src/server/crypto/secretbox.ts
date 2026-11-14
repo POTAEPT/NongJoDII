@@ -28,16 +28,22 @@ export function open(sealed: string, key: Buffer): string | null {
 
 const STATE_PURPOSE = 'google_oauth'
 
-type StatePayload = { p: string; u: string; exp: number }
+type StatePayload = { p: string; u: string; exp: number; c?: boolean }
 
-/** OAuth state: sealed JSON {p:'google_oauth', u:lineUserId, exp:ms}. Sealing gives integrity and hides the user ID. */
-export function sealState(lineUserId: string, now: Date, key: Buffer, ttlMs = 10 * 60_000): string {
-  const payload: StatePayload = { p: STATE_PURPOSE, u: lineUserId, exp: now.getTime() + ttlMs }
+const STATE_TTL_MS = 10 * 60_000
+
+/** OAuth state: sealed JSON {p:'google_oauth', u:lineUserId, exp:ms, c?:true}. Sealing gives
+ *  integrity and hides the user ID. `change` (#14, stored as c) says the sign-in was started
+ *  from the "change Google account" action: only such a sign-in may retire a Drive
+ *  connection, and the server sets it, never the browser. */
+export function sealState(lineUserId: string, now: Date, key: Buffer, opts?: { change?: boolean }): string {
+  const payload: StatePayload = { p: STATE_PURPOSE, u: lineUserId, exp: now.getTime() + STATE_TTL_MS }
+  if (opts?.change === true) payload.c = true
   return seal(JSON.stringify(payload), key)
 }
 
-/** null if bad, wrong p, or exp <= now. */
-export function openState(state: string, now: Date, key: Buffer): { lineUserId: string } | null {
+/** null if bad, wrong p, or exp <= now. change is true only for a sealed c === true. */
+export function openState(state: string, now: Date, key: Buffer): { lineUserId: string; change: boolean } | null {
   const json = open(state, key)
   if (json === null) return null
   let payload: unknown
@@ -47,8 +53,8 @@ export function openState(state: string, now: Date, key: Buffer): { lineUserId: 
     return null
   }
   if (typeof payload !== 'object' || payload === null) return null
-  const { p, u, exp } = payload as Partial<StatePayload>
+  const { p, u, exp, c } = payload as Partial<StatePayload>
   if (p !== STATE_PURPOSE || typeof u !== 'string' || u === '' || typeof exp !== 'number') return null
   if (exp <= now.getTime()) return null
-  return { lineUserId: u }
+  return { lineUserId: u, change: c === true }
 }

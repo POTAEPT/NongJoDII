@@ -32,7 +32,8 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   /** Whether the sign-in in progress is a change of account, so a retry asks the same. */
   const changing = useRef(false)
 
-  // Callers set 'starting' first. `change` asks Google for its account chooser (#14).
+  // Callers set 'starting' first. `change` is the "change Google account" action (#14):
+  // the server seals it into the sign-in, and only such a sign-in moves a Project.
   const start = useCallback(async (change: boolean) => {
     changing.current = change
     try {
@@ -140,14 +141,24 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
     )
   }
   if (phase === 'change_unfinished') {
-    // The new account is stored, but a Project is still connected to the old one: the
-    // same sign-in again finishes the change.
+    // The person's latest Google sign-in is another account than the one a Project of
+    // theirs is connected to: a plain sign-in with another account (which changes
+    // nothing), or a change that stopped part-way. Either the change action moves the
+    // Project, or a sign-in with the first account puts things back.
     return (
       <div className="p-4 text-base">
-        <p className="text-lg font-bold">เปลี่ยนบัญชี Google ยังไม่เสร็จ</p>
-        <p className="mt-2">กรุณาเข้าสู่ระบบด้วยบัญชี Google ที่ต้องการใช้อีกครั้ง งานและไฟล์ที่เก็บไว้แล้วยังอยู่ครบ</p>
-        <button type="button" className="mt-4 rounded border px-4 py-2 font-bold" onClick={() => signIn(true)}>
+        <p className="text-lg font-bold">บัญชี Google นี้ยังไม่ได้เชื่อมกับกลุ่ม</p>
+        <p className="mt-2">
+          กลุ่มของคุณยังเชื่อมกับบัญชี Google อีกบัญชีหนึ่งอยู่ น้องจดดีจึงยังเก็บไฟล์ใหม่ไม่ได้ งานและไฟล์ที่เก็บไว้แล้วยังอยู่ครบ
+        </p>
+        <p className="mt-2 text-sm text-gray-600">
+          หากต้องการย้ายมาใช้บัญชีใหม่ ให้กดเปลี่ยนบัญชี Google ไฟล์ที่เก็บไว้แล้วจะอยู่ในไดรฟ์เดิม หากไม่ต้องการเปลี่ยน ให้เข้าสู่ระบบด้วยบัญชีเดิม
+        </p>
+        <button type="button" className="mt-4 block rounded border px-4 py-2 font-bold" onClick={() => signIn(true)}>
           เปลี่ยนบัญชี Google
+        </button>
+        <button type="button" className="mt-2 block rounded border px-4 py-2" onClick={() => signIn(false)}>
+          เข้าสู่ระบบด้วยบัญชีเดิม
         </button>
       </div>
     )

@@ -40,8 +40,7 @@ export type GoogleTokenResult = {
 /** What Drive says about a stored folder ID: 'trashed' counts as deleted (#13). */
 export type DriveFolderState = 'ok' | 'trashed' | 'missing'
 export interface GooglePort {
-  /** chooseAccount (#14, change of account): Google shows its account chooser first. */
-  buildAuthUrl(state: string, opts?: { chooseAccount?: boolean }): string
+  buildAuthUrl(state: string): string
   exchangeCode(code: string): Promise<GoogleTokenResult>
   /** A short-lived access token from the stored refresh token. Rejects with
    *  GoogleTokenRevoked when Google answers invalid_grant (revoked or expired grant). */

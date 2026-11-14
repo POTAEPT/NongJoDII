@@ -53,7 +53,15 @@ describe('seal / open', () => {
 describe('sealState / openState', () => {
   it('round-trips the LINE user ID', () => {
     const state = sealState('Uowner1', TEST_NOW, TEST_KEY)
-    expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: 'Uowner1' })
+    expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: 'Uowner1', change: false })
+  })
+
+  it('carries the change-of-account intent, and only when it was sealed in (#14)', () => {
+    const state = sealState('Uowner1', TEST_NOW, TEST_KEY, { change: true })
+    expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: 'Uowner1', change: true })
+    // Anything but a sealed `true` reads as a plain sign-in.
+    const odd = seal(JSON.stringify({ p: 'google_oauth', u: 'Uowner1', exp: TEST_NOW.getTime() + 10 * MIN, c: 'yes' }), TEST_KEY)
+    expect(openState(odd, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: 'Uowner1', change: false })
   })
 
   it('hides the LINE user ID', () => {
@@ -62,7 +70,7 @@ describe('sealState / openState', () => {
 
   it('is valid at +9 min and expired at exactly +10 min', () => {
     const state = sealState('Uowner1', TEST_NOW, TEST_KEY)
-    expect(openState(state, new Date(TEST_NOW.getTime() + 9 * MIN), TEST_KEY)).toEqual({ lineUserId: 'Uowner1' })
+    expect(openState(state, new Date(TEST_NOW.getTime() + 9 * MIN), TEST_KEY)).toEqual({ lineUserId: 'Uowner1', change: false })
     expect(openState(state, new Date(TEST_NOW.getTime() + 10 * MIN), TEST_KEY)).toBeNull()
   })
 

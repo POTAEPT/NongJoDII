@@ -53,7 +53,7 @@ describe('google sign-in start', () => {
     const res = await start(h)
     expect(res.status).toBe(200)
     const state = stateFromUrl((res.body as { url: string }).url)
-    expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER })
+    expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER, change: false })
     expect(h.store.tables.line_users.find((u) => u.lineUserId === OWNER)?.displayName).toBe('Owner Name')
   })
 
@@ -61,7 +61,7 @@ describe('google sign-in start', () => {
     const h = setup()
     const res = await start(h, { idToken: OWNER_TOKEN, lineUserId: 'Uattacker', userId: 'Uattacker' })
     const state = stateFromUrl((res.body as { url: string }).url)
-    expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER })
+    expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER, change: false })
     expect(h.line.verifyCalls.length).toBe(1)
     expect(h.store.tables.line_users.some((u) => u.lineUserId === 'Uattacker')).toBe(false)
   })
@@ -74,14 +74,13 @@ describe('google sign-in start for a change of account (#14)', () => {
     expect((await h.store.confirmGroupOwner(g.id, OWNER, TEST_NOW)).outcome).toBe('confirmed')
   }
 
-  it('2c. the confirmed Owner of a Project gets a url that makes Google ask which account', async () => {
+  it('2c. the confirmed Owner of a Project gets a url whose state carries the change intent', async () => {
     const h = setup()
     await confirmedOwner(h)
     const res = await start(h, { idToken: OWNER_TOKEN, change: true })
     expect(res.status).toBe(200)
     const url = new URL((res.body as { url: string }).url)
-    expect(url.searchParams.get('choose_account')).toBe('1')
-    expect(openState(url.searchParams.get('state') as string, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER })
+    expect(openState(url.searchParams.get('state') as string, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER, change: true })
   })
 
   it('2d. anyone else is refused with 403, and gets no url', async () => {
@@ -93,11 +92,15 @@ describe('google sign-in start for a change of account (#14)', () => {
     expect((await start(h, { idToken: OWNER_TOKEN, change: true })).status).toBe(403)
   })
 
-  it('2e. a plain sign-in does not ask which account, whoever starts it', async () => {
+  it('2e. a plain sign-in carries no change intent, whoever starts it', async () => {
     const h = setup()
-    const res = await start(h)
-    expect(new URL((res.body as { url: string }).url).searchParams.get('choose_account')).toBeNull()
-    expect((await start(h, { idToken: OWNER_TOKEN, change: 'yes' })).status).toBe(200) // only `true` asks for a change
+    await confirmedOwner(h)
+    for (const body of [{ idToken: OWNER_TOKEN }, { idToken: OWNER_TOKEN, change: 'yes' }, { idToken: OWNER_TOKEN, change: 1 }]) {
+      const res = await start(h, body)
+      expect(res.status).toBe(200)
+      const state = stateFromUrl((res.body as { url: string }).url)
+      expect(openState(state, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER, change: false }) // only `true` asks for a change
+    }
   })
 })
 
@@ -323,9 +326,11 @@ describe('google status', () => {
     const g = h.store.seedGroup({ lineGroupId: 'Cmain', nominatedOwnerLineUserId: OWNER })
     h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
     expect((await h.store.confirmGroupOwner(g.id, OWNER, TEST_NOW)).outcome).toBe('confirmed')
-    const signIn = async (subject: string) => {
+    const signIn = async (subject: string, change = false) => {
       h.google.exchangeResult = { ...(h.google.exchangeResult as object), subject, refreshToken: `rt-${subject}` } as never
-      const outcome = await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)
+      const res = await start(h, change ? { idToken: OWNER_TOKEN, change: true } : { idToken: OWNER_TOKEN })
+      const state = stateFromUrl((res.body as { url: string }).url)
+      const outcome = await finishGoogleSignIn(h.deps, params({ code: 'c', state }), h.defer)
       await h.runDeferred()
       return outcome
     }
@@ -337,11 +342,16 @@ describe('google status', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     h.store.failNext('retireDriveConnection')
     h.setNow(new Date(TEST_NOW.getTime() + MIN))
-    expect(await signIn('g-sub-2')).toBe('failed')
+    expect(await signIn('g-sub-2', true)).toBe('failed')
     expect((await status(h)).body).toMatchObject({ connected: true, canChange: true, changePending: true })
 
+    // A plain sign-in with the other account is not a change either: still pending.
     h.setNow(new Date(TEST_NOW.getTime() + 2 * MIN))
     expect(await signIn('g-sub-2')).toBe('ok')
+    expect((await status(h)).body).toMatchObject({ connected: true, changePending: true })
+
+    h.setNow(new Date(TEST_NOW.getTime() + 3 * MIN))
+    expect(await signIn('g-sub-2', true)).toBe('ok')
     expect((await status(h)).body).toMatchObject({ connected: true, changePending: false })
     vi.restoreAllMocks()
   })

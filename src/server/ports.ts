@@ -373,6 +373,13 @@ export interface StorePort {
   /** Inserts the Project's active drive_connections row unless one exists (unique index
    *  drive_connections_one_active); never updates or deletes a row. */
   ensureDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean }>
+  /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
+   *  listed when its main group has a confirmed Owner and the bot, it has no active
+   *  drive_connections row (that row is written last, so it marks a finished setup), the
+   *  Owner's most recently written Google account is valid, and the later of the Owner
+   *  confirm (owner_confirmed_at) and that account's updated_at lies in [from, to].
+   *  updated_at moves on every sign-in, and also when the root folder ID is stored. */
+  listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]>
 }
 
 // ---- Composition ----

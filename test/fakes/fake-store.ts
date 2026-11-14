@@ -69,6 +69,7 @@ export type GoogleAccountRecord = {
   id: string; lineUserId: string; googleSubject: string; email: string | null; grantedScopes: string[]
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
   driveRootFolderId?: string | null   // absent = null (#13)
+  updatedAt: Date                     // set on every write, like the table's trigger
 }
 export type DriveConnectionRecord = {
   id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
@@ -145,6 +146,10 @@ export class FakeStore implements StorePort {
     projects: [],
     drive_connections: [],
   }
+
+  /** The database's now(), for columns it stamps itself (google_accounts.updated_at).
+   *  makeTestDeps sets it to the harness clock. */
+  clock: () => Date = () => new Date(SEED_NOW.getTime())
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
   // Write order of google_accounts rows, so the newest connection wins on lookup.
@@ -628,19 +633,31 @@ export class FakeStore implements StorePort {
     if (row) {
       Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid' })
     } else {
-      row = { ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid' }
+      row = { ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid', updatedAt: this.clock() }
       this.tables.google_accounts.push(row)
     }
+    this.touchGoogleAccount(row)
+  }
+
+  /** What the google_accounts_updated_at trigger does on every write (the column default on
+   *  insert): updated_at = now(). It also makes the row the most recently written one. */
+  private touchGoogleAccount(row: GoogleAccountRecord): void {
+    row.updatedAt = this.clock()
     this.googleWrites.set(row.id, ++this.googleWriteSeq)
+  }
+
+  /** The person's most recently written Google account (ORDER BY updated_at DESC). */
+  private latestGoogleAccount(lineUserId: string | null): GoogleAccountRecord | undefined {
+    return this.tables.google_accounts
+      .filter((g) => g.lineUserId === lineUserId)
+      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))[0]
   }
 
   /** A user with several Google accounts gets the most recently written one. */
   async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
     this.fault('findGoogleAccountByLineUser')
-    const rows = this.tables.google_accounts
-      .filter((g) => g.lineUserId === lineUserId)
-      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))
-    return rows[0] ? { id: rows[0].id, tokenStatus: rows[0].tokenStatus } : null
+    const row = this.latestGoogleAccount(lineUserId)
+    return row ? { id: row.id, tokenStatus: row.tokenStatus } : null
   }
 
   // ---- #13 Drive folders ----
@@ -673,9 +690,7 @@ export class FakeStore implements StorePort {
       folderId: this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId ?? null,
     })
     const main = groups.find((g) => this.isMainGroup(g.id))
-    const account = this.tables.google_accounts
-      .filter((a) => a.lineUserId === project.ownerLineUserId)
-      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))[0]
+    const account = this.latestGoogleAccount(project.ownerLineUserId)
     const active = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
     return {
       projectId, ownerLineUserId: project.ownerLineUserId, projectFolderId: project.driveProjectFolderId ?? null,
@@ -695,7 +710,10 @@ export class FakeStore implements StorePort {
     this.fault('setDriveRootFolder')
     const row = this.tables.google_accounts.find((a) => a.id === googleAccountId)
     if (!row) return { folderId: null }
-    if ((row.driveRootFolderId ?? null) === from) row.driveRootFolderId = to
+    if ((row.driveRootFolderId ?? null) === from) {
+      row.driveRootFolderId = to
+      this.touchGoogleAccount(row) // an UPDATE: the trigger moves updated_at
+    }
     return { folderId: row.driveRootFolderId ?? null }
   }
 
@@ -722,6 +740,22 @@ export class FakeStore implements StorePort {
     if (this.tables.drive_connections.some((c) => c.projectId === projectId && c.status === 'active')) return { created: false }
     this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
     return { created: true }
+  }
+
+  /** Same rule as SupabaseStore, read straight from the tables. */
+  async listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]> {
+    this.fault('listUnfinishedDriveProjects')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .filter((g) => !this.tables.drive_connections.some((c) => c.projectId === g.projectId && c.status === 'active'))
+      .filter((g) => {
+        const account = this.latestGoogleAccount(g.nominatedOwnerLineUserId)
+        if (account?.tokenStatus !== 'valid' || g.ownerConfirmedAt === null) return false
+        const last = Math.max(g.ownerConfirmedAt.getTime(), account.updatedAt.getTime())
+        return last >= from.getTime() && last <= to.getTime()
+      })
+      .map((g) => g.projectId as string)
+      .sort()
   }
 
   // ---- #20 weekly insight ----

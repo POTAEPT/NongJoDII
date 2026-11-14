@@ -41,6 +41,8 @@ export class FakeGoogle implements GooglePort {
   revokedRefreshTokens = new Set<string>()
   /** When set, every Drive call (not the refresh) rejects with it. */
   driveError: Error | null = null
+  /** When set, only the share rejects with it (e.g. a Google Workspace policy that blocks link sharing). */
+  shareError: Error | null = null
   private seq = 0
 
   buildAuthUrl(state: string): string {
@@ -90,6 +92,7 @@ export class FakeGoogle implements GooglePort {
 
   async shareAnyoneReader(accessToken: string, fileId: string): Promise<void> {
     this.drive(`share:${fileId}`, accessToken)
+    if (this.shareError) throw this.shareError
     if (!this.folders.has(fileId)) throw new AdapterError('google drive share 404')
     this.shares.push({ fileId, role: 'reader', type: 'anyone' })
   }

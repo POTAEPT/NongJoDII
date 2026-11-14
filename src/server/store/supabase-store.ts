@@ -104,6 +104,16 @@ function check(method: keyof StorePort, error: PgError): void {
   if (error) throw new AdapterError(`supabase ${method}: ${error.code}`)
 }
 
+/** IN lists go out this many values at a time, so the request URL stays short
+ *  (a LINE user ID or a UUID is 33 to 36 characters). */
+export const IN_CHUNK = 100
+
+function chunks<T>(values: T[]): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < values.length; i += IN_CHUNK) out.push(values.slice(i, i + IN_CHUNK))
+  return out
+}
+
 /** Every row of a list read, PAGE_SIZE rows at a time, so max_rows never hides the rows
  *  after the first page. `page(from, to)` is the query with .order() on a unique key (id)
  *  and .range(from, to); a short page is the last one. */
@@ -1089,5 +1099,91 @@ export class SupabaseStore implements StorePort {
     if (insertError?.code === '23505') return { created: false }
     check('ensureDriveConnection', insertError)
     return { created: true }
+  }
+
+  /** Flat reads joined here, no embedded filters: the Owners with a confirm or a Google
+   *  account write since `from`, then their accounts and main groups, then the active
+   *  connections of the Projects left. Every read is paged; every IN list is chunked. */
+  async listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]> {
+    const m = 'listUnfinishedDriveProjects'
+    const since = from.toISOString()
+    const [confirmed, signedIn] = await Promise.all([
+      readAllPages<{ nominated_owner_line_user_id: string }>(m, (a, b) =>
+        this.db
+          .from('groups')
+          .select('nominated_owner_line_user_id')
+          .eq('is_main', true)
+          .not('project_id', 'is', null)
+          .is('left_at', null)
+          .gte('owner_confirmed_at', since)
+          .order('id')
+          .range(a, b)),
+      readAllPages<{ line_user_id: string }>(m, (a, b) =>
+        this.db
+          .from('google_accounts')
+          .select('line_user_id')
+          .gte('updated_at', since)
+          .order('id')
+          .range(a, b)),
+    ])
+    const owners = [...new Set([
+      ...confirmed.map((r) => r.nominated_owner_line_user_id), ...signedIn.map((r) => r.line_user_id),
+    ])]
+
+    type Account = { line_user_id: string; token_status: string; updated_at: string }
+    type Main = { project_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
+    const accounts: Account[] = []
+    const mains: Main[] = []
+    for (const chunk of chunks(owners)) {
+      const [a, g] = await Promise.all([
+        readAllPages<Account>(m, (x, y) =>
+          this.db
+            .from('google_accounts')
+            .select('line_user_id, token_status, updated_at')
+            .in('line_user_id', chunk)
+            .order('id')
+            .range(x, y)),
+        readAllPages<Main>(m, (x, y) =>
+          this.db
+            .from('groups')
+            .select('project_id, nominated_owner_line_user_id, owner_confirmed_at')
+            .eq('is_main', true)
+            .in('nominated_owner_line_user_id', chunk)
+            .not('owner_confirmed_at', 'is', null)
+            .not('project_id', 'is', null)
+            .is('left_at', null)
+            .order('id')
+            .range(x, y)),
+      ])
+      accounts.push(...a)
+      mains.push(...g)
+    }
+
+    // Each Owner's most recently written account, as getDriveContext reads it.
+    const latest = new Map<string, Account>()
+    for (const a of accounts) {
+      const seen = latest.get(a.line_user_id)
+      if (!seen || toDate(a.updated_at).getTime() > toDate(seen.updated_at).getTime()) latest.set(a.line_user_id, a)
+    }
+    const inWindow = mains.filter((g) => {
+      const account = latest.get(g.nominated_owner_line_user_id)
+      if (account?.token_status !== 'valid') return false
+      const last = Math.max(toDate(g.owner_confirmed_at).getTime(), toDate(account.updated_at).getTime())
+      return last >= from.getTime() && last <= to.getTime()
+    }).map((g) => g.project_id)
+
+    const connected = new Set<string>()
+    for (const chunk of chunks(inWindow)) {
+      const rows = await readAllPages<{ project_id: string }>(m, (x, y) =>
+        this.db
+          .from('drive_connections')
+          .select('project_id')
+          .eq('status', 'active')
+          .in('project_id', chunk)
+          .order('id')
+          .range(x, y))
+      for (const r of rows) connected.add(r.project_id)
+    }
+    return [...new Set(inWindow)].filter((id) => !connected.has(id)).sort()
   }
 }

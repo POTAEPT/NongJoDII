@@ -34,6 +34,7 @@ export function makeTestDeps(opts?: { now?: Date }): {
       current = new Date(current.getTime() + ms)
     },
   }
+  store.clock = () => new Date(current.getTime())
   const deferred: Array<() => Promise<void>> = []
   const deps: Deps = {
     line, llm, google, store,

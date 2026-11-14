@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { finishGoogleSignIn } from '@/server/google/callback'
 import {
-  DRIVE_CALL_MAX_MS, DRIVE_HARD_STOP_MS, driveDeadline, DriveTimeUp, ensureDriveFolders, ensureGroupFolder,
-  MAIN_GROUP_FOLDER, ROOT_FOLDER,
+  DRIVE_CALL_MAX_MS, DRIVE_HARD_STOP_MS, driveDeadline, driveSetupJob, DriveTimeUp, ensureDriveFolders,
+  ensureGroupFolder, FINISH_AFTER_MS, FINISH_WITHIN_MS, MAIN_GROUP_FOLDER, ROOT_FOLDER,
 } from '@/server/google/drive-folders'
 import { startGoogleSignIn } from '@/server/google/start'
 import { AdapterError } from '@/server/log'
 import { seal } from '@/server/crypto/secretbox'
 import { confirmOwner } from '@/server/setup/confirm'
 import { submitSetup } from '@/server/setup/submit'
-import { makeTestDeps, TEST_KEY, TEST_NOW } from './harness'
+import { handleTickRequest } from '@/server/tick/handle-request'
+import type { TickJob } from '@/server/tick/run-tick'
+import { makeTestDeps, TEST_KEY, TEST_NOW, tickRequest } from './harness'
 
 // #13 acceptance: after Google sign-in (and an Owner confirm), the Owner's Drive gets
 // NongJoDII/<main group>/Main group files and one folder per Sub group, IDs stored,
@@ -86,6 +88,36 @@ async function signIn(h: H) {
 const account = (h: H) => h.store.tables.google_accounts[0]
 const projectRow = (h: H, id: string) => h.store.tables.projects.find((p) => p.id === id)!
 const groupFolderId = (h: H, groupId: string) => h.store.tables.group_setups.find((r) => r.groupId === groupId)?.driveFolderId ?? null
+const projectOf = (h: H, groupId: string) => h.store.tables.groups.find((r) => r.id === groupId)!.projectId as string
+
+/** Every folder ID the store holds. */
+const storedFolderIds = (h: H) => [
+  ...h.store.tables.google_accounts.map((a) => a.driveRootFolderId),
+  ...h.store.tables.projects.map((p) => p.driveProjectFolderId),
+  ...h.store.tables.group_setups.map((r) => r.driveFolderId),
+].filter((id): id is string => !!id).sort()
+/** Every folder in the fake Drive. Equal to storedFolderIds: no folder was left behind. */
+const driveFolderIds = (h: H) => [...h.google.folders.keys()].sort()
+
+/** A main group whose nominee OWNER already signed in to Google. */
+async function seedSignedInNominee(h: H) {
+  const g = h.store.seedGroup({ lineGroupId: MAIN_LINE_GROUP, name: 'ทีมหลัก', nominatedOwnerLineUserId: OWNER })
+  h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+  h.line.groupMemberCounts.set(MAIN_LINE_GROUP, 1)
+  await h.store.upsertGoogleAccount({
+    lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
+    grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+  })
+  return g.id
+}
+
+/** The setup form, sent by OWNER naming themselves as Owner: this confirms them at once. */
+const selfConfirmForm = (groupId: string) => ({
+  idToken: OWNER_TOKEN, groupId, workDescription: 'งาน',
+  features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
+  dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
+  members: [{ lineUserId: OWNER, nicknames: [], role: '' }], ownerLineUserId: OWNER,
+})
 
 describe('first sign-in', () => {
   it('creates NongJoDII/<main group>/Main group files, stores the IDs, shares the Project folder once and records one active connection', async () => {
@@ -407,14 +439,6 @@ describe('Owner confirm', () => {
 })
 
 describe('time limit: each route allows 60 s, its after() work included', () => {
-  /** Every folder ID the store holds. */
-  const storedFolderIds = (h: H) => [
-    ...h.store.tables.google_accounts.map((a) => a.driveRootFolderId),
-    ...h.store.tables.projects.map((p) => p.driveProjectFolderId),
-    ...h.store.tables.group_setups.map((r) => r.driveFolderId),
-  ].filter((id): id is string => !!id).sort()
-  /** Every folder in the fake Drive. Equal to storedFolderIds: no folder was left behind. */
-  const driveFolderIds = (h: H) => [...h.google.folders.keys()].sort()
   /** No Google call started too late to end by the hard stop if it ran to its 10 s timeout. */
   const expectEveryCallInTime = (h: H, requestStart: number) => {
     expect(h.google.callLog.length).toBeGreaterThan(0)
@@ -422,19 +446,6 @@ describe('time limit: each route allows 60 s, its after() work included', () => 
       expect(c.at + DRIVE_CALL_MAX_MS).toBeLessThanOrEqual(requestStart + DRIVE_HARD_STOP_MS)
     }
   }
-
-  /** A main group whose nominee OWNER already signed in to Google. */
-  async function seedSignedInNominee(h: H) {
-    const g = h.store.seedGroup({ lineGroupId: MAIN_LINE_GROUP, name: 'ทีมหลัก', nominatedOwnerLineUserId: OWNER })
-    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
-    h.line.groupMemberCounts.set(MAIN_LINE_GROUP, 1)
-    await h.store.upsertGoogleAccount({
-      lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
-      grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
-    })
-    return g.id
-  }
-  const projectOf = (h: H, groupId: string) => h.store.tables.groups.find((r) => r.id === groupId)!.projectId as string
 
   it('with 5 s Drive calls, starts no call that could end late, leaves no folder behind, and the next sign-in finishes', async () => {
     const h = setup()
@@ -517,12 +528,7 @@ describe('time limit: each route allows 60 s, its after() work included', () => 
   it('counts from the start of the setup form request, not from its after() work', async () => {
     const h = setup()
     const groupId = await seedSignedInNominee(h)
-    const res = await submitSetup(h.deps, {
-      idToken: OWNER_TOKEN, groupId, workDescription: 'งาน',
-      features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
-      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
-      members: [{ lineUserId: OWNER, nicknames: [], role: '' }], ownerLineUserId: OWNER,
-    }, h.defer)
+    const res = await submitSetup(h.deps, selfConfirmForm(groupId), h.defer)
     expect(res).toMatchObject({ status: 200, body: { state: 'confirmed' } })
     // The handler's LINE calls (access check, push budget, push) took 50 s: 5 s are left.
     h.setNow(new Date(TEST_NOW.getTime() + 50_000))
@@ -551,5 +557,122 @@ describe('time limit: each route allows 60 s, its after() work included', () => 
     await expect(ensureGroupFolder(h.deps, sub, almostOver)).rejects.toBeInstanceOf(DriveTimeUp)
     expect(h.google.callLog).toEqual([])
     expect(groupFolderId(h, sub)).toBeNull()
+  })
+})
+
+describe('tick finisher: the 15-minute tick finishes what a request could not', () => {
+  const MIN = 60_000
+  const after = (ms: number) => new Date(TEST_NOW.getTime() + ms)
+
+  /** One tick at `at`: the route answers, then its jobs run (every tick job unless `jobs` is given). */
+  async function tick(h: H, at: Date, jobs?: TickJob[]) {
+    h.setNow(at)
+    expect((await handleTickRequest(tickRequest(), h.deps, h.defer, jobs)).status).toBe(200)
+    await h.runDeferred()
+  }
+
+  it('finishes, tick by tick, the Projects a slow sign-in ran out of time for', async () => {
+    const h = setup()
+    for (const [name, lineGroupId] of [['A', 'Ca'], ['B', 'Cb'], ['C', 'Cc']]) await seedProject(h, { name, lineGroupId })
+    h.google.callMs = 5_000
+    await signIn(h)
+    expect(h.store.tables.drive_connections).toHaveLength(1)
+
+    // With 5 s calls one tick has time for one more Project; the next tick does the last.
+    await tick(h, after(15 * MIN))
+    expect(h.store.tables.drive_connections).toHaveLength(2)
+    await tick(h, after(30 * MIN))
+    expect(h.store.tables.drive_connections).toHaveLength(3)
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+    expect(h.google.shares).toHaveLength(3)
+    // Timed from the tick's start like a request: no call could run past its hard stop.
+    for (const c of h.google.callLog.filter((x) => x.at >= after(15 * MIN).getTime())) {
+      const tickStart = c.at < after(30 * MIN).getTime() ? after(15 * MIN) : after(30 * MIN)
+      expect(c.at + DRIVE_CALL_MAX_MS).toBeLessThanOrEqual(tickStart.getTime() + DRIVE_HARD_STOP_MS)
+    }
+  })
+
+  it('finishes the folders of an Owner who named themselves in a setup form too slow to make them', async () => {
+    const h = setup()
+    const groupId = await seedSignedInNominee(h)
+    expect((await submitSetup(h.deps, selfConfirmForm(groupId), h.defer)).status).toBe(200)
+    h.setNow(after(50_000))
+    await h.runDeferred()
+    expect(h.store.tables.drive_connections).toHaveLength(0)
+
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId: projectOf(h, groupId), status: 'active' })])
+    expect(groupFolderId(h, groupId)).not.toBeNull()
+    expect(h.google.shares).toHaveLength(1)
+  })
+
+  it('leaves a finished Project alone: its active connection marks it done', async () => {
+    const h = setup()
+    await seedProject(h)
+    await signIn(h)
+    h.google.callLog = []
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+  })
+
+  it('waits 2 minutes after the latest confirm or sign-in, so it never races that request\'s own after() work', async () => {
+    const h = setup()
+    await signIn(h) // an hour before the confirm, with no Project yet: no Drive work
+    const confirmedAt = after(60 * MIN)
+    const g = h.store.seedGroup({ lineGroupId: MAIN_LINE_GROUP, name: 'ทีมหลัก', nominatedOwnerLineUserId: OWNER })
+    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+    expect((await h.store.confirmGroupOwner(g.id, OWNER, confirmedAt)).outcome).toBe('confirmed')
+    h.google.callLog = []
+
+    // The sign-in is an hour old, but the confirm's own after() work may still be running.
+    await tick(h, new Date(confirmedAt.getTime() + 30_000), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+
+    await tick(h, new Date(confirmedAt.getTime() + FINISH_AFTER_MS), [driveSetupJob])
+    expect(h.store.tables.drive_connections).toHaveLength(1)
+  })
+
+  it('stops retrying 2 hours after the latest sign-in or confirm, so a share that keeps failing leaves about 8 more empty folders', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    // A Google Workspace policy that blocks link sharing: each run makes a Project folder it cannot share.
+    h.google.shareError = new AdapterError('google drive share 403')
+    await signIn(h)
+    expect(h.google.foldersNamed('ทีมหลัก')).toHaveLength(1)
+    for (let k = 1; k <= 16; k++) await tick(h, after(k * 15 * MIN), [driveSetupJob])
+    // One more per tick while the sign-in was 2 minutes to 2 hours old: 15, 30, ... 120 minutes.
+    expect(FINISH_WITHIN_MS / (15 * MIN)).toBe(8)
+    expect(h.google.foldersNamed('ทีมหลัก')).toHaveLength(1 + 8)
+    expect(h.google.callLog.filter((c) => c.at > after(FINISH_WITHIN_MS).getTime())).toEqual([])
+    expect(projectRow(h, projectId).driveProjectFolderId ?? null).toBeNull()
+    expect(h.store.tables.drive_connections).toHaveLength(0)
+  })
+
+  it('leaves alone a Project whose Owner has no Google account, or whose latest one is revoked', async () => {
+    const h = setup()
+    await seedProject(h) // confirmed at TEST_NOW; the Owner never signed in to Google
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+
+    await h.store.upsertGoogleAccount({
+      lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
+      grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+    })
+    h.store.tables.google_accounts[0].tokenStatus = 'revoked'
+    await tick(h, after(30 * MIN), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+  })
+
+  it('is timed from the start of the tick, so the jobs before it use up its time', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    h.google.driveError = new AdapterError('google drive create 500')
+    await signIn(h) // Drive was down: the Project is not connected
+    h.google.driveError = null
+    h.google.callLog = []
+    const slow: TickJob = { name: 'slow', run: async () => h.setNow(new Date(h.deps.now().getTime() + 50_000)) }
+    await tick(h, after(15 * MIN), [slow, driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+    expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId, projectsLeft: 1 })
   })
 })

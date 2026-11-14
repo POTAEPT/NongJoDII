@@ -1,6 +1,7 @@
 import { open } from '../crypto/secretbox'
 import { AdapterError, log, logError } from '../log'
 import type { Deps, DriveContext, DriveGroup } from '../ports'
+import type { TickJob } from '../tick/run-tick'
 
 // #13: the Owner's Drive layout, by ID only:
 //   NongJoDII/                      google_accounts.drive_root_folder_id (one per account)
@@ -22,7 +23,8 @@ const SUB_GROUP_FALLBACK = 'Sub group'
 // its after() work alike. So the work is timed from the start of the request (or tick),
 // and a step starts only if it still ends in time when every call in it runs to its
 // timeout. A step that cannot start stops the whole run (DriveTimeUp), logged as
-// drive_sync_incomplete; a later run does the rest.
+// drive_sync_incomplete; the tick finisher (driveSetupJob) or the Owner's next sign-in
+// does the rest.
 
 /** The routes' maxDuration. */
 const ROUTE_LIMIT_MS = 60_000
@@ -69,6 +71,29 @@ export async function syncDriveForOwner(deps: Deps, lineUserId: string, deadline
     return
   }
   await layOutProjects(deps, projectIds, deadline)
+}
+
+/** The tick finisher leaves a Project alone for this long after its Owner confirm or
+ *  Google sign-in, so it never races that request's own after() run (60 s at most), where
+ *  the loser would leave an empty folder behind. */
+export const FINISH_AFTER_MS = 2 * 60_000
+/** ...and stops retrying this long after it. A share that keeps failing (for example, a
+ *  Google Workspace policy that blocks link sharing) leaves one empty Project folder per
+ *  run, so a 15-minute tick leaves about 8. A new sign-in or confirm starts the window
+ *  again, and so does a run that stores a new root folder (that write moves updated_at). */
+export const FINISH_WITHIN_MS = 2 * 3600_000
+
+/** Tick job (#13): finishes the Drive setups that a request ran out of time for, or that
+ *  failed, while the latest confirm or sign-in is 2 minutes to 2 hours old. Timed from
+ *  the tick's start like a request, and last in the tick, after the jobs that push. */
+export const driveSetupJob: TickJob = {
+  name: 'drive_setup',
+  async run(deps, now) {
+    const projectIds = await deps.store.listUnfinishedDriveProjects(
+      new Date(now.getTime() - FINISH_WITHIN_MS), new Date(now.getTime() - FINISH_AFTER_MS),
+    )
+    await layOutProjects(deps, projectIds, driveDeadline(now))
+  },
 }
 
 /** Each Project in turn. A Drive or store failure is logged and the next Project goes on.

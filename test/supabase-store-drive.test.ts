@@ -189,3 +189,105 @@ describe('SupabaseStore.ensureDriveConnection', () => {
       .toBe('supabase ensureDriveConnection: 23503')
   })
 })
+
+describe('SupabaseStore.listUnfinishedDriveProjects (#13 tick finisher)', () => {
+  const FROM = new Date('2026-11-14T10:00:00Z')
+  const TO = new Date('2026-11-14T11:58:00Z')
+  const at = (hhmm: string) => `2026-11-14T${hhmm}:00+00:00`
+
+  it('finds the Owners with a recent confirm or Google account write, then keeps their unconnected Projects whose later event is in the window', async () => {
+    const { store, chains } = stubDb([
+      // Owners: main groups confirmed since FROM, and Google accounts written since FROM.
+      ok([{ nominated_owner_line_user_id: 'U1' }]),
+      ok([{ line_user_id: 'U2' }, { line_user_id: 'U1' }, { line_user_id: 'U4' }]),
+      // Their accounts, then their main groups.
+      ok([
+        { line_user_id: 'U1', token_status: 'valid', updated_at: at('09:00') },
+        { line_user_id: 'U2', token_status: 'revoked', updated_at: at('08:00') },
+        { line_user_id: 'U2', token_status: 'valid', updated_at: at('11:00') },
+        { line_user_id: 'U4', token_status: 'valid', updated_at: at('05:00') },
+        { line_user_id: 'U4', token_status: 'revoked', updated_at: at('11:30') },
+      ]),
+      ok([
+        { project_id: 'p1', nominated_owner_line_user_id: 'U1', owner_confirmed_at: at('11:00') }, // confirm in the window
+        { project_id: 'p2', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('06:00') }, // sign-in in the window
+        { project_id: 'p3', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('11:59') }, // sign-in in the window, but confirmed under 2 minutes ago
+        { project_id: 'p4', nominated_owner_line_user_id: 'U2', owner_confirmed_at: at('07:00') }, // already connected
+        { project_id: 'p6', nominated_owner_line_user_id: 'U4', owner_confirmed_at: at('10:30') }, // latest account revoked
+      ]),
+      // Active connections of the Projects left.
+      ok([{ project_id: 'p4' }]),
+    ])
+    expect(await store.listUnfinishedDriveProjects(FROM, TO)).toEqual(['p1', 'p2'])
+
+    expect(chains[0]).toEqual([
+      { method: 'from', args: ['groups'] },
+      { method: 'select', args: ['nominated_owner_line_user_id'] },
+      { method: 'eq', args: ['is_main', true] },
+      { method: 'not', args: ['project_id', 'is', null] },
+      { method: 'is', args: ['left_at', null] },
+      { method: 'gte', args: ['owner_confirmed_at', FROM.toISOString()] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+    expect(chains[1]).toEqual([
+      { method: 'from', args: ['google_accounts'] },
+      { method: 'select', args: ['line_user_id'] },
+      { method: 'gte', args: ['updated_at', FROM.toISOString()] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+    expect(chains[2]).toEqual([
+      { method: 'from', args: ['google_accounts'] },
+      { method: 'select', args: ['line_user_id, token_status, updated_at'] },
+      { method: 'in', args: ['line_user_id', ['U1', 'U2', 'U4']] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+    expect(chains[3]).toEqual([
+      { method: 'from', args: ['groups'] },
+      { method: 'select', args: ['project_id, nominated_owner_line_user_id, owner_confirmed_at'] },
+      { method: 'eq', args: ['is_main', true] },
+      { method: 'in', args: ['nominated_owner_line_user_id', ['U1', 'U2', 'U4']] },
+      { method: 'not', args: ['owner_confirmed_at', 'is', null] },
+      { method: 'not', args: ['project_id', 'is', null] },
+      { method: 'is', args: ['left_at', null] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+    expect(chains[4]).toEqual([
+      { method: 'from', args: ['drive_connections'] },
+      { method: 'select', args: ['project_id'] },
+      { method: 'eq', args: ['status', 'active'] },
+      { method: 'in', args: ['project_id', ['p1', 'p2', 'p4']] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+  })
+
+  it('reads nothing more when nobody confirmed or signed in since FROM', async () => {
+    const { store, chains } = stubDb([ok([]), ok([])])
+    expect(await store.listUnfinishedDriveProjects(FROM, TO)).toEqual([])
+    expect(chains).toHaveLength(2)
+  })
+
+  it('reads every page and sends the Owners in chunks, so a long list neither loses rows nor grows the URL', async () => {
+    const owners = Array.from({ length: PAGE_SIZE }, (_, i) => ({ nominated_owner_line_user_id: `U${i % 150}` }))
+    const { store, chains } = stubDb([
+      ok(owners), ok([]), ok([]), // confirms page 1 (full), sign-ins, confirms page 2
+      ok([]), ok([]), ok([]), ok([]), // accounts and main groups, for two chunks of Owners
+    ])
+    expect(await store.listUnfinishedDriveProjects(FROM, TO)).toEqual([])
+    const confirms = chains.filter((c) => c.some((x) => x.method === 'gte' && x.args[0] === 'owner_confirmed_at'))
+    expect(ranges(confirms)).toEqual([[0, PAGE_SIZE - 1], [PAGE_SIZE, 2 * PAGE_SIZE - 1]])
+    const inLists = chains.flatMap((c) => c.filter((x) => x.method === 'in').map((x) => (x.args[1] as string[]).length))
+    expect(inLists).toEqual([100, 100, 50, 50])
+  })
+
+  it('throws an AdapterError with the code only', async () => {
+    const { store } = stubDb([{ data: null, error: { code: '42501' } }, ok([])])
+    const err = await store.listUnfinishedDriveProjects(FROM, TO).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as Error).message).toBe('supabase listUnfinishedDriveProjects: 42501')
+  })
+})

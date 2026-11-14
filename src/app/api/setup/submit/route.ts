@@ -1,7 +1,9 @@
+import { after } from 'next/server'
 import { getDeps } from '@/server/deps'
 import { submitSetup } from '@/server/setup/submit'
 
-// Room for the LINE calls (access check, push budget, push), each cut at 10 s.
+// Room for the LINE calls (access check, push budget, push), each cut at 10 s, and the
+// Drive folders (#13) of a self-confirmed Owner inside after().
 export const maxDuration = 60
 
 export async function POST(request: Request) {
@@ -11,6 +13,6 @@ export async function POST(request: Request) {
   } catch {
     return Response.json({ error: 'bad_request' }, { status: 400 })
   }
-  const result = await submitSetup(getDeps(), body)
+  const result = await submitSetup(getDeps(), body, after)
   return Response.json(result.body, { status: result.status })
 }

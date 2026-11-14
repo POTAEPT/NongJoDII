@@ -63,9 +63,9 @@ async function setup() {
   })
   const submit = async (p: Record<string, unknown> = {}) => {
     await load(String(p.idToken ?? 'tok-me')) // the page loads first; this adds Me as a Member
-    return submitSetup(h.deps, form(p))
+    return submitSetup(h.deps, form(p), h.defer)
   }
-  const confirm = (idToken: string) => confirmOwner(h.deps, { idToken, groupId: group.id })
+  const confirm = (idToken: string) => confirmOwner(h.deps, { idToken, groupId: group.id }, h.defer)
   const resend = (idToken = 'tok-me') => resendSetupCard(h.deps, { idToken, groupId: group.id })
   const row = () => h.store.tables.groups.find((g) => g.id === group.id)!
   const member = (id: string) => h.store.tables.group_members.find((m) => m.groupId === group.id && m.lineUserId === id)
@@ -332,7 +332,7 @@ describe('setup send, another Owner', () => {
     t.line.failPush = false
     t.setNow(new Date(TEST_NOW.getTime() + MIN))
     // Pim then sends a changed form naming Me (pending: only naming yourself confirms).
-    await submitSetup(t.deps, t.form({ idToken: 'tok-pim', workDescription: 'งานใหม่', ownerLineUserId: 'Ume' }))
+    await submitSetup(t.deps, t.form({ idToken: 'tok-pim', workDescription: 'งานใหม่', ownerLineUserId: 'Ume' }), t.defer)
     const saved = structuredClone(t.row())
     expect(saved.nominatedOwnerLineUserId).toBe('Ume')
     // Me presses resend on the old page: Pim's changes and nominee stay.
@@ -519,7 +519,7 @@ describe('setup send, another Owner', () => {
 describe('setup send refusals', () => {
   it('a non-Member cannot send the form (403) and nothing is saved', async () => {
     const t = await setup()
-    const res = await submitSetup(t.deps, t.form({ idToken: 'tok-out' }))
+    const res = await submitSetup(t.deps, t.form({ idToken: 'tok-out' }), t.defer)
     expect(res.status).toBe(403)
     expect(t.row().nominatedOwnerLineUserId).toBeNull()
     expect(t.row().workDescription).toBeNull()
@@ -528,7 +528,7 @@ describe('setup send refusals', () => {
 
   it('a bad token cannot send (401)', async () => {
     const t = await setup()
-    expect((await submitSetup(t.deps, t.form({ idToken: 'tok-bogus' }))).status).toBe(401)
+    expect((await submitSetup(t.deps, t.form({ idToken: 'tok-bogus' }), t.defer)).status).toBe(401)
   })
 
   it('invalid input is refused with the field name (400) and nothing is saved', async () => {
@@ -575,7 +575,7 @@ describe('a listed person who is no longer a Member', () => {
         { lineUserId: 'Upim', nicknames: ['พิม'], role: 'ออกแบบ' },
         { lineUserId: 'Uout', nicknames: ['เอาท์'], role: 'แขก' },
       ],
-    }))
+    }), t.defer)
     expect(res.body).toEqual({ state: 'confirmed', posted: 'pushed' })
     expect(t.member('Ume')).toMatchObject({ nicknames: ['มี่'], role: 'PM' })
     expect(t.member('Upim')).toMatchObject({ nicknames: [], role: null, leftAt: TEST_NOW })

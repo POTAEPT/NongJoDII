@@ -6,6 +6,8 @@ import type {
   AnnounceClaim,
   CandidateRow,
   DailyReminderGroup,
+  DriveContext,
+  DriveGroup,
   GroupRow,
   GroupSetup,
   GroupSetupWrite,
@@ -92,13 +94,41 @@ function toPromptRow(r: DbPrompt): ProgressPromptRow {
   }
 }
 
-/** Page size for listWeeklySummaryGroups; equal to PostgREST max_rows in supabase/config.toml. */
-export const WEEKLY_PAGE = 1000
+/** Page size of every paged list read; equal to PostgREST max_rows in supabase/config.toml,
+ *  which caps each answer. */
+export const PAGE_SIZE = 1000
 
 type PgError = { code: string } | null
 
 function check(method: keyof StorePort, error: PgError): void {
   if (error) throw new AdapterError(`supabase ${method}: ${error.code}`)
+}
+
+/** IN lists go out this many values at a time, so the request URL stays short
+ *  (a LINE user ID or a UUID is 33 to 36 characters). */
+export const IN_CHUNK = 100
+
+function chunks<T>(values: T[]): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < values.length; i += IN_CHUNK) out.push(values.slice(i, i + IN_CHUNK))
+  return out
+}
+
+/** Every row of a list read, PAGE_SIZE rows at a time, so max_rows never hides the rows
+ *  after the first page. `page(from, to)` is the query with .order() on a unique key (id)
+ *  and .range(from, to); a short page is the last one. */
+async function readAllPages<R>(
+  method: keyof StorePort,
+  page: (from: number, to: number) => PromiseLike<{ data: unknown; error: PgError }>,
+): Promise<R[]> {
+  const out: R[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await page(from, from + PAGE_SIZE - 1)
+    check(method, error)
+    const rows = (data ?? []) as R[]
+    out.push(...rows)
+    if (rows.length < PAGE_SIZE) return out
+  }
 }
 
 function iso(d: Date | null): string | null {
@@ -622,7 +652,7 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #20 weekly insight ----
-  /** Pages of WEEKLY_PAGE rows ordered by id, so PostgREST max_rows (1000) never hides
+  /** Pages of PAGE_SIZE rows ordered by id, so PostgREST max_rows (1000) never hides
    *  the groups after the first page. */
   async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     type Row = {
@@ -630,7 +660,7 @@ export class SupabaseStore implements StorePort {
       weekly_summary_time: string; weekly_summary_last_sent_on: string | null
     }
     const out: WeeklySummaryGroup[] = []
-    for (let from = 0; ; from += WEEKLY_PAGE) {
+    for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from('groups')
         .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
@@ -639,7 +669,7 @@ export class SupabaseStore implements StorePort {
         .eq('feature_weekly_summary', true)
         .eq('weekly_summary_weekday', weekday)
         .order('id')
-        .range(from, from + WEEKLY_PAGE - 1)
+        .range(from, from + PAGE_SIZE - 1)
       check('listWeeklySummaryGroups', error)
       const rows = (data ?? []) as Row[]
       for (const r of rows) {
@@ -648,7 +678,7 @@ export class SupabaseStore implements StorePort {
           time: r.weekly_summary_time, lastSentOn: r.weekly_summary_last_sent_on,
         })
       }
-      if (rows.length < WEEKLY_PAGE) return out
+      if (rows.length < PAGE_SIZE) return out
     }
   }
 
@@ -741,11 +771,11 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #44 daily reminders ----
-  /** Pages of WEEKLY_PAGE rows ordered by id, as listWeeklySummaryGroups. */
+  /** Pages of PAGE_SIZE rows ordered by id, as listWeeklySummaryGroups. */
   async listDailyReminderGroups(): Promise<DailyReminderGroup[]> {
     type Row = { id: string; line_group_id: string; daily_reminder_time: string; daily_reminder_last_sent_on: string | null }
     const out: DailyReminderGroup[] = []
-    for (let from = 0; ; from += WEEKLY_PAGE) {
+    for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from('groups')
         .select('id, line_group_id, daily_reminder_time, daily_reminder_last_sent_on')
@@ -753,13 +783,13 @@ export class SupabaseStore implements StorePort {
         .is('left_at', null)
         .eq('feature_track_remind', true)
         .order('id')
-        .range(from, from + WEEKLY_PAGE - 1)
+        .range(from, from + PAGE_SIZE - 1)
       check('listDailyReminderGroups', error)
       const rows = (data ?? []) as Row[]
       for (const r of rows) {
         out.push({ groupId: r.id, lineGroupId: r.line_group_id, time: r.daily_reminder_time, lastSentOn: r.daily_reminder_last_sent_on })
       }
-      if (rows.length < WEEKLY_PAGE) return out
+      if (rows.length < PAGE_SIZE) return out
     }
   }
 
@@ -839,7 +869,7 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
-  /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST
+  /** Every open Task, in pages of PAGE_SIZE ordered by created_at then id, so PostgREST
    *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
   async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
     type Row = {
@@ -847,7 +877,7 @@ export class SupabaseStore implements StorePort {
       due_at: string | null; last_activity_at: string | null; deleted_at: string | null
     }
     const out: ReminderTask[] = []
-    for (let from = 0; ; from += WEEKLY_PAGE) {
+    for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from('tasks')
         .select('id, title, status, assignee_line_user_id, due_at, last_activity_at, deleted_at')
@@ -856,7 +886,7 @@ export class SupabaseStore implements StorePort {
         .neq('status', 'done')
         .order('created_at', { ascending: true })
         .order('id', { ascending: true })
-        .range(from, from + WEEKLY_PAGE - 1)
+        .range(from, from + PAGE_SIZE - 1)
       check('listReminderTasks', error)
       const rows = (data ?? []) as Row[]
       for (const r of rows) {
@@ -865,7 +895,7 @@ export class SupabaseStore implements StorePort {
           dueAt: toDate(r.due_at), lastActivityAt: toDate(r.last_activity_at), deletedAt: toDate(r.deleted_at),
         })
       }
-      if (rows.length < WEEKLY_PAGE) return out
+      if (rows.length < PAGE_SIZE) return out
     }
   }
 
@@ -950,5 +980,248 @@ export class SupabaseStore implements StorePort {
     check('findGoogleAccountByLineUser', error)
     const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired' } | null
     return row ? { id: row.id, tokenStatus: row.token_status } : null
+  }
+
+  // ---- #13 Drive folders ----
+  async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
+    // A confirmed main group names the Project's owner (check_same_owner), so the
+    // groups row alone answers it.
+    const rows = await readAllPages<{ project_id: string }>('listConfirmedOwnerProjects', (from, to) =>
+      this.db
+        .from('groups')
+        .select('project_id')
+        .eq('is_main', true)
+        .eq('nominated_owner_line_user_id', lineUserId)
+        .not('owner_confirmed_at', 'is', null)
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.project_id)
+  }
+
+  async getDriveContext(projectId: string): Promise<DriveContext | null> {
+    const { data: p, error } = await this.db
+      .from('projects')
+      .select('id, owner_line_user_id, drive_project_folder_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check('getDriveContext', error)
+    const project = p as { id: string; owner_line_user_id: string; drive_project_folder_id: string | null } | null
+    if (!project) return null
+    type G = { id: string; line_group_id: string; name: string | null; is_main: boolean; drive_folder_id: string | null }
+    const [rows, account, active] = await Promise.all([
+      readAllPages<G>('getDriveContext', (from, to) =>
+        this.db
+          .from('groups')
+          .select('id, line_group_id, name, is_main, drive_folder_id')
+          .eq('project_id', projectId)
+          .not('owner_confirmed_at', 'is', null)
+          .is('left_at', null)
+          .order('id')
+          .range(from, to)),
+      // The Owner's most recently written account, as findGoogleAccountByLineUser.
+      this.db
+        .from('google_accounts')
+        .select('id, token_status, refresh_token_ciphertext, drive_root_folder_id')
+        .eq('line_user_id', project.owner_line_user_id)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      this.db
+        .from('drive_connections')
+        .select('google_account_id')
+        .eq('project_id', projectId)
+        .eq('status', 'active')
+        .maybeSingle(),
+    ])
+    check('getDriveContext', account.error)
+    check('getDriveContext', active.error)
+    const toDrive = (g: G): DriveGroup => ({
+      groupId: g.id, lineGroupId: g.line_group_id, name: g.name, folderId: g.drive_folder_id,
+    })
+    const main = rows.find((g) => g.is_main)
+    const a = account.data as {
+      id: string; token_status: 'valid' | 'revoked' | 'expired'
+      refresh_token_ciphertext: string | null; drive_root_folder_id: string | null
+    } | null
+    return {
+      projectId, ownerLineUserId: project.owner_line_user_id, projectFolderId: project.drive_project_folder_id,
+      mainGroup: main ? toDrive(main) : null,
+      subGroups: rows.filter((g) => !g.is_main).map(toDrive),
+      account: a
+        ? { id: a.id, tokenStatus: a.token_status, refreshTokenCiphertext: a.refresh_token_ciphertext, rootFolderId: a.drive_root_folder_id }
+        : null,
+      activeAccountId: (active.data as { google_account_id: string } | null)?.google_account_id ?? null,
+    }
+  }
+
+  async setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    return this.setFolder('setDriveRootFolder', 'google_accounts', 'drive_root_folder_id', googleAccountId, from, to)
+  }
+
+  async setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    return this.setFolder('setProjectDriveFolder', 'projects', 'drive_project_folder_id', projectId, from, to)
+  }
+
+  async setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    return this.setFolder('setGroupDriveFolder', 'groups', 'drive_folder_id', groupId, from, to)
+  }
+
+  /** One UPDATE ... WHERE id = $1 AND col IS NOT DISTINCT FROM `from`; when it matched no
+   *  row, reads what the column holds now. */
+  private async setFolder(
+    method: keyof StorePort, table: string, column: string, id: string, from: string | null, to: string,
+  ): Promise<{ folderId: string | null }> {
+    const base = this.db.from(table).update({ [column]: to }).eq('id', id)
+    const { data, error } = await (from === null ? base.is(column, null) : base.eq(column, from)).select('id')
+    check(method, error)
+    if (((data ?? []) as unknown[]).length > 0) return { folderId: to }
+    const { data: row, error: readError } = await this.db.from(table).select(column).eq('id', id).maybeSingle()
+    check(method, readError)
+    return { folderId: ((row as Record<string, string | null> | null)?.[column]) ?? null }
+  }
+
+  async claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }> {
+    const holder = async (): Promise<string | null> => {
+      const { data, error } = await this.db
+        .from('drive_connections')
+        .select('google_account_id')
+        .eq('project_id', projectId)
+        .eq('status', 'active')
+        .limit(1)
+      check('claimDriveConnection', error)
+      return ((data ?? []) as { google_account_id: string }[])[0]?.google_account_id ?? null
+    }
+    const held = await holder()
+    if (held !== null) return { created: false, accountId: held }
+    // The partial unique index drive_connections_one_active cannot be an ON CONFLICT
+    // target through PostgREST, so a concurrent claim shows as 23505: that claim holds it.
+    const { error: insertError } = await this.db
+      .from('drive_connections')
+      .insert({ project_id: projectId, google_account_id: googleAccountId, status: 'active' })
+    if (insertError?.code === '23505') {
+      const winner = await holder()
+      if (winner === null) throw new AdapterError('supabase claimDriveConnection: no holder')
+      return { created: false, accountId: winner }
+    }
+    check('claimDriveConnection', insertError)
+    return { created: true, accountId: googleAccountId }
+  }
+
+  /** Flat reads joined here, no embedded filters: the Owners with a confirm or a Google
+   *  account write since `from`, then their accounts and main groups, then, for the
+   *  Projects in the window, the empty folder IDs and the active connection holders. Every
+   *  read is paged; every IN list is chunked. */
+  async listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]> {
+    const m = 'listUnfinishedDriveProjects'
+    const since = from.toISOString()
+    const [confirmed, signedIn] = await Promise.all([
+      readAllPages<{ nominated_owner_line_user_id: string }>(m, (a, b) =>
+        this.db
+          .from('groups')
+          .select('nominated_owner_line_user_id')
+          .eq('is_main', true)
+          .not('project_id', 'is', null)
+          .is('left_at', null)
+          .gte('owner_confirmed_at', since)
+          .order('id')
+          .range(a, b)),
+      readAllPages<{ line_user_id: string }>(m, (a, b) =>
+        this.db
+          .from('google_accounts')
+          .select('line_user_id')
+          .gte('updated_at', since)
+          .order('id')
+          .range(a, b)),
+    ])
+    const owners = [...new Set([
+      ...confirmed.map((r) => r.nominated_owner_line_user_id), ...signedIn.map((r) => r.line_user_id),
+    ])]
+
+    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string }
+    type Main = { project_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
+    const accounts: Account[] = []
+    const mains: Main[] = []
+    for (const chunk of chunks(owners)) {
+      const [a, g] = await Promise.all([
+        readAllPages<Account>(m, (x, y) =>
+          this.db
+            .from('google_accounts')
+            .select('id, line_user_id, token_status, updated_at')
+            .in('line_user_id', chunk)
+            .order('id')
+            .range(x, y)),
+        readAllPages<Main>(m, (x, y) =>
+          this.db
+            .from('groups')
+            .select('project_id, nominated_owner_line_user_id, owner_confirmed_at')
+            .eq('is_main', true)
+            .in('nominated_owner_line_user_id', chunk)
+            .not('owner_confirmed_at', 'is', null)
+            .not('project_id', 'is', null)
+            .is('left_at', null)
+            .order('id')
+            .range(x, y)),
+      ])
+      accounts.push(...a)
+      mains.push(...g)
+    }
+
+    // Each Owner's most recently written account, as getDriveContext reads it.
+    const latest = new Map<string, Account>()
+    for (const a of accounts) {
+      const seen = latest.get(a.line_user_id)
+      if (!seen || toDate(a.updated_at).getTime() > toDate(seen.updated_at).getTime()) latest.set(a.line_user_id, a)
+    }
+    // Project ID -> the account that would run it: in the window, with a valid latest account.
+    const inWindow = new Map<string, string>()
+    for (const g of mains) {
+      const account = latest.get(g.nominated_owner_line_user_id)
+      if (account?.token_status !== 'valid') continue
+      const last = Math.max(toDate(g.owner_confirmed_at).getTime(), toDate(account.updated_at).getTime())
+      if (last >= from.getTime() && last <= to.getTime()) inWindow.set(g.project_id, account.id)
+    }
+
+    const missing = new Set<string>() // a folder ID is still empty
+    const holders = new Map<string, string>()
+    for (const chunk of chunks([...inWindow.keys()])) {
+      const [noProjectFolder, noGroupFolder, active] = await Promise.all([
+        readAllPages<{ id: string }>(m, (x, y) =>
+          this.db
+            .from('projects')
+            .select('id')
+            .in('id', chunk)
+            .is('drive_project_folder_id', null)
+            .order('id')
+            .range(x, y)),
+        // The groups getDriveContext lists, so a Project is never pending for a group no run makes.
+        readAllPages<{ project_id: string }>(m, (x, y) =>
+          this.db
+            .from('groups')
+            .select('project_id')
+            .in('project_id', chunk)
+            .not('owner_confirmed_at', 'is', null)
+            .is('left_at', null)
+            .is('drive_folder_id', null)
+            .order('id')
+            .range(x, y)),
+        readAllPages<{ project_id: string; google_account_id: string }>(m, (x, y) =>
+          this.db
+            .from('drive_connections')
+            .select('project_id, google_account_id')
+            .eq('status', 'active')
+            .in('project_id', chunk)
+            .order('id')
+            .range(x, y)),
+      ])
+      for (const r of noProjectFolder) missing.add(r.id)
+      for (const r of noGroupFolder) missing.add(r.project_id)
+      for (const r of active) holders.set(r.project_id, r.google_account_id)
+    }
+    return [...inWindow]
+      .filter(([id, accountId]) => missing.has(id) && (holders.get(id) ?? accountId) === accountId)
+      .map(([id]) => id)
+      .sort()
   }
 }

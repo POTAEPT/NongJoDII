@@ -28,6 +28,16 @@ export class LinePushRejected extends AdapterError {
   }
 }
 
+/** Google answered a refresh with invalid_grant: the Owner revoked access or the grant
+ *  expired, so retrying cannot help. #14 marks the account and asks for a new sign-in. */
+export class GoogleTokenRevoked extends AdapterError {
+  name = 'GoogleTokenRevoked'
+
+  constructor() {
+    super('google refresh invalid_grant')
+  }
+}
+
 /** Logs an AdapterError's message; any other error logs only its name, because
  *  its message may quote chat-derived input. */
 export function logError(event: string, fields: Fields, err: unknown): void {

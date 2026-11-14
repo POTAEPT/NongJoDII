@@ -33,13 +33,24 @@ export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: num
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }
 
-// ---- Google (OAuth now; Drive methods arrive with #13) ----
+// ---- Google (OAuth #12, Drive folders #13) ----
 export type GoogleTokenResult = {
   refreshToken: string | null; scopes: string[]; subject: string | null; email: string | null
 }
+/** What Drive says about a stored folder ID: 'trashed' counts as deleted (#13). */
+export type DriveFolderState = 'ok' | 'trashed' | 'missing'
 export interface GooglePort {
   buildAuthUrl(state: string): string
   exchangeCode(code: string): Promise<GoogleTokenResult>
+  /** A short-lived access token from the stored refresh token. Rejects with
+   *  GoogleTokenRevoked when Google answers invalid_grant (revoked or expired grant). */
+  accessToken(refreshToken: string): Promise<string>
+  /** Creates a folder under parentId (null = the Drive's root); returns its ID. */
+  createFolder(accessToken: string, name: string, parentId: string | null): Promise<string>
+  /** 'missing' when Drive answers 404. */
+  getFolder(accessToken: string, folderId: string): Promise<DriveFolderState>
+  /** "Anyone with the link can view" (permissions.create role reader, type anyone). */
+  shareAnyoneReader(accessToken: string, fileId: string): Promise<void>
 }
 
 // ---- Supabase ----
@@ -180,6 +191,21 @@ export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nomin
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
+}
+
+/** A group that gets a Drive folder: attached, Owner confirmed, bot still in it. */
+export type DriveGroup = { groupId: string; lineGroupId: string; name: string | null; folderId: string | null }
+/** What #13 reads to lay out a Project's folders. `account` is the Owner's most recently
+ *  written Google account; `activeAccountId` the account of the Project's active Drive
+ *  connection (null = none yet). */
+export type DriveContext = {
+  projectId: string; ownerLineUserId: string; projectFolderId: string | null
+  mainGroup: DriveGroup | null; subGroups: DriveGroup[]
+  account: {
+    id: string; tokenStatus: 'valid' | 'revoked' | 'expired'
+    refreshTokenCiphertext: string | null; rootFolderId: string | null
+  } | null
+  activeAccountId: string | null
 }
 
 export interface StorePort {
@@ -331,6 +357,33 @@ export interface StorePort {
   // #12 Google
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>
+  // #13 Drive folders
+  /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still
+   *  in it). Every page, by group id. */
+  listConfirmedOwnerProjects(lineUserId: string): Promise<string[]>
+  /** null when the Project does not exist. Groups: confirmed Owner and left_at null only,
+   *  every page, by id. */
+  getDriveContext(projectId: string): Promise<DriveContext | null>
+  // Folder ID setters are compare-and-set: they write `to` only while the column still
+  // holds `from` (null = empty), so two runs at once keep one ID. Each returns the ID the
+  // column holds afterwards (the other run's, when it got in first).
+  setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
+  setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
+  setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
+  /** The lock that binds a Project's folders to one Google account: the Project's active
+   *  drive_connections row (unique index drive_connections_one_active). Inserts it for
+   *  `googleAccountId` unless one exists, then answers the account that holds it (on a
+   *  23505 it reads the holder again). created: this call inserted the row. Never updates
+   *  or deletes a row. */
+  claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }>
+  /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
+   *  listed when its main group has a confirmed Owner and the bot, a folder ID is still
+   *  empty (the Project folder, or a group that getDriveContext lists: confirmed Owner, bot
+   *  still in it), the Owner's most recently written Google account is valid and no other
+   *  account holds the active drive_connections row, and the later of the Owner confirm
+   *  (owner_confirmed_at) and that account's updated_at lies in [from, to]. updated_at
+   *  moves on every sign-in, and also when the root folder ID is stored. */
+  listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]>
 }
 
 // ---- Composition ----

@@ -1,6 +1,7 @@
 import type { LineMessage } from '@/server/line/types'
 import type { LinePort, LinePushResult } from '@/server/ports'
 import { AdapterError, LinePushRejected } from '@/server/log'
+import type { FakeClock } from './fake-google'
 
 export class FakeLine implements LinePort {
   /** Every reply call, recorded before `failReply` is applied. */
@@ -23,6 +24,9 @@ export class FakeLine implements LinePort {
   groupNames = new Map<string, string>()
   failGroupSummary = false
   groupSummaryCalls: string[] = []
+  /** How long getGroupSummary takes on `clock` (#13 time limit); 0 (the default) = instant. */
+  groupSummaryMs = 0
+  clock: FakeClock | null = null
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
   /** Makes push reject as the real adapter does on a LINE 5xx: the outcome is unknown to
@@ -80,6 +84,7 @@ export class FakeLine implements LinePort {
 
   async getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null> {
     this.groupSummaryCalls.push(lineGroupId)
+    if (this.groupSummaryMs > 0) this.clock?.advance(this.groupSummaryMs)
     if (this.failGroupSummary) throw new AdapterError('line group summary 500')
     const groupName = this.groupNames.get(lineGroupId)
     return groupName === undefined ? null : { groupName }

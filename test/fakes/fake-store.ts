@@ -22,6 +22,8 @@ import type {
   PushBudgetClaim,
   NewWeeklyInsight,
   DailyReminderGroup,
+  DriveContext,
+  DriveGroup,
   ReminderTask,
   MessageRef,
   ProgressPromptRow,
@@ -66,6 +68,11 @@ export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; mo
 export type GoogleAccountRecord = {
   id: string; lineUserId: string; googleSubject: string; email: string | null; grantedScopes: string[]
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
+  driveRootFolderId?: string | null   // absent = null (#13)
+  updatedAt: Date                     // set on every write, like the table's trigger
+}
+export type DriveConnectionRecord = {
+  id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
 }
 
 /** The groups columns the weekly insight reads (left_at, feature_weekly_summary and the
@@ -83,8 +90,9 @@ export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Dat
 export type GroupSetupRecord = {
   groupId: string; isMain: boolean; featureSaveFiles: boolean
   ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
+  driveFolderId?: string | null   // groups.drive_folder_id; absent = null (#13)
 }
-export type ProjectRecord = { id: string; ownerLineUserId: string }
+export type ProjectRecord = { id: string; ownerLineUserId: string; driveProjectFolderId?: string | null }
 
 export type FakeTables = {
   line_users: LineUserRecord[]
@@ -104,6 +112,7 @@ export type FakeTables = {
   weekly_insights: WeeklyInsightRecord[]
   group_setups: GroupSetupRecord[]
   projects: ProjectRecord[]
+  drive_connections: DriveConnectionRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -135,7 +144,20 @@ export class FakeStore implements StorePort {
     weekly_insights: [],
     group_setups: [],
     projects: [],
+    drive_connections: [],
   }
+
+  /** The database's now(), for columns it stamps itself (google_accounts.updated_at).
+   *  makeTestDeps sets it to the harness clock. */
+  clock: () => Date = () => new Date(SEED_NOW.getTime())
+
+  /** Test aid (#13): every claim and every Project or group folder ID write, in call
+   *  order, whether or not the compare-and-set matched. */
+  driveWrites: (
+    | { op: 'claim'; projectId: string; accountId: string; holder: string }
+    | { op: 'project'; projectId: string; to: string }
+    | { op: 'group'; groupId: string; to: string }
+  )[] = []
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
   // Write order of google_accounts rows, so the newest connection wins on lookup.
@@ -619,19 +641,147 @@ export class FakeStore implements StorePort {
     if (row) {
       Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid' })
     } else {
-      row = { ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid' }
+      row = { ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid', updatedAt: this.clock() }
       this.tables.google_accounts.push(row)
     }
+    this.touchGoogleAccount(row)
+  }
+
+  /** What the google_accounts_updated_at trigger does on every write (the column default on
+   *  insert): updated_at = now(). It also makes the row the most recently written one. */
+  private touchGoogleAccount(row: GoogleAccountRecord): void {
+    row.updatedAt = this.clock()
     this.googleWrites.set(row.id, ++this.googleWriteSeq)
+  }
+
+  /** The person's most recently written Google account (ORDER BY updated_at DESC). */
+  private latestGoogleAccount(lineUserId: string | null): GoogleAccountRecord | undefined {
+    return this.tables.google_accounts
+      .filter((g) => g.lineUserId === lineUserId)
+      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))[0]
   }
 
   /** A user with several Google accounts gets the most recently written one. */
   async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
     this.fault('findGoogleAccountByLineUser')
-    const rows = this.tables.google_accounts
-      .filter((g) => g.lineUserId === lineUserId)
-      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))
-    return rows[0] ? { id: rows[0].id, tokenStatus: rows[0].tokenStatus } : null
+    const row = this.latestGoogleAccount(lineUserId)
+    return row ? { id: row.id, tokenStatus: row.tokenStatus } : null
+  }
+
+  // ---- #13 Drive folders ----
+  private isLeft(groupId: string): boolean {
+    return this.tables.group_schedules.find((s) => s.groupId === groupId)?.leftAt != null
+  }
+  private isMainGroup(groupId: string): boolean {
+    return this.tables.group_setups.find((r) => r.groupId === groupId)?.isMain === true
+  }
+
+  /** Ordered by group id, as SupabaseStore pages it. */
+  async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
+    this.fault('listConfirmedOwnerProjects')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.nominatedOwnerLineUserId === lineUserId &&
+        g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((g) => g.projectId as string)
+  }
+
+  async getDriveContext(projectId: string): Promise<DriveContext | null> {
+    this.fault('getDriveContext')
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) return null
+    const groups = this.tables.groups
+      .filter((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
+    const toDrive = (g: GroupRow): DriveGroup => ({
+      groupId: g.id, lineGroupId: g.lineGroupId, name: g.name,
+      folderId: this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId ?? null,
+    })
+    const main = groups.find((g) => this.isMainGroup(g.id))
+    const account = this.latestGoogleAccount(project.ownerLineUserId)
+    const active = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    return {
+      projectId, ownerLineUserId: project.ownerLineUserId, projectFolderId: project.driveProjectFolderId ?? null,
+      mainGroup: main ? toDrive(main) : null,
+      subGroups: groups.filter((g) => !this.isMainGroup(g.id)).map(toDrive),
+      account: account
+        ? {
+            id: account.id, tokenStatus: account.tokenStatus,
+            refreshTokenCiphertext: account.refreshTokenCiphertext, rootFolderId: account.driveRootFolderId ?? null,
+          }
+        : null,
+      activeAccountId: active?.googleAccountId ?? null,
+    }
+  }
+
+  async setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setDriveRootFolder')
+    const row = this.tables.google_accounts.find((a) => a.id === googleAccountId)
+    if (!row) return { folderId: null }
+    if ((row.driveRootFolderId ?? null) === from) {
+      row.driveRootFolderId = to
+      this.touchGoogleAccount(row) // an UPDATE: the trigger moves updated_at
+    }
+    return { folderId: row.driveRootFolderId ?? null }
+  }
+
+  async setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setProjectDriveFolder')
+    this.driveWrites.push({ op: 'project', projectId, to })
+    const row = this.tables.projects.find((p) => p.id === projectId)
+    if (!row) return { folderId: null }
+    if ((row.driveProjectFolderId ?? null) === from) row.driveProjectFolderId = to
+    return { folderId: row.driveProjectFolderId ?? null }
+  }
+
+  async setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setGroupDriveFolder')
+    this.driveWrites.push({ op: 'group', groupId, to })
+    if (!this.hasGroup(groupId)) return { folderId: null }
+    const row = this.setupOf(groupId)
+    if ((row.driveFolderId ?? null) === from) row.driveFolderId = to
+    return { folderId: row.driveFolderId ?? null }
+  }
+
+  /** One active row per Project, as the unique index drive_connections_one_active: a
+   *  second claim answers the account that already holds it. */
+  async claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }> {
+    this.fault('claimDriveConnection')
+    fk(this.tables.projects.some((p) => p.id === projectId), 'drive_connections.project_id')
+    fk(this.tables.google_accounts.some((a) => a.id === googleAccountId), 'drive_connections.google_account_id')
+    const held = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    const result = held
+      ? { created: false, accountId: held.googleAccountId }
+      : { created: true, accountId: googleAccountId }
+    if (!held) this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
+    this.driveWrites.push({ op: 'claim', projectId, accountId: googleAccountId, holder: result.accountId })
+    return result
+  }
+
+  /** Same rule as SupabaseStore, read straight from the tables. */
+  async listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]> {
+    this.fault('listUnfinishedDriveProjects')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .filter((g) => {
+        const account = this.latestGoogleAccount(g.nominatedOwnerLineUserId)
+        if (account?.tokenStatus !== 'valid' || g.ownerConfirmedAt === null) return false
+        const last = Math.max(g.ownerConfirmedAt.getTime(), account.updatedAt.getTime())
+        if (last < from.getTime() || last > to.getTime()) return false
+        const held = this.tables.drive_connections.find((c) => c.projectId === g.projectId && c.status === 'active')
+        if (held && held.googleAccountId !== account.id) return false
+        return this.missesAFolder(g.projectId as string)
+      })
+      .map((g) => g.projectId as string)
+      .sort()
+  }
+
+  /** The Project folder ID, or the folder ID of a group getDriveContext lists (confirmed
+   *  Owner, bot still in it), is still empty. */
+  private missesAFolder(projectId: string): boolean {
+    if (!this.tables.projects.find((p) => p.id === projectId)?.driveProjectFolderId) return true
+    return this.tables.groups.some((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id) &&
+      !this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId)
   }
 
   // ---- #20 weekly insight ----

@@ -24,6 +24,8 @@ export type LineEvent = {
   unsend?: { messageId: string }
   /** event.type 'memberLeft' (#29): who left the group. No replyToken on this event. */
   left?: { members: { type: string; userId?: string }[] }
+  /** event.type 'memberJoined' (#29): who joined the group. */
+  joined?: { members: { type: string; userId?: string }[] }
 }
 export type LineWebhookBody = { destination: string; events: LineEvent[] }
 

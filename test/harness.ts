@@ -96,7 +96,8 @@ export const ev: {
   groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string; pickedDate?: string }): LineEvent
   join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean }): LineEvent
   unsend(p: { messageId: string; groupId?: string; userId?: string; eventId?: string; redelivery?: boolean }): LineEvent
-  memberLeft(p: { userIds: string[]; groupId?: string; eventId?: string; redelivery?: boolean }): LineEvent
+  memberLeft(p: { userIds: string[]; groupId?: string; eventId?: string; redelivery?: boolean; timestamp?: number }): LineEvent
+  memberJoined(p: { userIds: string[]; groupId?: string; eventId?: string; timestamp?: number }): LineEvent
 } = {
   groupText(p) {
     const userId = p.userId === undefined ? DEFAULT_USER : p.userId
@@ -181,12 +182,24 @@ export const ev: {
       unsend: { messageId: p.messageId },
     }
   },
+  memberJoined(p) {
+    return {
+      type: 'memberJoined',
+      mode: 'active',
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
+      replyToken: next('rt'),
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: false },
+      joined: { members: p.userIds.map((userId) => ({ type: 'user', userId })) },
+    }
+  },
   memberLeft(p) {
     // LINE sends memberLeft without a replyToken: anything the bot says about it is a push.
     return {
       type: 'memberLeft',
       mode: 'active',
-      timestamp: TEST_NOW.getTime(),
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
       source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },

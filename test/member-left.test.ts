@@ -5,8 +5,9 @@ import { MEMBER_LEFT_MAX_TASKS, MEMBER_LEFT_TEXT } from '@/server/members/card'
 import { answerProgressFromLiff } from '@/server/progress/liff'
 import { ANSWER_TEXT } from '@/server/reminders/answer'
 import { encodeReminderAction } from '@/server/reminders/postback'
+import { updateTaskFromLiff } from '@/server/tasks/update'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
-import { TEST_LIFF_ID, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
+import { TEST_LIFF_ID, TEST_NOW, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 // #29 (leave part) through the event seam: a signed memberLeft webhook goes in; Task rows,
 // the membership row and one group push come out. LINE's quota in the fake is 300 a month.
@@ -193,9 +194,55 @@ describe('a member leaves the group (#29)', () => {
     expect(t.line.pushes).toHaveLength(0)
   })
 
+  it('an edit that validated the assignee just before the leave cannot give the Task back to them', async () => {
+    const t = setup()
+    t.line.idTokens.set('tok-ton', { lineUserId: TON, displayName: 'ต้น' })
+    const realUpdate = t.store.updateTask.bind(t.store)
+    // The leave lands between the edit's membership check and its write.
+    vi.spyOn(t.store, 'updateTask').mockImplementationOnce(async (id, patch) => {
+      await t.send(ev.memberLeft({ userIds: [BIW] }))
+      return realUpdate(id, patch)
+    })
+    const res = await updateTaskFromLiff(t.deps, {
+      idToken: 'tok-ton', taskId: t.slides.id, title: 'ทำสไลด์', details: null, assigneeLineUserId: BIW, dueAt: null,
+    })
+    expect(res.status).toBe(200)
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+  })
+
   it('makes no AI call', async () => {
     const t = setup()
     await t.send(ev.memberLeft({ userIds: [BIW] }))
     expect(t.llm.requests).toHaveLength(0)
+  })
+})
+
+describe('a member joins the group (#29)', () => {
+  it('a new person is a Member at once', async () => {
+    const t = setup()
+    await t.send(ev.memberJoined({ userIds: ['Unew'] }))
+    expect(await t.store.getMembership(t.group.id, 'Unew')).toBe('live')
+    expect(t.store.tables.group_members.find((m) => m.lineUserId === 'Unew')).toMatchObject({ source: 'member_join' })
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('a person who left and comes back gets LIFF access again', async () => {
+    const t = setup()
+    t.line.idTokens.set('tok-biw', { lineUserId: BIW, displayName: 'บิว' })
+    const takeSlides = { idToken: 'tok-biw', data: encodeReminderAction({ kind: 'take', taskId: t.slides.id }) }
+    await t.send(ev.memberLeft({ userIds: [BIW] }))
+    expect((await answerProgressFromLiff(t.deps, takeSlides)).status).toBe(403)
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: TEST_NOW.getTime() + 60_000 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
+    const res = await answerProgressFromLiff(t.deps, takeSlides)
+    expect(res).toMatchObject({ status: 200, body: { result: 'taken' } })
+  })
+
+  it('an older join that arrives after the leave does not undo it', async () => {
+    const t = setup()
+    const leftAt = TEST_NOW.getTime()
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: leftAt }))
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: leftAt - 60_000 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('left')
   })
 })

@@ -923,6 +923,18 @@ export class FakeStore implements StorePort {
     return { updated: true }
   }
 
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    this.fault('markMemberJoined')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({ groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'member_join', leftAt: null })
+      return
+    }
+    if (row.leftAt !== null && row.leftAt < t.at) row.leftAt = null
+  }
+
   async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
     this.fault('releaseTasksOf')
     const rows = this.tables.tasks.filter((x) =>

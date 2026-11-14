@@ -864,6 +864,23 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    const { error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'member_join' },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+    check('markMemberJoined', addError)
+    const { error } = await this.db
+      .from('group_members')
+      .update({ left_at: null })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .lt('left_at', t.at.toISOString())
+    check('markMemberJoined', error)
+  }
+
   async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
     // last_activity_at is left alone: a person leaving is not progress on the Task.
     const { data, error } = await this.db

@@ -303,6 +303,9 @@ export interface StorePort {
   /** The person's live, not-Done Tasks in the group go back to Not Assigned (assignee null,
    *  status not_assigned); returns those Tasks, in no set order. Done Tasks keep the name. */
   releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]>
+  /** A person joined (or rejoined) the group: adds a live row (source member_join), or clears
+   *  left_at when it is earlier than `at`, so an older join arriving after a leave cannot undo it. */
+  markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>

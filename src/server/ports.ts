@@ -104,7 +104,7 @@ export type NewAiUsage = {
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 /** What a push is for; stored in push_log.purpose (free text in the schema). */
-export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done'
+export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'member_left'
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -186,6 +186,9 @@ export interface StorePort {
   // #1 webhook
   // Store-once methods: ON CONFLICT DO NOTHING RETURNING; empty result = duplicate = inserted false.
   recordWebhookEvent(e: NewWebhookEvent): Promise<{ inserted: boolean }>           // conflict target webhook_event_id
+  /** Read only: is this event already in the ledger? (#29: a redelivered member event that
+   *  already ran must not run its writes again.) */
+  hasWebhookEvent(webhookEventId: string): Promise<boolean>
   upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> // null name: insert-if-absent, never overwrites; name set: update
   findLineUser(lineUserId: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   ensureGroup(lineGroupId: string): Promise<GroupRow>                                // insert-if-absent (line_group_id), return row
@@ -296,6 +299,16 @@ export interface StorePort {
   postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }>
   /** "ฉันรับเอง": assignee = by and In Process; only a live Task not Done that has no assignee. */
   takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  // #29 member leaves. One UPDATE each, conditions in WHERE, so a repeat changes nothing.
+  /** Sets left_at on a live membership row, or adds a left row when there is none (so a late
+   *  message cannot add the person back); updated false = already left. */
+  markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
+  /** The person's live, not-Done Tasks in the group go back to Not Assigned (assignee null,
+   *  status not_assigned); returns those Tasks, in no set order. Done Tasks keep the name. */
+  releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]>
+  /** A person joined (or rejoined) the group: adds a live row (source member_join), or clears
+   *  left_at when it is earlier than `at`, so an older join arriving after a leave cannot undo it. */
+  markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>

@@ -1,5 +1,5 @@
 import type { LineEvent } from '@/server/line/types'
-import type { Deps, MessageMention } from '@/server/ports'
+import type { Deps, MessageMention, TaskRow } from '@/server/ports'
 
 export type Job =
   | {
@@ -12,6 +12,12 @@ export type Job =
       // postbacks. pickedDate: a date picker's choice ('YYYY-MM-DD'), null for other buttons.
       kind: 'group_postback'; groupId: string; lineGroupId: string
       userId: string | null; data: string; pickedDate: string | null; replyToken: string | null
+    }
+  | {
+      // #29: people who left a group (LINE memberLeft) and the open Tasks released from them,
+      // already saved at ingest. eventId keys the one push the card may make.
+      kind: 'member_left'; groupId: string; lineGroupId: string
+      released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
@@ -109,6 +115,53 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     return null
   }
 
+  if (source.type === 'group' && event.type === 'memberLeft') {
+    const lineUserIds = (event.left?.members ?? [])
+      .filter((m) => m.type === 'user' && typeof m.userId === 'string')
+      .map((m) => m.userId as string)
+    // A redelivery of a leave that already ran (it was recorded, but LINE did not get our
+    // answer) stops here: running its writes again could undo a rejoin that came since.
+    if (await store.hasWebhookEvent(event.webhookEventId)) return null
+    const group = await store.ensureGroup(source.groupId)
+    // The leave itself first, the ledger row last, as for unsend: if a write fails, the
+    // webhook answers 500 before the event is recorded and LINE's redelivery runs it again,
+    // so a departed person never keeps access. Both writes are idempotent. Only the card
+    // waits for the job, gated by the ledger row so a redelivered leave posts once. (A
+    // redelivery after the writes but before the ledger row finds nothing left to release
+    // and posts no card; the Tasks still show in the daily reminders.)
+    const released: { lineUserId: string; tasks: TaskRow[] }[] = []
+    for (const lineUserId of lineUserIds) {
+      await store.upsertLineUser({ lineUserId, displayName: null }) // group_members.line_user_id FK
+      await store.markMemberLeft({ groupId: group.id, lineUserId, at: eventTimestamp })
+      const tasks = await store.releaseTasksOf({ groupId: group.id, lineUserId })
+      if (tasks.length > 0) released.push({ lineUserId, tasks })
+    }
+    const { inserted } = await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'memberLeft', lineGroupId: source.groupId,
+      eventTimestamp, isRedelivery,
+    })
+    if (!inserted || released.length === 0) return null
+    return { kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, released, eventId: event.webhookEventId }
+  }
+
+  if (source.type === 'group' && event.type === 'memberJoined') {
+    // #29: a person who joins is a Member at once, and a rejoin clears left_at, so they get
+    // LIFF access back. Writes first, the ledger row last (as for a leave); both are
+    // idempotent and nothing is posted, so no Job. The welcome reply comes later.
+    // A redelivered join cannot undo a later leave: it only clears a left_at older than itself.
+    const group = await store.ensureGroup(source.groupId)
+    for (const m of event.joined?.members ?? []) {
+      if (m.type !== 'user' || typeof m.userId !== 'string') continue
+      await store.upsertLineUser({ lineUserId: m.userId, displayName: null })
+      await store.markMemberJoined({ groupId: group.id, lineUserId: m.userId, at: eventTimestamp })
+    }
+    await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'memberJoined', lineGroupId: source.groupId,
+      eventTimestamp, isRedelivery,
+    })
+    return null
+  }
+
   const { inserted } = await store.recordWebhookEvent({
     webhookEventId: event.webhookEventId, eventType: event.type,
     lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,
@@ -117,8 +170,8 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (leave, memberJoined, room...) is only recorded;
-  // handling belongs to #2 and #11. Unsend is handled above (#24).
+  // Every other event (leave, room...) is only recorded; handling belongs to #2 and #11.
+  // Unsend (#24), memberLeft and memberJoined (#29) are handled above.
   return null
 }
 

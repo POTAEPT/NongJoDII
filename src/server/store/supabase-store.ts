@@ -124,6 +124,16 @@ export class SupabaseStore implements StorePort {
     return { inserted: (data ?? []).length === 1 }
   }
 
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from('webhook_events')
+      .select('webhook_event_id')
+      .eq('webhook_event_id', webhookEventId)
+      .maybeSingle()
+    check('hasWebhookEvent', error)
+    return data !== null
+  }
+
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
     // A null name only makes sure the row exists; it never overwrites a known name.
     const { error } =
@@ -837,6 +847,62 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('takeTask', error)
     return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  // ---- #29 member leaves ----
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    // A person with no row yet gets a left row, so a message of theirs that arrives after
+    // the leave (LINE does not guarantee order) cannot add them back: touchGroupMember only
+    // inserts when no row exists. source 'message': seen through a group event.
+    const { data: added, error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'message', left_at: t.at.toISOString() },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+      .select('line_user_id')
+    check('markMemberLeft', addError)
+    if ((added?.length ?? 0) > 0) return { updated: true }
+    const { data, error } = await this.db
+      .from('group_members')
+      .update({ left_at: t.at.toISOString() })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .is('left_at', null)
+      .select('line_user_id')
+    check('markMemberLeft', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    const { error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'member_join' },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+    check('markMemberJoined', addError)
+    const { error } = await this.db
+      .from('group_members')
+      .update({ left_at: null })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .lt('left_at', t.at.toISOString())
+    check('markMemberJoined', error)
+  }
+
+  async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    // last_activity_at is left alone: a person leaving is not progress on the Task.
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ assignee_line_user_id: null, status: 'not_assigned' })
+      .eq('group_id', t.groupId)
+      .eq('assignee_line_user_id', t.lineUserId)
+      .is('deleted_at', null)
+      .neq('status', 'done')
+      .select(TASK_COLS)
+    check('releaseTasksOf', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
   }
 
   /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST

@@ -185,6 +185,11 @@ export class FakeStore implements StorePort {
     return { inserted: true }
   }
 
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    this.fault('hasWebhookEvent')
+    return this.tables.webhook_events.some((w) => w.webhookEventId === webhookEventId)
+  }
+
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
     this.fault('upsertLineUser')
     const existing = this.tables.line_users.find((row) => row.lineUserId === u.lineUserId)
@@ -906,6 +911,41 @@ export class FakeStore implements StorePort {
     g.ownerConfirmedAt = at
     this.setupOf(groupId).isMain = true
     return { outcome: 'confirmed' }
+  }
+
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markMemberLeft')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      // Same as SupabaseStore: no row yet -> a left row, so a late message cannot add them back.
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({ groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'message', leftAt: t.at })
+      return { updated: true }
+    }
+    if (row.leftAt !== null) return { updated: false }
+    row.leftAt = t.at
+    return { updated: true }
+  }
+
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    this.fault('markMemberJoined')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({ groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'member_join', leftAt: null })
+      return
+    }
+    if (row.leftAt !== null && row.leftAt < t.at) row.leftAt = null
+  }
+
+  async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    this.fault('releaseTasksOf')
+    const rows = this.tables.tasks.filter((x) =>
+      x.groupId === t.groupId && x.assigneeLineUserId === t.lineUserId && x.deletedAt === null && x.status !== 'done')
+    for (const x of rows) Object.assign(x, { assigneeLineUserId: null, status: 'not_assigned' })
+    return rows.map((x) => this.toTaskRow(x))
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

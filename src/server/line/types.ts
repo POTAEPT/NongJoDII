@@ -20,6 +20,8 @@ export type LineEvent = {
   /** event.type 'postback'. `params` carries a datetime picker's choice ('YYYY-MM-DD' in `date`
    *  for mode 'date'); other buttons have none. */
   postback?: { data: string; params?: { date?: string; time?: string; datetime?: string } }
+  /** event.type 'unsend': the id of the message the user unsent (#24). */
+  unsend?: { messageId: string }
 }
 export type LineWebhookBody = { destination: string; events: LineEvent[] }
 

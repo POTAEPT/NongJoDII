@@ -210,6 +210,17 @@ export class SupabaseStore implements StorePort {
     return rows.length === 1 ? { inserted: true, id: rows[0].id } : { inserted: false, id: null }
   }
 
+  // ---- #24 unsend ----
+  async deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }> {
+    const { data, error } = await this.db
+      .from('messages')
+      .delete()
+      .eq('line_message_id', lineMessageId)
+      .select('id')
+    check('deleteMessageByLineId', error)
+    return { deleted: (data ?? []).length > 0 }
+  }
+
   // ---- #15 Summary ----
   async listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]> {
     const { data, error } = await this.db

@@ -1,5 +1,5 @@
 import type { LineEvent } from '@/server/line/types'
-import type { Deps, MessageMention } from '@/server/ports'
+import type { Deps, MessageMention, TaskRow } from '@/server/ports'
 
 export type Job =
   | {
@@ -14,8 +14,10 @@ export type Job =
       userId: string | null; data: string; pickedDate: string | null; replyToken: string | null
     }
   | {
-      // #29: people who left a group (LINE memberLeft). eventId keys the one push it may make.
-      kind: 'member_left'; groupId: string; lineGroupId: string; lineUserIds: string[]; at: Date; eventId: string
+      // #29: people who left a group (LINE memberLeft) and the open Tasks released from them,
+      // already saved at ingest. eventId keys the one push the card may make.
+      kind: 'member_left'; groupId: string; lineGroupId: string
+      released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
@@ -118,16 +120,25 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
       .filter((m) => m.type === 'user' && typeof m.userId === 'string')
       .map((m) => m.userId as string)
     const group = await store.ensureGroup(source.groupId)
-    // The ledger row is the store-once gate: a redelivered leave posts one card.
+    // The leave itself first, the ledger row last, as for unsend: if a write fails, the
+    // webhook answers 500 before the event is recorded and LINE's redelivery runs it again,
+    // so a departed person never keeps access. Both writes are idempotent. Only the card
+    // waits for the job, gated by the ledger row so a redelivered leave posts once. (A
+    // redelivery after the writes but before the ledger row finds nothing left to release
+    // and posts no card; the Tasks still show in the daily reminders.)
+    const released: { lineUserId: string; tasks: TaskRow[] }[] = []
+    for (const lineUserId of lineUserIds) {
+      await store.upsertLineUser({ lineUserId, displayName: null }) // group_members.line_user_id FK
+      await store.markMemberLeft({ groupId: group.id, lineUserId, at: eventTimestamp })
+      const tasks = await store.releaseTasksOf({ groupId: group.id, lineUserId })
+      if (tasks.length > 0) released.push({ lineUserId, tasks })
+    }
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'memberLeft', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
     })
-    if (!inserted || lineUserIds.length === 0) return null
-    return {
-      kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, lineUserIds,
-      at: eventTimestamp, eventId: event.webhookEventId,
-    }
+    if (!inserted || released.length === 0) return null
+    return { kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, released, eventId: event.webhookEventId }
   }
 
   const { inserted } = await store.recordWebhookEvent({

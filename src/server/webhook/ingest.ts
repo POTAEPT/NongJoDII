@@ -141,6 +141,23 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     return { kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, released, eventId: event.webhookEventId }
   }
 
+  if (source.type === 'group' && event.type === 'memberJoined') {
+    // #29: a person who joins is a Member at once, and a rejoin clears left_at, so they get
+    // LIFF access back. Writes first, the ledger row last (as for a leave); both are
+    // idempotent and nothing is posted, so no Job. The welcome reply comes later.
+    const group = await store.ensureGroup(source.groupId)
+    for (const m of event.joined?.members ?? []) {
+      if (m.type !== 'user' || typeof m.userId !== 'string') continue
+      await store.upsertLineUser({ lineUserId: m.userId, displayName: null })
+      await store.markMemberJoined({ groupId: group.id, lineUserId: m.userId, at: eventTimestamp })
+    }
+    await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'memberJoined', lineGroupId: source.groupId,
+      eventTimestamp, isRedelivery,
+    })
+    return null
+  }
+
   const { inserted } = await store.recordWebhookEvent({
     webhookEventId: event.webhookEventId, eventType: event.type,
     lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,
@@ -149,8 +166,8 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (leave, memberJoined, room...) is only recorded;
-  // handling belongs to #2, #11 and #29 (memberJoined). Unsend is handled above (#24).
+  // Every other event (leave, room...) is only recorded; handling belongs to #2 and #11.
+  // Unsend (#24), memberLeft and memberJoined (#29) are handled above.
   return null
 }
 

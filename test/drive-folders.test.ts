@@ -272,6 +272,20 @@ describe('later runs', () => {
     expect(h.google.shares.map((s) => s.fileId)).toEqual([oldProject, newProject])
   })
 
+  it('checks the root folder only when a Project folder must be made', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    await signIn(h)
+    const rootId = account(h).driveRootFolderId as string
+    h.google.callLog = []
+    await signIn(h) // the Project folder is still there: no root check
+    expect(h.google.callLog.map((c) => c.call)).not.toContain(`get:${rootId}`)
+    h.google.trash(projectRow(h, projectId).driveProjectFolderId as string)
+    h.google.callLog = []
+    await signIn(h) // the Project folder must be made under the root: the root is checked
+    expect(h.google.callLog.map((c) => c.call)).toContain(`get:${rootId}`)
+  })
+
   it('a trashed group folder alone is recreated, without sharing again', async () => {
     const h = setup()
     const { groupId, projectId } = await seedProject(h)
@@ -853,7 +867,7 @@ describe('retries reach the missing folders: the finisher trusts stored group fo
 
   it.each([
     { ms: 5_000, afterSignIn: 4, perTick: [7] },
-    { ms: DRIVE_CALL_MAX_MS, afterSignIn: 0, perTick: [2, 4, 6, 7] },
+    { ms: DRIVE_CALL_MAX_MS, afterSignIn: 0, perTick: [3, 6, 7] },
   ])('one Project with 6 Sub groups and $ms ms calls: each tick stores more folder IDs until all 7 are there', async ({ ms, afterSignIn, perTick }) => {
     const h = setup()
     const { projectId } = await seedProject(h)
@@ -886,9 +900,9 @@ describe('retries reach the missing folders: the finisher trusts stored group fo
     h.google.remove(lostFolder)
     h.google.callLog = []
     await tick(h, after(15 * MIN), [driveSetupJob])
-    // It made the missing folder and checked only the root and the Project folder above it.
+    // It made the missing folder and checked only the Project folder above it.
     expect(groupFolderId(h, groupId)).not.toBeNull()
-    expect(h.google.callLog.map((c) => c.call.split(':')[0])).toEqual(['refresh', 'get', 'get', 'create'])
+    expect(h.google.callLog.map((c) => c.call.split(':')[0])).toEqual(['refresh', 'get', 'create'])
     expect(groupFolderId(h, lost)).toBe(lostFolder)
     expect(groupFolderId(h, kept)).not.toBeNull()
 

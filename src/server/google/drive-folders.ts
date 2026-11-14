@@ -264,14 +264,13 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunM
   let project: Folder | null = null
   return {
     /** Both modes verify a stored Project folder: it is the parent of every folder a run
-     *  makes. A recreated parent means its children went with it, so they are made anew. */
+     *  makes. The root is checked only when a Project folder must be made under it; a
+     *  folder inside a trashed or deleted root reads as trashed or missing itself. */
     async project(): Promise<Folder> {
       if (project) return project
-      const parent = await rootFolder()
       const stored = ctx.projectFolderId
-      if (stored !== null && !parent.recreated && (await stillThere(stored))) {
-        return (project = { id: stored, recreated: false })
-      }
+      if (stored !== null && (await stillThere(stored))) return (project = { id: stored, recreated: false })
+      const parent = await rootFolder()
       const name = ctx.mainGroup ? await nameOf(ctx.mainGroup, PROJECT_FALLBACK) : PROJECT_FALLBACK
       project = await makeAndStore(
         stored, 2, true,

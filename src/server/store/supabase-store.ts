@@ -841,6 +841,18 @@ export class SupabaseStore implements StorePort {
 
   // ---- #29 member leaves ----
   async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    // A person with no row yet gets a left row, so a message of theirs that arrives after
+    // the leave (LINE does not guarantee order) cannot add them back: touchGroupMember only
+    // inserts when no row exists. source 'message': seen through a group event.
+    const { data: added, error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'message', left_at: t.at.toISOString() },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+      .select('line_user_id')
+    check('markMemberLeft', addError)
+    if ((added?.length ?? 0) > 0) return { updated: true }
     const { data, error } = await this.db
       .from('group_members')
       .update({ left_at: t.at.toISOString() })

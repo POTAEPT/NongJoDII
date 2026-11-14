@@ -910,8 +910,15 @@ export class FakeStore implements StorePort {
 
   async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
     this.fault('markMemberLeft')
-    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId && m.leftAt === null)
-    if (!row) return { updated: false }
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      // Same as SupabaseStore: no row yet -> a left row, so a late message cannot add them back.
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({ groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'message', leftAt: t.at })
+      return { updated: true }
+    }
+    if (row.leftAt !== null) return { updated: false }
     row.leftAt = t.at
     return { updated: true }
   }

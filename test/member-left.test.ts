@@ -170,6 +170,29 @@ describe('a member leaves the group (#29)', () => {
     expect(t.task(t.slides.id).status).toBe('not_assigned')
   })
 
+  it('a failed save answers 500 and is not recorded, so LINE\'s redelivery completes the leave', async () => {
+    const t = setup()
+    t.store.failNext('markMemberLeft')
+    const body = webhookBody(ev.memberLeft({ userIds: [BIW], eventId: 'ev-left-fail' }))
+    expect((await handleWebhookRequest(signedRequest(body), t.deps, t.defer)).status).toBe(500)
+    await t.runDeferred()
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
+    expect(t.line.pushes).toHaveLength(0)
+
+    await t.send(ev.memberLeft({ userIds: [BIW], eventId: 'ev-left-fail', redelivery: true }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('left')
+    expect(t.task(t.slides.id).status).toBe('not_assigned')
+    expect(t.line.pushes).toHaveLength(1)
+  })
+
+  it('a message that arrives after the leave does not add the person back', async () => {
+    const t = setup()
+    await t.send(ev.memberLeft({ userIds: ['Unew'] })) // never seen in the group before
+    await t.send(ev.groupText({ userId: 'Unew', text: 'ข้อความก่อนออก' }))
+    expect(await t.store.getMembership(t.group.id, 'Unew')).toBe('left')
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
   it('makes no AI call', async () => {
     const t = setup()
     await t.send(ev.memberLeft({ userIds: [BIW] }))

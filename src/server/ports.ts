@@ -297,7 +297,8 @@ export interface StorePort {
   /** "ฉันรับเอง": assignee = by and In Process; only a live Task not Done that has no assignee. */
   takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
   // #29 member leaves. One UPDATE each, conditions in WHERE, so a repeat changes nothing.
-  /** Sets left_at on a live membership row; updated false = already left or never a Member. */
+  /** Sets left_at on a live membership row, or adds a left row when there is none (so a late
+   *  message cannot add the person back); updated false = already left. */
   markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
   /** The person's live, not-Done Tasks in the group go back to Not Assigned (assignee null,
    *  status not_assigned); returns those Tasks, in no set order. Done Tasks keep the name. */

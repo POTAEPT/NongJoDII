@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchGoogleStatus as fetchStatus, phaseOnOpen, phaseOnReturn } from './google-status'
+import { fetchGoogleStatus as fetchStatus, phaseOnOpen, phaseOnReturn, returnVisit } from './google-status'
 import type { LiffViewProps } from './liff-sdk'
 
 type Phase =
@@ -14,15 +14,13 @@ const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected' | 'sign_
   failed: 'เริ่มเชื่อม Google Drive ไม่สำเร็จ กรุณาลองใหม่',
 }
 
-/** The id the OAuth callback page links back with: sign-in already happened in
- *  the external browser, so only the status is checked. */
-const RETURN_ID = 'done'
-
 export function GoogleView({ liff, idToken, id }: LiffViewProps) {
-  const returning = id === RETURN_ID
+  // The OAuth callback page links back with an id: the sign-in already ran in the external
+  // browser, so only the status is checked, and only a finished one is greeted as a success.
+  const { returning, signedIn } = returnVisit(id)
   const [phase, setPhase] = useState<Phase>('checking')
-  /** A sign-in ended in this visit (or just before it, on the return visit). */
-  const [justSignedIn, setJustSignedIn] = useState(returning)
+  /** A sign-in finished in this visit, or just before it (the return visit after 'ok'). */
+  const [justSignedIn, setJustSignedIn] = useState(signedIn)
   /** #14: the confirmed Owner of a Project may change the connected Google account. */
   const [canChange, setCanChange] = useState(false)
   const started = useRef(false)
@@ -63,7 +61,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   }, [liff, idToken])
 
   // First load: read the status. A person with no Google account goes straight to
-  // sign-in (not on the return visit, id=done). A connected one sees the connected screen,
+  // sign-in (not on a return visit from the callback page). A connected one sees the connected screen,
   // and a revoked or expired one the sign-in-again notice (#14); neither starts a sign-in
   // by itself.
   const init = useCallback(async () => {

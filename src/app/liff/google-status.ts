@@ -1,3 +1,5 @@
+import { GOOGLE_RETURN } from '@/server/liff-links'
+
 /** Result of POST /api/google/status as seen by the LIFF page. 'sign_in_again': the
  *  person has a Google account here, but Google no longer accepts its grant (#14). */
 export type GoogleStatus = 'connected' | 'sign_in_again' | 'not_connected' | 'unauthorized' | 'failed'
@@ -8,6 +10,13 @@ export type GoogleStatusResult = {
   canChange: boolean
   /** When their latest Google sign-in finished (ISO), or null. It moves on every sign-in. */
   signedInAt: string | null
+}
+
+/** What the view's `id` says about this visit (GOOGLE_RETURN, set by the OAuth callback
+ *  page). returning: a sign-in has just ended, so none starts by itself. signedIn: it
+ *  finished, so a connected status is greeted as a success. */
+export function returnVisit(id: string | null): { returning: boolean; signedIn: boolean } {
+  return { returning: id === GOOGLE_RETURN.done || id === GOOGLE_RETURN.back, signedIn: id === GOOGLE_RETURN.done }
 }
 
 export type OpenPhase = 'connected' | 'sign_in_again' | 'not_connected' | 'unauthorized' | 'failed' | 'start'

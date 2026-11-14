@@ -256,11 +256,14 @@ describe('renderCallbackPage', () => {
 })
 
 describe('renderCallbackPage return to LINE', () => {
-  const href = `https://liff.line.me/${TEST_LIFF_ID}?view=google&amp;id=done`
+  const href = (id: string) => `https://liff.line.me/${TEST_LIFF_ID}?view=google&amp;id=${id}`
   it('11. ok and every failure outcome carry the LIFF return button', async () => {
     for (const o of ['ok', 'cancelled', 'expired', 'missing_scope', 'no_refresh_token', 'failed'] as const) {
       const html = await renderCallbackPage(o, TEST_LIFF_ID).text()
-      expect(html).toContain(`<a class="back" href="${href}">กลับไปที่ LINE</a>`)
+      // #14: only a finished sign-in returns with id=done, which the view greets as a
+      // success. The others return with id=back: with a change of account the old account
+      // is still connected, and a cancelled or failed change must not read as done.
+      expect(html).toContain(`<a class="back" href="${href(o === 'ok' ? 'done' : 'back')}">กลับไปที่ LINE</a>`)
     }
   })
 })

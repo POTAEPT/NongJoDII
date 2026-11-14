@@ -1,6 +1,6 @@
 import { openState, seal } from '../crypto/secretbox'
 import { log, logError } from '../log'
-import { liffUrl } from '../liff-links'
+import { GOOGLE_RETURN, liffUrl } from '../liff-links'
 import type { Defer, Deps } from '../ports'
 import { retireOtherAccountConnections } from './change-account'
 import { DRIVE_FILE_SCOPE } from './client'
@@ -81,16 +81,18 @@ const COPY: Record<CallbackOutcome, { h1: string; p: string }> = {
 }
 
 /** The LIFF link the callback page sends the user back to. On a phone a
- *  liff.line.me link opens the LINE app, where GoogleView checks the status. */
-export function googleReturnUrl(liffId: string): string {
-  return liffUrl(liffId, 'google', 'done')
+ *  liff.line.me link opens the LINE app, where GoogleView checks the status. Only 'ok'
+ *  returns as done (#14): after a cancelled or failed change of account the old account
+ *  is still connected, and the view must not greet that as a finished sign-in. */
+export function googleReturnUrl(liffId: string, outcome: CallbackOutcome): string {
+  return liffUrl(liffId, 'google', outcome === 'ok' ? GOOGLE_RETURN.done : GOOGLE_RETURN.back)
 }
 
 /** A minimal Thai page with fixed copy only: no user data. liffId comes from
  *  server config, not from the request. */
 export function renderCallbackPage(outcome: CallbackOutcome, liffId: string): Response {
   const { h1, p } = COPY[outcome]
-  const href = googleReturnUrl(liffId).replace(/&/g, '&amp;')
+  const href = googleReturnUrl(liffId, outcome).replace(/&/g, '&amp;')
   const html =
     '<!doctype html><html lang="th"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +

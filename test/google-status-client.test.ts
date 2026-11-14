@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn } from '@/app/liff/google-status'
+import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn, returnVisit } from '@/app/liff/google-status'
 
 const result = (status: GoogleStatusResult['status'], signedInAt: string | null = null, canChange = false): GoogleStatusResult =>
   ({ status, signedInAt, canChange })
+
+describe('returnVisit (the id the callback page links back with)', () => {
+  it('done: a return visit after a sign-in that finished', () => expect(returnVisit('done')).toEqual({ returning: true, signedIn: true }))
+  it('back: a return visit after a sign-in that did not finish, never greeted as a success (#14)', () =>
+    expect(returnVisit('back')).toEqual({ returning: true, signedIn: false }))
+  it('anything else is a plain visit', () => {
+    expect(returnVisit(null)).toEqual({ returning: false, signedIn: false })
+    expect(returnVisit('x')).toEqual({ returning: false, signedIn: false })
+  })
+})
 
 describe('phaseOnOpen (first load of the Google view)', () => {
   it('a connected account shows the connected screen instead of starting a new sign-in', () => {

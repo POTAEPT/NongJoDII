@@ -268,6 +268,24 @@ describe('SupabaseStore.claimDriveConnection (the lock that binds a Project to o
   })
 })
 
+describe('SupabaseStore.listDriveConnectedProjects (#14 daily access check)', () => {
+  it('reads the Projects of every active connection, a page at a time in id order', async () => {
+    const full = Array.from({ length: PAGE_SIZE }, (_, i) => ({ project_id: `p${i}` }))
+    const { store, chains } = stubDb([ok(full), ok([{ project_id: 'p-last' }])])
+    const ids = await store.listDriveConnectedProjects()
+    expect(ids).toHaveLength(PAGE_SIZE + 1)
+    expect(ids.at(-1)).toBe('p-last')
+    expect(chains[0]).toEqual([
+      { method: 'from', args: ['drive_connections'] },
+      { method: 'select', args: ['project_id'] },
+      { method: 'eq', args: ['status', 'active'] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
+    ])
+    expect(ranges(chains)).toEqual([[0, PAGE_SIZE - 1], [PAGE_SIZE, 2 * PAGE_SIZE - 1]])
+  })
+})
+
 describe('SupabaseStore.retireDriveConnection (#14 change of account)', () => {
   const AT = new Date('2026-11-14T03:00:00Z')
   /** The reads, in order: the Project's folder ID, its groups' folder IDs, the active row. */

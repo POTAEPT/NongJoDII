@@ -776,6 +776,15 @@ export class FakeStore implements StorePort {
     return result
   }
 
+  /** Ordered by connection id, as SupabaseStore pages it. */
+  async listDriveConnectedProjects(): Promise<string[]> {
+    this.fault('listDriveConnectedProjects')
+    return this.tables.drive_connections
+      .filter((c) => c.status === 'active')
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((c) => c.projectId)
+  }
+
   /** As SupabaseStore: nothing unless another account holds the active row; then the folder
    *  IDs of the Project and of every one of its groups are cleared and the row is retired. */
   async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {

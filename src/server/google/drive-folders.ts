@@ -68,7 +68,7 @@ function lostClaim(projectId: string): null {
  *  timeout, plus the step's store work, still ends by `deadline`. Checked before the
  *  step's first call, so a step never stops halfway: a Project folder is never made
  *  without being shared and stored. */
-function checkTime(deps: Deps, deadline: Date, calls: number): void {
+export function checkTime(deps: Deps, deadline: Date, calls: number): void {
   const left = deadline.getTime() - deps.now().getTime()
   if (left < calls * DRIVE_CALL_MAX_MS + STEP_STORE_MS) throw new DriveTimeUp()
 }

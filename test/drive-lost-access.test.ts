@@ -244,6 +244,41 @@ describe('revoked or expired Google access', () => {
     expect(h.store.tables.push_log).toEqual([])
   })
 
+  it('a Project whose main group the bot has left: the account is marked, and no card is sent anywhere', async () => {
+    const h = setup()
+    const { groupId, projectId } = await connectedThenRevoked(h)
+    h.store.seedSchedule(groupId, { leftAt: TEST_NOW }) // no main group to post in
+    await ensureDriveFolders(h.deps, projectId, fullTime(h))
+
+    expect(accountOf(h, 1)).toMatchObject({ tokenStatus: 'revoked', refreshTokenCiphertext: null })
+    expect(h.line.pushes).toEqual([])
+    expect(h.store.tables.push_log).toEqual([])
+    expect(infoEvents()).toContainEqual({
+      event: 'drive_access_lost', projectId, googleAccountId: accountOf(h, 1).id, prompt: 'no_main_group',
+    })
+  })
+
+  it('a push that fails after the account is marked is not sent again; the status still asks for the sign-in', async () => {
+    const h = setup()
+    const { projectId } = await connectedThenRevoked(h)
+    h.line.rejectPush = true // LINE refuses the card
+    await ensureDriveFolders(h.deps, projectId, fullTime(h))
+
+    expect(accountOf(h, 1).tokenStatus).toBe('revoked')
+    expect(h.line.delivered).toEqual([])
+    expect(h.store.tables.push_log).toEqual([]) // the budget claim was given back
+    expect(infoEvents()).toContainEqual({
+      event: 'drive_access_lost', projectId, googleAccountId: accountOf(h, 1).id, prompt: 'failed',
+    })
+    // Later runs do not try again: the account is already revoked.
+    h.line.rejectPush = false
+    await ensureDriveFolders(h.deps, projectId, fullTime(h))
+    expect(h.line.pushes).toHaveLength(1)
+    expect(h.line.delivered).toEqual([])
+    // The Owner still learns of it in the LIFF.
+    expect((await googleStatus(h.deps, { idToken: OWNER_TOKEN })).body).toMatchObject({ connected: false, signInAgain: true })
+  })
+
   it('logs IDs only: no token, e-mail or name', async () => {
     const h = setup()
     const { projectId } = await connectedThenRevoked(h)

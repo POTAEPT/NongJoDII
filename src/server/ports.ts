@@ -387,6 +387,9 @@ export interface StorePort {
    *  23505 it reads the holder again). created: this call inserted the row. Never updates
    *  or deletes a row. */
   claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }>
+  /** #14, daily access check: IDs of the Projects that have an active drive_connections
+   *  row, every page, by connection id. */
+  listDriveConnectedProjects(): Promise<string[]>
   /** #14, change of account: when the Project's active drive_connections row belongs to
    *  another Google account than `keepGoogleAccountId`, clears the folder IDs
    *  (projects.drive_project_folder_id, and groups.drive_folder_id of every group of the

@@ -1126,6 +1126,17 @@ export class SupabaseStore implements StorePort {
     return { created: true, accountId: googleAccountId }
   }
 
+  async listDriveConnectedProjects(): Promise<string[]> {
+    const rows = await readAllPages<{ project_id: string }>('listDriveConnectedProjects', (from, to) =>
+      this.db
+        .from('drive_connections')
+        .select('project_id')
+        .eq('status', 'active')
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.project_id)
+  }
+
   async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
     const m = 'retireDriveConnection'
     // The folder IDs are read BEFORE the active row. A new account stores folder IDs only

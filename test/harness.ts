@@ -96,6 +96,7 @@ export const ev: {
   groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string; pickedDate?: string }): LineEvent
   join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean }): LineEvent
   unsend(p: { messageId: string; groupId?: string; userId?: string; eventId?: string; redelivery?: boolean }): LineEvent
+  memberLeft(p: { userIds: string[]; groupId?: string; eventId?: string; redelivery?: boolean }): LineEvent
 } = {
   groupText(p) {
     const userId = p.userId === undefined ? DEFAULT_USER : p.userId
@@ -178,6 +179,18 @@ export const ev: {
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },
       unsend: { messageId: p.messageId },
+    }
+  },
+  memberLeft(p) {
+    // LINE sends memberLeft without a replyToken: anything the bot says about it is a push.
+    return {
+      type: 'memberLeft',
+      mode: 'active',
+      timestamp: TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: p.redelivery ?? false },
+      left: { members: p.userIds.map((userId) => ({ type: 'user', userId })) },
     }
   },
   follow(p) {

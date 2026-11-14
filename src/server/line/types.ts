@@ -22,6 +22,8 @@ export type LineEvent = {
   postback?: { data: string; params?: { date?: string; time?: string; datetime?: string } }
   /** event.type 'unsend': the id of the message the user unsent (#24). */
   unsend?: { messageId: string }
+  /** event.type 'memberLeft' (#29): who left the group. No replyToken on this event. */
+  left?: { members: { type: string; userId?: string }[] }
 }
 export type LineWebhookBody = { destination: string; events: LineEvent[] }
 

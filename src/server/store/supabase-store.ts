@@ -839,6 +839,33 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
+  // ---- #29 member leaves ----
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('group_members')
+      .update({ left_at: t.at.toISOString() })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .is('left_at', null)
+      .select('line_user_id')
+    check('markMemberLeft', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    // last_activity_at is left alone: a person leaving is not progress on the Task.
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ assignee_line_user_id: null, status: 'not_assigned' })
+      .eq('group_id', t.groupId)
+      .eq('assignee_line_user_id', t.lineUserId)
+      .is('deleted_at', null)
+      .neq('status', 'done')
+      .select(TASK_COLS)
+    check('releaseTasksOf', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
+  }
+
   /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST
    *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
   async listReminderTasks(groupId: string): Promise<ReminderTask[]> {

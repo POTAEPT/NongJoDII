@@ -908,6 +908,22 @@ export class FakeStore implements StorePort {
     return { outcome: 'confirmed' }
   }
 
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markMemberLeft')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId && m.leftAt === null)
+    if (!row) return { updated: false }
+    row.leftAt = t.at
+    return { updated: true }
+  }
+
+  async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    this.fault('releaseTasksOf')
+    const rows = this.tables.tasks.filter((x) =>
+      x.groupId === t.groupId && x.assigneeLineUserId === t.lineUserId && x.deletedAt === null && x.status !== 'done')
+    for (const x of rows) Object.assign(x, { assigneeLineUserId: null, status: 'not_assigned' })
+    return rows.map((x) => this.toTaskRow(x))
+  }
+
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
   /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
   seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {

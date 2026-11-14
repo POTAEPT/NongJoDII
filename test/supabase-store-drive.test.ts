@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { describe, expect, it } from 'vitest'
 import { AdapterError } from '@/server/log'
-import { SupabaseStore } from '@/server/store/supabase-store'
+import { PAGE_SIZE, SupabaseStore } from '@/server/store/supabase-store'
 
 // The #13 SupabaseStore methods against a stand-in for the PostgREST query builder. Each
 // from() starts a chain that records its calls; awaiting the chain (or .maybeSingle())
@@ -37,8 +37,12 @@ function stubDb(results: Result[]) {
 
 const ok = (data: unknown): Result => ({ data, error: null })
 
+/** The .range() arguments of each chain that has one, in order. */
+const ranges = (chains: Call[][]) =>
+  chains.flatMap((c) => c.filter((x) => x.method === 'range').map((x) => x.args))
+
 describe('SupabaseStore.listConfirmedOwnerProjects', () => {
-  it('reads confirmed, live main groups of the person', async () => {
+  it('reads confirmed, live main groups of the person, a page at a time in id order', async () => {
     const { store, chains } = stubDb([ok([{ project_id: 'p1' }, { project_id: 'p2' }])])
     expect(await store.listConfirmedOwnerProjects('U1')).toEqual(['p1', 'p2'])
     expect(chains[0]).toEqual([
@@ -49,7 +53,18 @@ describe('SupabaseStore.listConfirmedOwnerProjects', () => {
       { method: 'not', args: ['owner_confirmed_at', 'is', null] },
       { method: 'not', args: ['project_id', 'is', null] },
       { method: 'is', args: ['left_at', null] },
+      { method: 'order', args: ['id'] },
+      { method: 'range', args: [0, PAGE_SIZE - 1] },
     ])
+  })
+
+  it('reads the next page after a full one, so Projects past the first 1000 rows are not missed', async () => {
+    const full = Array.from({ length: PAGE_SIZE }, (_, i) => ({ project_id: `p${i}` }))
+    const { store, chains } = stubDb([ok(full), ok([{ project_id: 'p-last' }])])
+    const ids = await store.listConfirmedOwnerProjects('U1')
+    expect(ids).toHaveLength(PAGE_SIZE + 1)
+    expect(ids.at(-1)).toBe('p-last')
+    expect(ranges(chains)).toEqual([[0, PAGE_SIZE - 1], [PAGE_SIZE, 2 * PAGE_SIZE - 1]])
   })
 
   it('throws an AdapterError with the code only', async () => {
@@ -80,8 +95,30 @@ describe('SupabaseStore.getDriveContext', () => {
     })
     expect(chains[1]).toContainEqual({ method: 'not', args: ['owner_confirmed_at', 'is', null] })
     expect(chains[1]).toContainEqual({ method: 'is', args: ['left_at', null] })
+    expect(chains[1]).toContainEqual({ method: 'order', args: ['id'] })
     expect(chains[2]).toContainEqual({ method: 'eq', args: ['line_user_id', 'U1'] })
     expect(chains[3]).toContainEqual({ method: 'eq', args: ['status', 'active'] })
+  })
+
+  it('reads the next page of groups after a full one, so groups past the first 1000 rows still get folders', async () => {
+    const groups = (n: number, offset = 0) => Array.from({ length: n }, (_, i) => ({
+      id: `g${offset + i}`, line_group_id: `C${offset + i}`, name: null, is_main: offset + i === 0, drive_folder_id: null,
+    }))
+    // Results go out in await order: the account and connection reads (run alongside the
+    // groups) are awaited before the second page of groups.
+    const { store, chains } = stubDb([
+      ok({ id: 'p1', owner_line_user_id: 'U1', drive_project_folder_id: null }),
+      ok(groups(PAGE_SIZE)),
+      ok(null),
+      ok(null),
+      ok(groups(2, PAGE_SIZE)),
+    ])
+    const ctx = await store.getDriveContext('p1')
+    expect(ctx?.mainGroup?.groupId).toBe('g0')
+    expect(ctx?.subGroups).toHaveLength(PAGE_SIZE + 1)
+    expect(ctx?.subGroups.at(-1)?.groupId).toBe(`g${PAGE_SIZE + 1}`)
+    const groupChains = chains.filter((c) => c[0].args[0] === 'groups')
+    expect(ranges(groupChains)).toEqual([[0, PAGE_SIZE - 1], [PAGE_SIZE, 2 * PAGE_SIZE - 1]])
   })
 
   it('answers null for an unknown project', async () => {

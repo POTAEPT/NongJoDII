@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { describe, expect, it } from 'vitest'
-import { SupabaseStore, WEEKLY_PAGE } from '@/server/store/supabase-store'
+import { SupabaseStore, PAGE_SIZE } from '@/server/store/supabase-store'
 
 // SupabaseStore.listWeeklySummaryGroups against a stand-in for the PostgREST query
 // builder: every filter call returns the builder, and .range() answers one page.
@@ -33,14 +33,14 @@ const rows = (n: number, offset = 0) =>
 
 describe('SupabaseStore.listWeeklySummaryGroups', () => {
   it('reads every page, not only the first PostgREST page', async () => {
-    const { store, calls } = stubDb([rows(WEEKLY_PAGE), rows(WEEKLY_PAGE, WEEKLY_PAGE), rows(5, 2 * WEEKLY_PAGE)])
+    const { store, calls } = stubDb([rows(PAGE_SIZE), rows(PAGE_SIZE, PAGE_SIZE), rows(5, 2 * PAGE_SIZE)])
     const groups = await store.listWeeklySummaryGroups(3)
-    expect(groups).toHaveLength(2 * WEEKLY_PAGE + 5)
-    expect(groups[2 * WEEKLY_PAGE + 4]).toEqual({
+    expect(groups).toHaveLength(2 * PAGE_SIZE + 5)
+    expect(groups[2 * PAGE_SIZE + 4]).toEqual({
       groupId: 'g-02004', lineGroupId: 'C2004', weekday: 3, time: '09:00:00', lastSentOn: null,
     })
     expect(calls.filter((c) => c.method === 'range').map((c) => c.args)).toEqual([
-      [0, WEEKLY_PAGE - 1], [WEEKLY_PAGE, 2 * WEEKLY_PAGE - 1], [2 * WEEKLY_PAGE, 3 * WEEKLY_PAGE - 1],
+      [0, PAGE_SIZE - 1], [PAGE_SIZE, 2 * PAGE_SIZE - 1], [2 * PAGE_SIZE, 3 * PAGE_SIZE - 1],
     ])
   })
 
@@ -53,8 +53,8 @@ describe('SupabaseStore.listWeeklySummaryGroups', () => {
   })
 
   it('asks for one more page when the last full page ends exactly on the page size', async () => {
-    const { store, calls } = stubDb([rows(WEEKLY_PAGE), []])
-    expect(await store.listWeeklySummaryGroups(3)).toHaveLength(WEEKLY_PAGE)
+    const { store, calls } = stubDb([rows(PAGE_SIZE), []])
+    expect(await store.listWeeklySummaryGroups(3)).toHaveLength(PAGE_SIZE)
     expect(calls.filter((c) => c.method === 'range')).toHaveLength(2)
   })
 })
@@ -67,12 +67,12 @@ const taskRows = (n: number, offset = 0) =>
 
 describe('SupabaseStore.listReminderTasks (#44)', () => {
   it('reads every page, so Tasks after the first 1000 still reach the selection', async () => {
-    const { store, calls } = stubDb([taskRows(WEEKLY_PAGE), taskRows(3, WEEKLY_PAGE)])
+    const { store, calls } = stubDb([taskRows(PAGE_SIZE), taskRows(3, PAGE_SIZE)])
     const tasks = await store.listReminderTasks('g-1')
-    expect(tasks).toHaveLength(WEEKLY_PAGE + 3)
+    expect(tasks).toHaveLength(PAGE_SIZE + 3)
     expect(tasks.at(-1)).toMatchObject({ id: 't-01002', title: 'Task 1002', assigneeLineUserId: null })
     expect(calls.filter((c) => c.method === 'range').map((c) => c.args)).toEqual([
-      [0, WEEKLY_PAGE - 1], [WEEKLY_PAGE, 2 * WEEKLY_PAGE - 1],
+      [0, PAGE_SIZE - 1], [PAGE_SIZE, 2 * PAGE_SIZE - 1],
     ])
   })
 

@@ -94,13 +94,31 @@ function toPromptRow(r: DbPrompt): ProgressPromptRow {
   }
 }
 
-/** Page size for listWeeklySummaryGroups; equal to PostgREST max_rows in supabase/config.toml. */
-export const WEEKLY_PAGE = 1000
+/** Page size of every paged list read; equal to PostgREST max_rows in supabase/config.toml,
+ *  which caps each answer. */
+export const PAGE_SIZE = 1000
 
 type PgError = { code: string } | null
 
 function check(method: keyof StorePort, error: PgError): void {
   if (error) throw new AdapterError(`supabase ${method}: ${error.code}`)
+}
+
+/** Every row of a list read, PAGE_SIZE rows at a time, so max_rows never hides the rows
+ *  after the first page. `page(from, to)` is the query with .order() on a unique key (id)
+ *  and .range(from, to); a short page is the last one. */
+async function readAllPages<R>(
+  method: keyof StorePort,
+  page: (from: number, to: number) => PromiseLike<{ data: unknown; error: PgError }>,
+): Promise<R[]> {
+  const out: R[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await page(from, from + PAGE_SIZE - 1)
+    check(method, error)
+    const rows = (data ?? []) as R[]
+    out.push(...rows)
+    if (rows.length < PAGE_SIZE) return out
+  }
 }
 
 function iso(d: Date | null): string | null {
@@ -624,7 +642,7 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #20 weekly insight ----
-  /** Pages of WEEKLY_PAGE rows ordered by id, so PostgREST max_rows (1000) never hides
+  /** Pages of PAGE_SIZE rows ordered by id, so PostgREST max_rows (1000) never hides
    *  the groups after the first page. */
   async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     type Row = {
@@ -632,7 +650,7 @@ export class SupabaseStore implements StorePort {
       weekly_summary_time: string; weekly_summary_last_sent_on: string | null
     }
     const out: WeeklySummaryGroup[] = []
-    for (let from = 0; ; from += WEEKLY_PAGE) {
+    for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from('groups')
         .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
@@ -641,7 +659,7 @@ export class SupabaseStore implements StorePort {
         .eq('feature_weekly_summary', true)
         .eq('weekly_summary_weekday', weekday)
         .order('id')
-        .range(from, from + WEEKLY_PAGE - 1)
+        .range(from, from + PAGE_SIZE - 1)
       check('listWeeklySummaryGroups', error)
       const rows = (data ?? []) as Row[]
       for (const r of rows) {
@@ -650,7 +668,7 @@ export class SupabaseStore implements StorePort {
           time: r.weekly_summary_time, lastSentOn: r.weekly_summary_last_sent_on,
         })
       }
-      if (rows.length < WEEKLY_PAGE) return out
+      if (rows.length < PAGE_SIZE) return out
     }
   }
 
@@ -743,11 +761,11 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #44 daily reminders ----
-  /** Pages of WEEKLY_PAGE rows ordered by id, as listWeeklySummaryGroups. */
+  /** Pages of PAGE_SIZE rows ordered by id, as listWeeklySummaryGroups. */
   async listDailyReminderGroups(): Promise<DailyReminderGroup[]> {
     type Row = { id: string; line_group_id: string; daily_reminder_time: string; daily_reminder_last_sent_on: string | null }
     const out: DailyReminderGroup[] = []
-    for (let from = 0; ; from += WEEKLY_PAGE) {
+    for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from('groups')
         .select('id, line_group_id, daily_reminder_time, daily_reminder_last_sent_on')
@@ -755,13 +773,13 @@ export class SupabaseStore implements StorePort {
         .is('left_at', null)
         .eq('feature_track_remind', true)
         .order('id')
-        .range(from, from + WEEKLY_PAGE - 1)
+        .range(from, from + PAGE_SIZE - 1)
       check('listDailyReminderGroups', error)
       const rows = (data ?? []) as Row[]
       for (const r of rows) {
         out.push({ groupId: r.id, lineGroupId: r.line_group_id, time: r.daily_reminder_time, lastSentOn: r.daily_reminder_last_sent_on })
       }
-      if (rows.length < WEEKLY_PAGE) return out
+      if (rows.length < PAGE_SIZE) return out
     }
   }
 
@@ -841,7 +859,7 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
-  /** Every open Task, in pages of WEEKLY_PAGE ordered by created_at then id, so PostgREST
+  /** Every open Task, in pages of PAGE_SIZE ordered by created_at then id, so PostgREST
    *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
   async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
     type Row = {
@@ -849,7 +867,7 @@ export class SupabaseStore implements StorePort {
       due_at: string | null; last_activity_at: string | null; deleted_at: string | null
     }
     const out: ReminderTask[] = []
-    for (let from = 0; ; from += WEEKLY_PAGE) {
+    for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from('tasks')
         .select('id, title, status, assignee_line_user_id, due_at, last_activity_at, deleted_at')
@@ -858,7 +876,7 @@ export class SupabaseStore implements StorePort {
         .neq('status', 'done')
         .order('created_at', { ascending: true })
         .order('id', { ascending: true })
-        .range(from, from + WEEKLY_PAGE - 1)
+        .range(from, from + PAGE_SIZE - 1)
       check('listReminderTasks', error)
       const rows = (data ?? []) as Row[]
       for (const r of rows) {
@@ -867,7 +885,7 @@ export class SupabaseStore implements StorePort {
           dueAt: toDate(r.due_at), lastActivityAt: toDate(r.last_activity_at), deletedAt: toDate(r.deleted_at),
         })
       }
-      if (rows.length < WEEKLY_PAGE) return out
+      if (rows.length < PAGE_SIZE) return out
     }
   }
 
@@ -958,16 +976,18 @@ export class SupabaseStore implements StorePort {
   async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
     // A confirmed main group names the Project's owner (check_same_owner), so the
     // groups row alone answers it.
-    const { data, error } = await this.db
-      .from('groups')
-      .select('project_id')
-      .eq('is_main', true)
-      .eq('nominated_owner_line_user_id', lineUserId)
-      .not('owner_confirmed_at', 'is', null)
-      .not('project_id', 'is', null)
-      .is('left_at', null)
-    check('listConfirmedOwnerProjects', error)
-    return ((data ?? []) as { project_id: string }[]).map((r) => r.project_id)
+    const rows = await readAllPages<{ project_id: string }>('listConfirmedOwnerProjects', (from, to) =>
+      this.db
+        .from('groups')
+        .select('project_id')
+        .eq('is_main', true)
+        .eq('nominated_owner_line_user_id', lineUserId)
+        .not('owner_confirmed_at', 'is', null)
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.project_id)
   }
 
   async getDriveContext(projectId: string): Promise<DriveContext | null> {
@@ -979,14 +999,17 @@ export class SupabaseStore implements StorePort {
     check('getDriveContext', error)
     const project = p as { id: string; owner_line_user_id: string; drive_project_folder_id: string | null } | null
     if (!project) return null
-    const [groups, account, active] = await Promise.all([
-      this.db
-        .from('groups')
-        .select('id, line_group_id, name, is_main, drive_folder_id')
-        .eq('project_id', projectId)
-        .not('owner_confirmed_at', 'is', null)
-        .is('left_at', null)
-        .order('id'),
+    type G = { id: string; line_group_id: string; name: string | null; is_main: boolean; drive_folder_id: string | null }
+    const [rows, account, active] = await Promise.all([
+      readAllPages<G>('getDriveContext', (from, to) =>
+        this.db
+          .from('groups')
+          .select('id, line_group_id, name, is_main, drive_folder_id')
+          .eq('project_id', projectId)
+          .not('owner_confirmed_at', 'is', null)
+          .is('left_at', null)
+          .order('id')
+          .range(from, to)),
       // The Owner's most recently written account, as findGoogleAccountByLineUser.
       this.db
         .from('google_accounts')
@@ -1002,11 +1025,8 @@ export class SupabaseStore implements StorePort {
         .eq('status', 'active')
         .maybeSingle(),
     ])
-    check('getDriveContext', groups.error)
     check('getDriveContext', account.error)
     check('getDriveContext', active.error)
-    type G = { id: string; line_group_id: string; name: string | null; is_main: boolean; drive_folder_id: string | null }
-    const rows = (groups.data ?? []) as G[]
     const toDrive = (g: G): DriveGroup => ({
       groupId: g.id, lineGroupId: g.line_group_id, name: g.name, folderId: g.drive_folder_id,
     })

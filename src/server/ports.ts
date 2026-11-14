@@ -358,9 +358,11 @@ export interface StorePort {
   upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
   findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>
   // #13 Drive folders
-  /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still in it). */
+  /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still
+   *  in it). Every page, by group id. */
   listConfirmedOwnerProjects(lineUserId: string): Promise<string[]>
-  /** null when the Project does not exist. Groups: confirmed Owner and left_at null only. */
+  /** null when the Project does not exist. Groups: confirmed Owner and left_at null only,
+   *  every page, by id. */
   getDriveContext(projectId: string): Promise<DriveContext | null>
   // Folder ID setters are compare-and-set: they write `to` only while the column still
   // holds `from` (null = empty), so two runs at once keep one ID. Each returns the ID the

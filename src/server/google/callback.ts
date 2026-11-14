@@ -1,7 +1,8 @@
 import { openState, seal } from '../crypto/secretbox'
-import { log } from '../log'
-import { liffUrl } from '../liff-links'
+import { log, logError } from '../log'
+import { GOOGLE_RETURN, liffUrl } from '../liff-links'
 import type { Defer, Deps } from '../ports'
+import { retireOtherAccountConnections } from './change-account'
 import { DRIVE_FILE_SCOPE } from './client'
 import { driveDeadline, syncDriveForOwner } from './drive-folders'
 
@@ -46,20 +47,30 @@ async function decide(deps: Deps, params: URLSearchParams, defer: Defer, deadlin
   if (!token.scopes.includes(DRIVE_FILE_SCOPE)) return 'missing_scope'
   if (token.refreshToken === null) return 'no_refresh_token'
 
+  const lineUserId = opened.lineUserId
   try {
-    await deps.store.upsertGoogleAccount({
-      lineUserId: opened.lineUserId,
+    const { id } = await deps.store.upsertGoogleAccount({
+      lineUserId,
       googleSubject: token.subject,
       email: token.email,
       grantedScopes: token.scopes,
       refreshTokenCiphertext: seal(token.refreshToken, deps.config.tokenEncryptionKey),
+      signedInAt: deps.now(),
     })
-  } catch {
+    // #14: only a sign-in started from the "change Google account" action (the intent is
+    // sealed in the state) may move a Project to another Google account. Any other sign-in
+    // with another account retires nothing: the status then reports the Project as still
+    // connected to another account and the page offers the change. The Owner role is
+    // checked again here, as retireOtherAccountConnections reads the confirmed Owner's
+    // Projects now. Done before the page is answered, so a failure shows as 'failed' and
+    // the Owner tries again; a repeat finishes what was left.
+    if (opened.change) await retireOtherAccountConnections(deps, lineUserId, id)
+  } catch (err) {
+    logError('google_signin_store_failed', {}, err)
     return 'failed'
   }
   // #13: the Drive folders are made after the page is sent. A Drive failure is logged
   // there and never changes this outcome: the account is stored either way.
-  const lineUserId = opened.lineUserId
   defer(() => syncDriveForOwner(deps, lineUserId, deadline))
   return 'ok'
 }
@@ -74,16 +85,18 @@ const COPY: Record<CallbackOutcome, { h1: string; p: string }> = {
 }
 
 /** The LIFF link the callback page sends the user back to. On a phone a
- *  liff.line.me link opens the LINE app, where GoogleView checks the status. */
-export function googleReturnUrl(liffId: string): string {
-  return liffUrl(liffId, 'google', 'done')
+ *  liff.line.me link opens the LINE app, where GoogleView checks the status. Only 'ok'
+ *  returns as done (#14): after a cancelled or failed change of account the old account
+ *  is still connected, and the view must not greet that as a finished sign-in. */
+export function googleReturnUrl(liffId: string, outcome: CallbackOutcome): string {
+  return liffUrl(liffId, 'google', outcome === 'ok' ? GOOGLE_RETURN.done : GOOGLE_RETURN.back)
 }
 
 /** A minimal Thai page with fixed copy only: no user data. liffId comes from
  *  server config, not from the request. */
 export function renderCallbackPage(outcome: CallbackOutcome, liffId: string): Response {
   const { h1, p } = COPY[outcome]
-  const href = googleReturnUrl(liffId).replace(/&/g, '&amp;')
+  const href = googleReturnUrl(liffId, outcome).replace(/&/g, '&amp;')
   const html =
     '<!doctype html><html lang="th"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +

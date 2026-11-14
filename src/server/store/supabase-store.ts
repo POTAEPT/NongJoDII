@@ -957,29 +957,46 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #12 Google ----
-  async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
+  async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     // refresh_token_ciphertext is text: the sealed 'v1.<iv>.<tag>.<ct>' string as-is.
-    const { error } = await this.db.from('google_accounts').upsert(
+    // connected_at is written on every sign-in (#14): it orders a person's accounts.
+    const { data, error } = await this.db.from('google_accounts').upsert(
       {
         line_user_id: a.lineUserId, google_subject: a.googleSubject, email: a.email,
         granted_scopes: a.grantedScopes, refresh_token_ciphertext: a.refreshTokenCiphertext, token_status: 'valid',
+        connected_at: a.signedInAt.toISOString(),
       },
       { onConflict: 'google_subject' },
-    )
+    ).select('id').maybeSingle()
     check('upsertGoogleAccount', error)
+    const row = data as { id: string } | null
+    if (!row) throw new AdapterError('supabase upsertGoogleAccount: no row')
+    return { id: row.id }
   }
 
-  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
+  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null> {
     const { data, error } = await this.db
       .from('google_accounts')
-      .select('id, token_status')
+      .select('id, token_status, connected_at')
       .eq('line_user_id', lineUserId)
-      .order('updated_at', { ascending: false })
+      .order('connected_at', { ascending: false })
       .limit(1)
       .maybeSingle()
     check('findGoogleAccountByLineUser', error)
-    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired' } | null
-    return row ? { id: row.id, tokenStatus: row.token_status } : null
+    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired'; connected_at: string } | null
+    return row ? { id: row.id, tokenStatus: row.token_status, signedInAt: toDate(row.connected_at) } : null
+  }
+
+  async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
+    const { data, error } = await this.db
+      .from('google_accounts')
+      .update({ token_status: 'revoked', refresh_token_ciphertext: null })
+      .eq('id', googleAccountId)
+      .eq('token_status', 'valid')
+      .eq('refresh_token_ciphertext', refreshTokenCiphertext)
+      .select('id')
+    check('markGoogleAccountRevoked', error)
+    return { revoked: ((data ?? []) as unknown[]).length > 0 }
   }
 
   // ---- #13 Drive folders ----
@@ -1020,12 +1037,12 @@ export class SupabaseStore implements StorePort {
           .is('left_at', null)
           .order('id')
           .range(from, to)),
-      // The Owner's most recently written account, as findGoogleAccountByLineUser.
+      // The Owner's latest account (last sign-in), as findGoogleAccountByLineUser.
       this.db
         .from('google_accounts')
         .select('id, token_status, refresh_token_ciphertext, drive_root_folder_id')
         .eq('line_user_id', project.owner_line_user_id)
-        .order('updated_at', { ascending: false })
+        .order('connected_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
       this.db
@@ -1109,6 +1126,88 @@ export class SupabaseStore implements StorePort {
     return { created: true, accountId: googleAccountId }
   }
 
+  async listDriveConnectedProjects(): Promise<string[]> {
+    const rows = await readAllPages<{ project_id: string }>('listDriveConnectedProjects', (from, to) =>
+      this.db
+        .from('drive_connections')
+        .select('project_id')
+        .eq('status', 'active')
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.project_id)
+  }
+
+  async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
+    const m = 'retireDriveConnection'
+    // Separate statements, so what this guarantees is narrow and stated here:
+    //  * Only folder IDs read before the active row was read are cleared (the clears match
+    //    on those IDs). An ID stored after those reads is never cleared by this call.
+    //  * The row is retired last, and only if it is still the active row read at the
+    //    start: re-read after the clears, then an UPDATE that matches id and 'active'.
+    //  * A call that stops part-way leaves the row active; the same call again finishes.
+    // Not guaranteed: a Drive run of the old account that is already under way can still
+    // store a folder ID or claim the Project after this call (that needs a holder check
+    // inside the folder UPDATE, so a database function).
+    const { data: p, error: projectError } = await this.db
+      .from('projects')
+      .select('drive_project_folder_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check(m, projectError)
+    const projectFolderId = (p as { drive_project_folder_id: string | null } | null)?.drive_project_folder_id ?? null
+    const groupFolderIds = (await readAllPages<{ drive_folder_id: string }>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('drive_folder_id')
+        .eq('project_id', projectId)
+        .not('drive_folder_id', 'is', null)
+        .order('id')
+        .range(from, to))).map((g) => g.drive_folder_id)
+    const { data, error } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, error)
+    const active = data as { id: string; google_account_id: string } | null
+    if (!active || active.google_account_id === keepGoogleAccountId) return { retired: false }
+    // Cleared first, retired last: until the last statement the row is still active, so a
+    // run that stops here is seen and repeated by the next sign-in.
+    if (projectFolderId !== null) {
+      const { error: clearError } = await this.db
+        .from('projects')
+        .update({ drive_project_folder_id: null })
+        .eq('id', projectId)
+        .eq('drive_project_folder_id', projectFolderId)
+      check(m, clearError)
+    }
+    for (const chunk of chunks(groupFolderIds)) {
+      const { error: clearError } = await this.db
+        .from('groups')
+        .update({ drive_folder_id: null })
+        .eq('project_id', projectId)
+        .in('drive_folder_id', chunk)
+      check(m, clearError)
+    }
+    const { data: again, error: againError } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, againError)
+    if ((again as { id: string } | null)?.id !== active.id) return { retired: false }
+    const retired = await this.db
+      .from('drive_connections')
+      .update({ status: 'replaced', status_changed_at: at.toISOString() })
+      .eq('id', active.id)
+      .eq('status', 'active')
+      .select('id')
+    check(m, retired.error)
+    return { retired: ((retired.data ?? []) as unknown[]).length > 0 }
+  }
+
   /** Flat reads joined here, no embedded filters: the Owners with a confirm or a Google
    *  account write since `from`, then their accounts and main groups, then, for the
    *  Projects in the window, the empty folder IDs and the active connection holders. Every
@@ -1139,7 +1238,7 @@ export class SupabaseStore implements StorePort {
       ...confirmed.map((r) => r.nominated_owner_line_user_id), ...signedIn.map((r) => r.line_user_id),
     ])]
 
-    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string }
+    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string; connected_at: string }
     type Main = { project_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
     const accounts: Account[] = []
     const mains: Main[] = []
@@ -1148,7 +1247,7 @@ export class SupabaseStore implements StorePort {
         readAllPages<Account>(m, (x, y) =>
           this.db
             .from('google_accounts')
-            .select('id, line_user_id, token_status, updated_at')
+            .select('id, line_user_id, token_status, updated_at, connected_at')
             .in('line_user_id', chunk)
             .order('id')
             .range(x, y)),
@@ -1168,11 +1267,12 @@ export class SupabaseStore implements StorePort {
       mains.push(...g)
     }
 
-    // Each Owner's most recently written account, as getDriveContext reads it.
+    // Each Owner's latest account (last sign-in), as getDriveContext reads it. The window
+    // below still runs on updated_at, which also moves when a root folder ID is stored.
     const latest = new Map<string, Account>()
     for (const a of accounts) {
       const seen = latest.get(a.line_user_id)
-      if (!seen || toDate(a.updated_at).getTime() > toDate(seen.updated_at).getTime()) latest.set(a.line_user_id, a)
+      if (!seen || toDate(a.connected_at).getTime() > toDate(seen.connected_at).getTime()) latest.set(a.line_user_id, a)
     }
     // Project ID -> the account that would run it: in the window, with a valid latest account.
     const inWindow = new Map<string, string>()

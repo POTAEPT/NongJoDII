@@ -70,9 +70,11 @@ export type GoogleAccountRecord = {
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
   driveRootFolderId?: string | null   // absent = null (#13)
   updatedAt: Date                     // set on every write, like the table's trigger
+  signedInAt?: Date                   // google_accounts.connected_at: the last sign-in (#14)
 }
 export type DriveConnectionRecord = {
   id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
+  statusChangedAt?: Date | null   // absent = null; set when the row is retired (#14)
 }
 
 /** The groups columns the weekly insight reads (left_at, feature_weekly_summary and the
@@ -160,9 +162,10 @@ export class FakeStore implements StorePort {
   )[] = []
 
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
-  // Write order of google_accounts rows, so the newest connection wins on lookup.
-  private googleWrites = new Map<string, number>()
-  private googleWriteSeq = 0
+  // Sign-in order of google_accounts rows (ORDER BY connected_at DESC), kept as a sequence
+  // because tests sign several accounts in at the same clock time.
+  private googleSignIns = new Map<string, number>()
+  private googleSignInSeq = 0
 
   /** Fault injection: skips `after` calls of `method` (default 0), then the next one rejects. */
   failNext(method: keyof StorePort, err?: Error, opts?: { after?: number }): void {
@@ -634,38 +637,53 @@ export class FakeStore implements StorePort {
   }
 
   // ---- #12 Google ----
-  async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
+  async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     this.fault('upsertGoogleAccount')
     fk(this.hasLineUser(a.lineUserId), 'google_accounts.line_user_id')
     let row = this.tables.google_accounts.find((g) => g.googleSubject === a.googleSubject)
     if (row) {
-      Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid' })
+      Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid', signedInAt: new Date(a.signedInAt.getTime()) })
     } else {
-      row = { ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid', updatedAt: this.clock() }
+      row = {
+        ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid', updatedAt: this.clock(),
+        signedInAt: new Date(a.signedInAt.getTime()),
+      }
       this.tables.google_accounts.push(row)
     }
     this.touchGoogleAccount(row)
+    this.googleSignIns.set(row.id, ++this.googleSignInSeq) // connected_at = this sign-in
+    return { id: row.id }
   }
 
   /** What the google_accounts_updated_at trigger does on every write (the column default on
-   *  insert): updated_at = now(). It also makes the row the most recently written one. */
+   *  insert): updated_at = now(). It never changes which account signed in last. */
   private touchGoogleAccount(row: GoogleAccountRecord): void {
     row.updatedAt = this.clock()
-    this.googleWrites.set(row.id, ++this.googleWriteSeq)
   }
 
-  /** The person's most recently written Google account (ORDER BY updated_at DESC). */
+  /** The person's latest Google account: the last one to sign in (ORDER BY connected_at DESC). */
   private latestGoogleAccount(lineUserId: string | null): GoogleAccountRecord | undefined {
     return this.tables.google_accounts
       .filter((g) => g.lineUserId === lineUserId)
-      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))[0]
+      .sort((a, b) => (this.googleSignIns.get(b.id) ?? 0) - (this.googleSignIns.get(a.id) ?? 0))[0]
   }
 
-  /** A user with several Google accounts gets the most recently written one. */
-  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
+  /** A user with several Google accounts gets the one that signed in last. */
+  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null> {
     this.fault('findGoogleAccountByLineUser')
     const row = this.latestGoogleAccount(lineUserId)
-    return row ? { id: row.id, tokenStatus: row.tokenStatus } : null
+    return row ? { id: row.id, tokenStatus: row.tokenStatus, signedInAt: new Date((row.signedInAt ?? row.updatedAt).getTime()) } : null
+  }
+
+  /** The conditional UPDATE: only a 'valid' row that still holds this token changes. */
+  async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
+    this.fault('markGoogleAccountRevoked')
+    const row = this.tables.google_accounts.find((a) => a.id === googleAccountId)
+    if (!row || row.tokenStatus !== 'valid' || row.refreshTokenCiphertext !== refreshTokenCiphertext) return { revoked: false }
+    row.tokenStatus = 'revoked'
+    row.refreshTokenCiphertext = null
+    this.touchGoogleAccount(row)
+    return { revoked: true }
   }
 
   // ---- #13 Drive folders ----
@@ -756,6 +774,67 @@ export class FakeStore implements StorePort {
     if (!held) this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
     this.driveWrites.push({ op: 'claim', projectId, accountId: googleAccountId, holder: result.accountId })
     return result
+  }
+
+  /** Ordered by connection id, as SupabaseStore pages it. */
+  async listDriveConnectedProjects(): Promise<string[]> {
+    this.fault('listDriveConnectedProjects')
+    return this.tables.drive_connections
+      .filter((c) => c.status === 'active')
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((c) => c.projectId)
+  }
+
+  /** Test aid (#14): the next retireDriveConnection throws after its clears and before it
+   *  retires the row, as when the real store's last statements fail. */
+  failRetireAfterClear = false
+  private retireHold: { parked(): void; gate: Promise<void> } | null = null
+
+  /** Test aid (#14) for two overlapping changes: the next retireDriveConnection waits after
+   *  its reads, before its first write, until `release()`. `reached` resolves once it waits. */
+  holdRetire(): { reached: Promise<void>; release(): void } {
+    let release = () => {}
+    let parked = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const reached = new Promise<void>((resolve) => { parked = resolve })
+    this.retireHold = { parked, gate }
+    return { reached, release }
+  }
+
+  /** The same steps in the same order as SupabaseStore: read the folder IDs, read the
+   *  active row, clear only the IDs read, read the active row again, retire it. */
+  async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
+    this.fault('retireDriveConnection')
+    const activeRow = () => this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    const setups = () => this.tables.groups
+      .filter((g) => g.projectId === projectId)
+      .map((g) => this.tables.group_setups.find((r) => r.groupId === g.id))
+      .filter((r): r is GroupSetupRecord => r !== undefined)
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    const projectFolderId = project?.driveProjectFolderId ?? null
+    const groupFolderIds = setups().map((r) => r.driveFolderId ?? null).filter((id): id is string => id !== null)
+    const active = activeRow()
+    if (!active || active.googleAccountId === keepGoogleAccountId) return { retired: false }
+    const hold = this.retireHold
+    if (hold) {
+      this.retireHold = null
+      hold.parked()
+      await hold.gate
+    }
+    // Compare-and-set clears: only the IDs read above.
+    if (project && projectFolderId !== null && project.driveProjectFolderId === projectFolderId) project.driveProjectFolderId = null
+    for (const r of setups()) {
+      if (r.driveFolderId != null && groupFolderIds.includes(r.driveFolderId)) r.driveFolderId = null
+    }
+    if (this.failRetireAfterClear) {
+      this.failRetireAfterClear = false
+      throw new Error('FakeStore: injected failure in retireDriveConnection after the clears')
+    }
+    const again = activeRow()
+    if (!again || again.id !== active.id) return { retired: false }
+    again.status = 'replaced'
+    again.statusChangedAt = new Date(at.getTime())
+    return { retired: true }
   }
 
   /** Same rule as SupabaseStore, read straight from the tables. */

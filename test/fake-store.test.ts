@@ -434,16 +434,30 @@ describe('FakeStore', () => {
   test('upsertGoogleAccount updates on the same Google subject', async () => {
     const store = new FakeStore()
     await expect(
-      store.upsertGoogleAccount({ lineUserId: 'U1', googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.a' }),
+      store.upsertGoogleAccount({ lineUserId: 'U1', googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.a', signedInAt: SENT_AT }),
     ).rejects.toThrow('FK violation: google_accounts.line_user_id')
     await store.upsertLineUser({ lineUserId: 'U1', displayName: null })
-    await store.upsertGoogleAccount({ lineUserId: 'U1', googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.a' })
+    await store.upsertGoogleAccount({ lineUserId: 'U1', googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.a', signedInAt: SENT_AT })
     store.tables.google_accounts[0].tokenStatus = 'revoked'
-    await store.upsertGoogleAccount({ lineUserId: 'U1', googleSubject: 'g1', email: 'e@x', grantedScopes: ['openid'], refreshTokenCiphertext: 'v1.b' })
+    await store.upsertGoogleAccount({ lineUserId: 'U1', googleSubject: 'g1', email: 'e@x', grantedScopes: ['openid'], refreshTokenCiphertext: 'v1.b', signedInAt: SENT_AT })
     expect(store.tables.google_accounts).toHaveLength(1)
     expect(store.tables.google_accounts[0]).toMatchObject({ email: 'e@x', refreshTokenCiphertext: 'v1.b', tokenStatus: 'valid' })
-    expect(await store.findGoogleAccountByLineUser('U1')).toEqual({ id: store.tables.google_accounts[0].id, tokenStatus: 'valid' })
+    expect(await store.findGoogleAccountByLineUser('U1')).toEqual({ id: store.tables.google_accounts[0].id, tokenStatus: 'valid', signedInAt: SENT_AT })
     expect(await store.findGoogleAccountByLineUser('U2')).toBeNull()
+  })
+
+  test('upsertGoogleAccount answers the row ID, and the latest account is the last one to sign in (#14)', async () => {
+    const store = new FakeStore()
+    await store.upsertLineUser({ lineUserId: 'U1', displayName: null })
+    const acc = (subject: string) => ({ lineUserId: 'U1', googleSubject: subject, email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.a', signedInAt: SENT_AT })
+    const a = await store.upsertGoogleAccount(acc('g1'))
+    const b = await store.upsertGoogleAccount(acc('g2'))
+    expect(a.id).toBe(store.tables.google_accounts[0].id)
+    expect((await store.upsertGoogleAccount(acc('g1'))).id).toBe(a.id) // the same row again
+    expect(await store.findGoogleAccountByLineUser('U1')).toMatchObject({ id: a.id })
+    // Another write to B (its root folder ID) is not a sign-in: A stays the latest.
+    await store.setDriveRootFolder(b.id, null, 'root-b')
+    expect(await store.findGoogleAccountByLineUser('U1')).toMatchObject({ id: a.id })
   })
 })
 

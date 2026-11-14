@@ -49,7 +49,10 @@ export class GoogleHttpClient implements GooglePort {
       response_type: 'code',
       scope: SCOPE,
       access_type: 'offline', // refresh_token is only returned with offline access
-      prompt: 'consent', // re-consent each time, so a refresh token comes back on every sign-in
+      // select_account (#14): the account chooser always comes first, so the browser's
+      // default Google account is never signed in without the person picking it.
+      // consent: re-consent each time, so a refresh token comes back on every sign-in.
+      prompt: 'select_account consent',
       state,
     })
     return `${AUTH_URL}?${q.toString()}`

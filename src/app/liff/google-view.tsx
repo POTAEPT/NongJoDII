@@ -1,35 +1,50 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchGoogleStatus as fetchStatus, phaseOnReturn } from './google-status'
+import { fetchGoogleStatus as fetchStatus, phaseOnOpen, retryStep, returnStep, returnVisit } from './google-status'
 import type { LiffViewProps } from './liff-sdk'
 
-type Phase = 'starting' | 'checking' | 'opened' | 'connected' | 'not_connected' | 'unauthorized' | 'failed'
+type Phase =
+  | 'checking' | 'starting' | 'opened' | 'connected' | 'sign_in_again' | 'change_unfinished'
+  | 'not_connected' | 'unauthorized' | 'failed'
 
-const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected'>, string> = {
+const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected' | 'sign_in_again' | 'change_unfinished'>, string> = {
   opened: 'เปิดเบราว์เซอร์เพื่อเข้าสู่ระบบ Google แล้ว เมื่อเสร็จให้กลับมาที่แชท LINE',
   not_connected: 'ยังไม่ได้เชื่อม Google Drive กรุณาลองใหม่',
   unauthorized: 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง',
   failed: 'เริ่มเชื่อม Google Drive ไม่สำเร็จ กรุณาลองใหม่',
 }
 
-/** The id the OAuth callback page links back with: sign-in already happened in
- *  the external browser, so only the status is checked. */
-const RETURN_ID = 'done'
-
 export function GoogleView({ liff, idToken, id }: LiffViewProps) {
-  const returning = id === RETURN_ID
-  const [phase, setPhase] = useState<Phase>(returning ? 'checking' : 'starting')
+  // The OAuth callback page links back with an id: the sign-in already ran in the external
+  // browser, so only the status is checked, and only a finished one is greeted as a success.
+  const { returning, signedIn } = returnVisit(id)
+  const [phase, setPhase] = useState<Phase>('checking')
+  /** A sign-in finished in this visit, or just before it (the return visit after 'ok'). */
+  const [justSignedIn, setJustSignedIn] = useState(signedIn)
+  /** #14: the confirmed Owner of a Project may change the connected Google account. */
+  const [canChange, setCanChange] = useState(false)
   const started = useRef(false)
+  /** The sign-in time the server reported last. A sign-in started from here is done only
+   *  when the server reports a newer one: during a change of account the old account is
+   *  still connected. */
+  const knownSignedInAt = useRef<string | null>(null)
+  /** Whether the sign-in in progress is a change of account, so a retry asks the same. */
+  const changing = useRef(false)
+  /** The status request has answered with the person's state (not failed or refused). */
+  const statusKnown = useRef(false)
 
-  // Callers set 'starting' first (initial state on mount, retry() on a click).
-  const start = useCallback(async () => {
+  // Callers set 'starting' first. `change` is the "change Google account" action (#14):
+  // the server seals it into the sign-in, and only such a sign-in moves a Project.
+  const start = useCallback(async (change: boolean) => {
+    changing.current = change
     try {
-      // Only the ID token goes up: the server takes the user from the verified token.
+      // Only the ID token (and the change flag) go up: the server takes the user from the
+      // verified token and checks the Owner role itself.
       const res = await fetch('/api/google/start', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ idToken }),
+        body: JSON.stringify(change ? { idToken, change: true } : { idToken }),
       })
       if (res.status === 401) return setPhase('unauthorized')
       // Any other non-200 (e.g. a bare 500 when LINE verify fails upstream) is a retryable failure.
@@ -49,12 +64,19 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
     }
   }, [liff, idToken])
 
-  // First load: a return visit (id=done) starts in 'checking' and only reads the
-  // status, so no new sign-in opens; any other visit starts sign-in.
+  // First load: read the status. A person with no Google account goes straight to
+  // sign-in (not on a return visit from the callback page). A connected one sees the connected screen,
+  // and a revoked or expired one the sign-in-again notice (#14); neither starts a sign-in
+  // by itself.
   const init = useCallback(async () => {
-    if (!returning) return start()
     const status = await fetchStatus(idToken)
-    setPhase(status)
+    statusKnown.current = status.status !== 'failed' && status.status !== 'unauthorized'
+    knownSignedInAt.current = status.signedInAt
+    setCanChange(status.canChange)
+    const next = phaseOnOpen(status, returning)
+    if (next !== 'start') return setPhase(next)
+    setPhase('starting')
+    return start(false)
   }, [returning, idToken, start])
 
   useEffect(() => {
@@ -63,9 +85,16 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
     void init()
   }, [init])
 
-  const retry = () => {
+  const signIn = (change: boolean) => {
     setPhase('starting')
-    void start()
+    void start(change)
+  }
+
+  // The retry button: read the status again if it was never read, else start sign-in again.
+  const retry = () => {
+    if (retryStep(statusKnown.current) === 'start') return signIn(changing.current)
+    setPhase('checking')
+    void init()
   }
 
   // While the external browser is open, re-check only when the user comes back to
@@ -77,8 +106,15 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
       if (inFlight || document.visibilityState !== 'visible') return
       inFlight = true
       try {
-        const next = phaseOnReturn(await fetchStatus(idToken))
-        if (next) setPhase(next)
+        const status = await fetchStatus(idToken)
+        const step = returnStep(status, knownSignedInAt.current)
+        knownSignedInAt.current = step.knownSignedInAt
+        if (!step.phase) return
+        if (step.phase === 'connected') {
+          setCanChange(status.canChange)
+          setJustSignedIn(true)
+        }
+        setPhase(step.phase)
       } finally {
         inFlight = false
       }
@@ -97,9 +133,55 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   if (phase === 'connected') {
     return (
       <div className="p-4 text-base">
-        <p className="text-lg font-bold">เชื่อม Google Drive สำเร็จ</p>
+        <p className="text-lg font-bold">{justSignedIn ? 'เชื่อม Google Drive สำเร็จ' : 'เชื่อม Google Drive ไว้แล้ว'}</p>
         <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
           ปิดหน้านี้
+        </button>
+        {canChange && (
+          <div className="mt-8 border-t pt-4">
+            <p className="text-sm text-gray-600">
+              เปลี่ยนไปใช้บัญชี Google อื่นได้ ไฟล์ที่เก็บไว้แล้วจะอยู่ในไดรฟ์เดิม ส่วนไฟล์ใหม่จะเก็บในโฟลเดอร์ใหม่ในไดรฟ์ของบัญชีใหม่
+            </p>
+            <button type="button" className="mt-2 rounded border px-4 py-2" onClick={() => signIn(true)}>
+              เปลี่ยนบัญชี Google
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+  if (phase === 'change_unfinished') {
+    // The person's latest Google sign-in is another account than the one a Project of
+    // theirs is connected to: a plain sign-in with another account (which changes
+    // nothing), or a change that stopped part-way. Either the change action moves the
+    // Project, or a sign-in with the first account puts things back.
+    return (
+      <div className="p-4 text-base">
+        <p className="text-lg font-bold">บัญชี Google นี้ยังไม่ได้เชื่อมกับกลุ่ม</p>
+        <p className="mt-2">
+          กลุ่มของคุณยังเชื่อมกับบัญชี Google อีกบัญชีหนึ่งอยู่ น้องจดดีจึงยังเก็บไฟล์ใหม่ไม่ได้ งานและไฟล์ที่เก็บไว้แล้วยังอยู่ครบ
+        </p>
+        <p className="mt-2 text-sm text-gray-600">
+          หากต้องการย้ายมาใช้บัญชีใหม่ ให้กดเปลี่ยนบัญชี Google ไฟล์ที่เก็บไว้แล้วจะอยู่ในไดรฟ์เดิม หากไม่ต้องการเปลี่ยน ให้เข้าสู่ระบบด้วยบัญชีเดิม
+        </p>
+        <button type="button" className="mt-4 block rounded border px-4 py-2 font-bold" onClick={() => signIn(true)}>
+          เปลี่ยนบัญชี Google
+        </button>
+        <button type="button" className="mt-2 block rounded border px-4 py-2" onClick={() => signIn(false)}>
+          เข้าสู่ระบบด้วยบัญชีเดิม
+        </button>
+      </div>
+    )
+  }
+  if (phase === 'sign_in_again') {
+    return (
+      <div className="p-4 text-base">
+        <p className="text-lg font-bold">กรุณาเข้าสู่ระบบ Google อีกครั้ง</p>
+        <p className="mt-2">
+          น้องจดดีเข้าถึง Google Drive ของคุณไม่ได้แล้ว จึงยังเก็บไฟล์ใหม่ไม่ได้ งานทั้งหมดยังอยู่ครบ
+        </p>
+        <button type="button" className="mt-4 rounded border px-4 py-2 font-bold" onClick={() => signIn(false)}>
+          เข้าสู่ระบบ Google
         </button>
       </div>
     )

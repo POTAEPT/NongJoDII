@@ -77,9 +77,13 @@ export class FakeGoogle implements GooglePort {
     return { ...this.exchangeResult, scopes: [...this.exchangeResult.scopes] }
   }
 
+  /** When set, every refresh rejects with it (a timeout or a Google 5xx: not a revocation). */
+  refreshError: Error | null = null
+
   async accessToken(refreshToken: string): Promise<string> {
     this.refreshCalls.push(refreshToken)
     await this.spend(`refresh:${refreshToken}`)
+    if (this.refreshError) throw this.refreshError
     if (this.revokedRefreshTokens.has(refreshToken)) throw new GoogleTokenRevoked()
     return `at:${refreshToken}`
   }

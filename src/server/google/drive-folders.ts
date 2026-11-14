@@ -1,7 +1,8 @@
 import { open } from '../crypto/secretbox'
-import { AdapterError, log, logError } from '../log'
+import { AdapterError, GoogleTokenRevoked, log, logError } from '../log'
 import type { Deps, DriveContext, DriveGroup } from '../ports'
 import type { TickJob } from '../tick/run-tick'
+import { LOST_ACCESS_CALLS, markAccessLost } from './lost-access'
 
 // #13: the Owner's Drive layout, by ID only:
 //   NongJoDII/                      google_accounts.drive_root_folder_id (one per account)
@@ -67,7 +68,7 @@ function lostClaim(projectId: string): null {
  *  timeout, plus the step's store work, still ends by `deadline`. Checked before the
  *  step's first call, so a step never stops halfway: a Project folder is never made
  *  without being shared and stored. */
-function checkTime(deps: Deps, deadline: Date, calls: number): void {
+export function checkTime(deps: Deps, deadline: Date, calls: number): void {
   const left = deadline.getTime() - deps.now().getTime()
   if (left < calls * DRIVE_CALL_MAX_MS + STEP_STORE_MS) throw new DriveTimeUp()
 }
@@ -188,9 +189,11 @@ export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: D
   }
 }
 
-/** null (logged) when the Project's Drive cannot be used: no valid account, or the
- *  active connection belongs to another Google account (changing accounts is #3's flow).
- *  That check is only a cheap first look: the claim decides. */
+/** null (logged) when the Project's Drive cannot be used: no valid account, the active
+ *  connection belongs to another Google account (a sign-in with a new account retires it,
+ *  see callback.ts), or Google refused the refresh token (#14: the account is marked
+ *  revoked and the main group is asked once to sign in again). The account check is only
+ *  a cheap first look: the claim decides. */
 async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunMode) {
   const { projectId } = ctx
   const account = ctx.account
@@ -202,7 +205,17 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunM
   const refreshToken = open(account.refreshTokenCiphertext, deps.config.tokenEncryptionKey)
   if (refreshToken === null) throw new AdapterError('drive refresh token unreadable')
   checkTime(deps, deadline, 1)
-  const token = await deps.google.accessToken(refreshToken)
+  let token: string
+  try {
+    token = await deps.google.accessToken(refreshToken)
+  } catch (err) {
+    if (!(err instanceof GoogleTokenRevoked)) throw err
+    // Marking the account and posting the card are one step: with no time for the card,
+    // the account stays valid and a later run meets the revocation again.
+    checkTime(deps, deadline, LOST_ACCESS_CALLS)
+    await markAccessLost(deps, ctx, { id: account.id, refreshTokenCiphertext: account.refreshTokenCiphertext })
+    return null
+  }
   const google = deps.google
   const accountId = account.id
   const storedRootId = account.rootFolderId

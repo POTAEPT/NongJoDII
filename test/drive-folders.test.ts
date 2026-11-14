@@ -107,6 +107,7 @@ async function seedSignedInNominee(h: H) {
   await h.store.upsertGoogleAccount({
     lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
     grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+    signedInAt: h.deps.now(),
   })
   return g.id
 }
@@ -125,6 +126,7 @@ async function signInAccount(h: H, n: 1 | 2): Promise<string> {
   await h.store.upsertGoogleAccount({
     lineUserId: OWNER, googleSubject: `g-sub-${n}`, email: null,
     grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal(`rt-${n}`, TEST_KEY),
+    signedInAt: h.deps.now(),
   })
   return h.store.tables.google_accounts.find((a) => a.googleSubject === `g-sub-${n}`)!.id
 }
@@ -390,13 +392,15 @@ describe('failures and skips', () => {
     expect(h.store.tables.drive_connections).toHaveLength(1)
   })
 
-  it('a revoked grant is logged as such and stops before any Drive call', async () => {
+  it('a revoked grant stops before any Drive call and marks the account (#14, see drive-lost-access.test.ts)', async () => {
     const h = setup()
     const { projectId } = await seedProject(h)
     h.google.revokedRefreshTokens.add('rt-1')
     expect(await signIn(h)).toBe('ok')
     expect(h.google.driveCalls).toEqual([])
-    expect(errorEvents()).toContainEqual({ event: 'drive_folders_failed', projectId, error: 'google refresh invalid_grant' })
+    expect(account(h).tokenStatus).toBe('revoked')
+    expect(infoEvents()).toContainEqual(expect.objectContaining({ event: 'drive_access_lost', projectId }))
+    expect(errorEvents().map((e) => e.event)).not.toContain('drive_folders_failed')
   })
 
   it('a store failure in the Drive job is logged and the outcome stays ok', async () => {
@@ -419,18 +423,33 @@ describe('failures and skips', () => {
     expect(h.store.tables.drive_connections).toHaveLength(0)
   })
 
-  it('a Project whose active connection is another Google account is left alone', async () => {
+  it('a plain sign-in with a second Google account leaves the Project alone: only the change action moves it (#14)', async () => {
     const h = setup()
     const { projectId } = await seedProject(h)
     await signIn(h)
     const before = h.google.folders.size
-    // Same LINE user, a second Google account.
+    const connections = structuredClone(h.store.tables.drive_connections)
+    // Same LINE user, a second Google account, no change intent.
     h.google.exchangeResult = { ...h.google.exchangeResult as object, subject: 'g-sub-2', refreshToken: 'rt-2' } as never
     h.google.driveCalls = []
     await signIn(h)
     expect(h.store.tables.google_accounts).toHaveLength(2)
     expect(h.google.driveCalls).toEqual([])
     expect(h.google.folders.size).toBe(before)
+    expect(h.store.tables.drive_connections).toEqual(connections)
+    expect(infoEvents()).toContainEqual({ event: 'drive_folders_skipped', projectId, reason: 'other_account' })
+  })
+
+  it('a Project that another account holds is left alone by a run of the Owner\'s latest account', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    await signIn(h)
+    // The state a lost claim race can leave (no sign-in callback ran for account 2).
+    await signInAccount(h, 2)
+    h.google.driveCalls = []
+    await ensureDriveFolders(h.deps, projectId, fullTime(h))
+    expect(h.google.driveCalls).toEqual([])
+    expect(infoEvents()).toContainEqual({ event: 'drive_folders_skipped', projectId, reason: 'other_account' })
     expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId, status: 'active' })])
   })
 
@@ -483,6 +502,7 @@ describe('Owner confirm', () => {
     await h.store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
       grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+      signedInAt: h.deps.now(),
     })
     const res = await submitSetup(h.deps, {
       idToken: OWNER_TOKEN, groupId: g.id, workDescription: 'งาน',
@@ -731,6 +751,7 @@ describe('tick finisher: the 15-minute tick finishes what a request could not', 
     await h.store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g-sub-1', email: null,
       grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
+      signedInAt: h.deps.now(),
     })
     h.store.tables.google_accounts[0].tokenStatus = 'revoked'
     await tick(h, after(30 * MIN), [driveSetupJob])
@@ -783,9 +804,10 @@ describe('one Google account per Project: the active connection row is the lock'
     expect(h.store.tables.drive_connections).toEqual([expect.objectContaining({ projectId, googleAccountId: a, status: 'active' })])
     expectClaimBeforeEveryWrite(h)
     // Root folders are per account and need no claim: B stored its own. That write moves B's
-    // updated_at, so B reads as the Owner's latest account again (see the PR's open points).
+    // updated_at, but not the order of sign-ins (#14): A, the last one to sign in, stays the
+    // Owner's latest account.
     expect(madeWith(h, h.store.tables.google_accounts.find((x) => x.id === b)?.driveRootFolderId)).toBe('at:rt-2')
-    expect(await h.store.findGoogleAccountByLineUser(OWNER)).toMatchObject({ id: b })
+    expect(await h.store.findGoogleAccountByLineUser(OWNER)).toMatchObject({ id: a })
   })
 
   it('two accounts that both start with no Project folder: the first claim wins and the other run writes nothing', async () => {

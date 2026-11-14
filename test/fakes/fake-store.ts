@@ -785,20 +785,55 @@ export class FakeStore implements StorePort {
       .map((c) => c.projectId)
   }
 
-  /** As SupabaseStore: nothing unless another account holds the active row; then the folder
-   *  IDs of the Project and of every one of its groups are cleared and the row is retired. */
+  /** Test aid (#14): the next retireDriveConnection throws after its clears and before it
+   *  retires the row, as when the real store's last statements fail. */
+  failRetireAfterClear = false
+  private retireHold: { parked(): void; gate: Promise<void> } | null = null
+
+  /** Test aid (#14) for two overlapping changes: the next retireDriveConnection waits after
+   *  its reads, before its first write, until `release()`. `reached` resolves once it waits. */
+  holdRetire(): { reached: Promise<void>; release(): void } {
+    let release = () => {}
+    let parked = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const reached = new Promise<void>((resolve) => { parked = resolve })
+    this.retireHold = { parked, gate }
+    return { reached, release }
+  }
+
+  /** The same steps in the same order as SupabaseStore: read the folder IDs, read the
+   *  active row, clear only the IDs read, read the active row again, retire it. */
   async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
     this.fault('retireDriveConnection')
-    const active = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
-    if (!active || active.googleAccountId === keepGoogleAccountId) return { retired: false }
+    const activeRow = () => this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    const setups = () => this.tables.groups
+      .filter((g) => g.projectId === projectId)
+      .map((g) => this.tables.group_setups.find((r) => r.groupId === g.id))
+      .filter((r): r is GroupSetupRecord => r !== undefined)
     const project = this.tables.projects.find((p) => p.id === projectId)
-    if (project) project.driveProjectFolderId = null
-    for (const g of this.tables.groups.filter((row) => row.projectId === projectId)) {
-      const setup = this.tables.group_setups.find((r) => r.groupId === g.id)
-      if (setup) setup.driveFolderId = null
+    const projectFolderId = project?.driveProjectFolderId ?? null
+    const groupFolderIds = setups().map((r) => r.driveFolderId ?? null).filter((id): id is string => id !== null)
+    const active = activeRow()
+    if (!active || active.googleAccountId === keepGoogleAccountId) return { retired: false }
+    const hold = this.retireHold
+    if (hold) {
+      this.retireHold = null
+      hold.parked()
+      await hold.gate
     }
-    active.status = 'replaced'
-    active.statusChangedAt = new Date(at.getTime())
+    // Compare-and-set clears: only the IDs read above.
+    if (project && projectFolderId !== null && project.driveProjectFolderId === projectFolderId) project.driveProjectFolderId = null
+    for (const r of setups()) {
+      if (r.driveFolderId != null && groupFolderIds.includes(r.driveFolderId)) r.driveFolderId = null
+    }
+    if (this.failRetireAfterClear) {
+      this.failRetireAfterClear = false
+      throw new Error('FakeStore: injected failure in retireDriveConnection after the clears')
+    }
+    const again = activeRow()
+    if (!again || again.id !== active.id) return { retired: false }
+    again.status = 'replaced'
+    again.statusChangedAt = new Date(at.getTime())
     return { retired: true }
   }
 

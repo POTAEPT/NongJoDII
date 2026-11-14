@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchGoogleStatus as fetchStatus, phaseOnOpen, returnStep, returnVisit } from './google-status'
+import { fetchGoogleStatus as fetchStatus, phaseOnOpen, retryStep, returnStep, returnVisit } from './google-status'
 import type { LiffViewProps } from './liff-sdk'
 
 type Phase =
@@ -31,6 +31,8 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   const knownSignedInAt = useRef<string | null>(null)
   /** Whether the sign-in in progress is a change of account, so a retry asks the same. */
   const changing = useRef(false)
+  /** The status request has answered with the person's state (not failed or refused). */
+  const statusKnown = useRef(false)
 
   // Callers set 'starting' first. `change` is the "change Google account" action (#14):
   // the server seals it into the sign-in, and only such a sign-in moves a Project.
@@ -68,6 +70,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   // by itself.
   const init = useCallback(async () => {
     const status = await fetchStatus(idToken)
+    statusKnown.current = status.status !== 'failed' && status.status !== 'unauthorized'
     knownSignedInAt.current = status.signedInAt
     setCanChange(status.canChange)
     const next = phaseOnOpen(status, returning)
@@ -85,6 +88,13 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   const signIn = (change: boolean) => {
     setPhase('starting')
     void start(change)
+  }
+
+  // The retry button: read the status again if it was never read, else start sign-in again.
+  const retry = () => {
+    if (retryStep(statusKnown.current) === 'start') return signIn(changing.current)
+    setPhase('checking')
+    void init()
   }
 
   // While the external browser is open, re-check only when the user comes back to
@@ -179,7 +189,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   return (
     <div className="p-4 text-base">
       <p>{COPY[phase]}</p>
-      <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => signIn(changing.current)}>
+      <button type="button" className="mt-4 rounded border px-4 py-2" onClick={retry}>
         ลองอีกครั้ง
       </button>
     </div>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn, returnStep, returnVisit } from '@/app/liff/google-status'
+import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn, retryStep, returnStep, returnVisit } from '@/app/liff/google-status'
 
 const result = (status: GoogleStatusResult['status'], signedInAt: string | null = null, canChange = false): GoogleStatusResult =>
   ({ status, signedInAt, canChange })
@@ -70,6 +70,15 @@ describe('returnStep (what the view keeps after each look at the status)', () =>
     expect(returnStep(result('connected', 't1'), 't1')).toEqual({ phase: null, knownSignedInAt: 't1' })
     expect(returnStep(result('failed'), 't1')).toEqual({ phase: 'failed', knownSignedInAt: 't1' })
     expect(returnStep(result('unauthorized'), 't1')).toEqual({ phase: 'unauthorized', knownSignedInAt: 't1' })
+  })
+})
+
+describe('retryStep (what the retry button does)', () => {
+  it('reads the status again when the status was never read: a failed or refused status request', () => {
+    expect(retryStep(false)).toBe('status')
+  })
+  it('starts the sign-in again once the status is known: only a failed start retries the start', () => {
+    expect(retryStep(true)).toBe('start')
   })
 })
 

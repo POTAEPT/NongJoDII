@@ -448,20 +448,19 @@ describe('change of Google account', () => {
     expect(infoEvents()).toContainEqual({ event: 'drive_account_changed', googleAccountId: accountOf(h, 2).id, projects: 2 })
   })
 
-  it('is safely repeatable: a change that failed part-way is finished by the next sign-in', async () => {
+  it('is safely repeatable: a store failure halfway through the retire is finished by the next change', async () => {
     const h = setup()
     const { groupId, projectId } = await seedProject(h)
     expect(await signIn(h, 1)).toBe('ok')
 
-    // The store fails while it retires: the page says failed and no Drive work starts.
-    h.store.failNext('retireDriveConnection')
-    expect(await changeTo(h, 2)).toBe('failed')
-    expect(h.google.refreshCalls).not.toContain('rt-2')
-    // Worst case of the real store's three statements: the folder IDs are already cleared
-    // and the old row is still active.
-    h.store.tables.projects.find((p) => p.id === projectId)!.driveProjectFolderId = null
-    h.store.tables.group_setups.find((r) => r.groupId === groupId)!.driveFolderId = null
+    // The store fails after the folder IDs are cleared and before the row is retired.
+    h.store.failRetireAfterClear = true
+    expect(await changeTo(h, 2)).toBe('failed') // the page tells the Owner to try again
+    expect(h.google.refreshCalls).not.toContain('rt-2') // and no Drive work starts
+    expect(projectRow(h, projectId).driveProjectFolderId).toBeNull()
+    expect(groupFolderId(h, groupId)).toBeNull()
     expect(activeRows(h, projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 1).id })])
+    expect((await googleStatus(h.deps, { idToken: OWNER_TOKEN })).body).toMatchObject({ connected: true, changePending: true })
 
     expect(await changeTo(h, 2)).toBe('ok')
 
@@ -469,6 +468,49 @@ describe('change of Google account', () => {
     expect(activeRows(h, projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 2).id })])
     expect(madeWith(h, projectRow(h, projectId).driveProjectFolderId)).toBe('at:rt-2')
     expect(madeWith(h, groupFolderId(h, groupId))).toBe('at:rt-2')
+    expect((await googleStatus(h.deps, { idToken: OWNER_TOKEN })).body).toMatchObject({ connected: true, changePending: false })
+  })
+
+  it('a store failure before anything is written also reads as failed and is finished by the next change', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    expect(await signIn(h, 1)).toBe('ok')
+    const projectFolder = projectRow(h, projectId).driveProjectFolderId
+    h.store.failNext('retireDriveConnection')
+    expect(await changeTo(h, 2)).toBe('failed')
+    expect(projectRow(h, projectId).driveProjectFolderId).toBe(projectFolder)
+    expect(await changeTo(h, 2)).toBe('ok')
+    expect(activeRows(h, projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 2).id })])
+  })
+
+  it('two overlapping changes: the late one cannot erase the folder IDs the new account stored', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    expect(await signIn(h, 1)).toBe('ok')
+    h.google.exchangeResult = { ...(h.google.exchangeResult as object), subject: 'g-sub-2', refreshToken: 'rt-2' } as never
+    const begin = async () => {
+      const res = await startGoogleSignIn(h.deps, { idToken: OWNER_TOKEN, change: true })
+      return new URL((res.body as { url: string }).url).searchParams.get('state') as string
+    }
+    // The first callback reads the old folder IDs and the old active row, then waits.
+    const parked = h.store.holdRetire()
+    const late = finishGoogleSignIn(h.deps, new URLSearchParams({ code: 'c1', state: await begin() }), h.defer)
+    await parked.reached
+    // The second one runs the whole change, and the new account stores its folders.
+    expect(await finishGoogleSignIn(h.deps, new URLSearchParams({ code: 'c2', state: await begin() }), h.defer)).toBe('ok')
+    await h.runDeferred()
+    const newProjectFolder = projectRow(h, projectId).driveProjectFolderId
+    const newGroupFolder = groupFolderId(h, groupId)
+    expect(madeWith(h, newProjectFolder)).toBe('at:rt-2')
+
+    parked.release()
+    expect(await late).toBe('ok')
+    await h.runDeferred()
+
+    expect(projectRow(h, projectId).driveProjectFolderId).toBe(newProjectFolder)
+    expect(groupFolderId(h, groupId)).toBe(newGroupFolder)
+    expect(h.store.tables.drive_connections.map((c) => c.status).sort()).toEqual(['active', 'replaced'])
+    expect(activeRows(h, projectId)).toEqual([expect.objectContaining({ googleAccountId: accountOf(h, 2).id })])
   })
 
   it('the tick finishes the new folders when the sign-in ran out of time', async () => {

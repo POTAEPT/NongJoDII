@@ -296,7 +296,8 @@ describe('SupabaseStore.retireDriveConnection (#14 change of account)', () => {
   ]
 
   it('reads the folder IDs before the active row, clears exactly those IDs, then retires the row of the other account', async () => {
-    const { store, chains } = stubDb([...reads({ id: 'c1', google_account_id: 'a-old' }), ok(null), ok(null), ok([{ id: 'c1' }])])
+    const active = { id: 'c1', google_account_id: 'a-old' }
+    const { store, chains } = stubDb([...reads(active), ok(null), ok(null), ok(active), ok([{ id: 'c1' }])])
     expect(await store.retireDriveConnection('p1', 'a-new', AT)).toEqual({ retired: true })
     expect(chains).toEqual([
       [
@@ -334,6 +335,15 @@ describe('SupabaseStore.retireDriveConnection (#14 change of account)', () => {
         { method: 'eq', args: ['project_id', 'p1'] },
         { method: 'in', args: ['drive_folder_id', ['fg-old-1', 'fg-old-2']] },
       ],
+      // The active row is read again after the clears: it is retired only if it is still
+      // the row read at the start.
+      [
+        { method: 'from', args: ['drive_connections'] },
+        { method: 'select', args: ['id, google_account_id'] },
+        { method: 'eq', args: ['project_id', 'p1'] },
+        { method: 'eq', args: ['status', 'active'] },
+        { method: 'maybeSingle', args: [] },
+      ],
       // The same status and stamp as change_project_owner; the row is updated, never deleted.
       [
         { method: 'from', args: ['drive_connections'] },
@@ -355,11 +365,10 @@ describe('SupabaseStore.retireDriveConnection (#14 change of account)', () => {
   })
 
   it('skips the clears that have nothing to clear (a repeat after a change that stopped part-way)', async () => {
-    const { store, chains } = stubDb([
-      ok({ drive_project_folder_id: null }), ok([]), ok({ id: 'c1', google_account_id: 'a-old' }), ok([{ id: 'c1' }]),
-    ])
+    const active = { id: 'c1', google_account_id: 'a-old' }
+    const { store, chains } = stubDb([ok({ drive_project_folder_id: null }), ok([]), ok(active), ok(active), ok([{ id: 'c1' }])])
     expect(await store.retireDriveConnection('p1', 'a-new', AT)).toEqual({ retired: true })
-    expect(chains.map((c) => c[0].args[0])).toEqual(['projects', 'groups', 'drive_connections', 'drive_connections'])
+    expect(chains.map((c) => c[0].args[0])).toEqual(['projects', 'groups', 'drive_connections', 'drive_connections', 'drive_connections'])
   })
 
   it('a failure before the last statement leaves the row active, so the call can be repeated', async () => {
@@ -368,8 +377,17 @@ describe('SupabaseStore.retireDriveConnection (#14 change of account)', () => {
     expect(chains.map((c) => c[0].args[0])).toEqual(['projects', 'groups', 'drive_connections', 'projects', 'groups']) // no retire statement ran
   })
 
-  it('answers false when another call retired the row first', async () => {
-    const { store } = stubDb([...reads({ id: 'c1', google_account_id: 'a-old' }), ok(null), ok(null), ok([])])
+  it('retires nothing when the active row is no longer the one it read: another call finished the change', async () => {
+    for (const now of [null, { id: 'c2', google_account_id: 'a-new' }]) {
+      const { store, chains } = stubDb([...reads({ id: 'c1', google_account_id: 'a-old' }), ok(null), ok(null), ok(now)])
+      expect(await store.retireDriveConnection('p1', 'a-new', AT)).toEqual({ retired: false })
+      expect(chains.at(-1)?.map((c) => c.method)).not.toContain('update') // the last chain is the re-read
+    }
+  })
+
+  it('answers false when another call retired the row between the re-read and the UPDATE', async () => {
+    const active = { id: 'c1', google_account_id: 'a-old' }
+    const { store } = stubDb([...reads(active), ok(null), ok(null), ok(active), ok([])])
     expect(await store.retireDriveConnection('p1', 'a-new', AT)).toEqual({ retired: false })
   })
 })

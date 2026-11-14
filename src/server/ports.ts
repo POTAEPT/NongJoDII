@@ -399,8 +399,9 @@ export interface StorePort {
    *  `keepGoogleAccountId`: writes nothing. retired: this call retired the row.
    *  Separate statements, cleared first and retired last: a call that stopped part-way
    *  leaves the row active, so the same call again finishes it. The clears match only the
-   *  folder IDs read before the active row was read, so a call that overlaps a finished
-   *  change cannot erase the folder IDs the new account stored. */
+   *  folder IDs read before the active row was read, and the row is retired only if it is
+   *  still that active row after the clears, so a call that overlaps a finished change
+   *  cannot erase the folder IDs the new account stored. */
   retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }>
   /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
    *  listed when its main group has a confirmed Owner and the bot, a folder ID is still

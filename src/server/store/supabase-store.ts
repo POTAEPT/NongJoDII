@@ -1139,11 +1139,15 @@ export class SupabaseStore implements StorePort {
 
   async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
     const m = 'retireDriveConnection'
-    // The folder IDs are read BEFORE the active row. A new account stores folder IDs only
-    // after the old row is retired and it has claimed the Project, so if the old row is
-    // still active after these reads, every ID read here belongs to the old account. The
-    // clears below match those IDs only: a call that overlaps a change another call has
-    // already finished can never erase the new account's IDs.
+    // Separate statements, so what this guarantees is narrow and stated here:
+    //  * Only folder IDs read before the active row was read are cleared (the clears match
+    //    on those IDs). An ID stored after those reads is never cleared by this call.
+    //  * The row is retired last, and only if it is still the active row read at the
+    //    start: re-read after the clears, then an UPDATE that matches id and 'active'.
+    //  * A call that stops part-way leaves the row active; the same call again finishes.
+    // Not guaranteed: a Drive run of the old account that is already under way can still
+    // store a folder ID or claim the Project after this call (that needs a holder check
+    // inside the folder UPDATE, so a database function).
     const { data: p, error: projectError } = await this.db
       .from('projects')
       .select('drive_project_folder_id')
@@ -1186,6 +1190,14 @@ export class SupabaseStore implements StorePort {
         .in('drive_folder_id', chunk)
       check(m, clearError)
     }
+    const { data: again, error: againError } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, againError)
+    if ((again as { id: string } | null)?.id !== active.id) return { retired: false }
     const retired = await this.db
       .from('drive_connections')
       .update({ status: 'replaced', status_changed_at: at.toISOString() })

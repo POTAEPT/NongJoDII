@@ -26,9 +26,11 @@ const SUB_GROUP_FALLBACK = 'Sub group'
 // setup/submit and the tick) has maxDuration 60 s, and the limit covers the handler and
 // its after() work alike. So the work is timed from the start of the request (or tick),
 // and a step starts only if it still ends in time when every call in it runs to its
-// timeout. A step that cannot start stops the whole run (DriveTimeUp), logged as
-// drive_sync_incomplete; the tick finisher (driveSetupJob) or the Owner's next sign-in
-// does the rest.
+// timeout. The steps: the token refresh, each verify (getFolder), each LINE name lookup,
+// and each make. Only a make is atomic: create, share and store for a Project folder;
+// create and store for a group or root folder. A step that cannot start stops the whole
+// run (DriveTimeUp), logged as drive_sync_incomplete; the tick finisher (driveSetupJob)
+// or the Owner's next sign-in does the rest.
 
 /** The routes' maxDuration. */
 const ROUTE_LIMIT_MS = 60_000
@@ -85,7 +87,7 @@ export async function syncDriveForOwner(deps: Deps, lineUserId: string, deadline
     logError('drive_sync_failed', {}, err)
     return
   }
-  await layOutProjects(deps, projectIds, deadline)
+  await layOutProjects(deps, projectIds, deadline, 'request')
 }
 
 /** The tick finisher leaves a Project alone for this long after its Owner confirm or
@@ -107,16 +109,22 @@ export const driveSetupJob: TickJob = {
     const projectIds = await deps.store.listUnfinishedDriveProjects(
       new Date(now.getTime() - FINISH_WITHIN_MS), new Date(now.getTime() - FINISH_AFTER_MS),
     )
-    await layOutProjects(deps, projectIds, driveDeadline(now))
+    await layOutProjects(deps, projectIds, driveDeadline(now), 'finish')
   },
 }
 
+/** How a run treats the folders it finds stored. 'request' (sign-in, Owner confirm,
+ *  ensureGroupFolder) verifies each one it relies on. 'finish' (the tick finisher) verifies
+ *  only the Project folder, the parent of what it makes, and trusts stored group folder
+ *  IDs, so a retry spends its time on the folders still missing. */
+type RunMode = 'request' | 'finish'
+
 /** Each Project in turn. A Drive or store failure is logged and the next Project goes on.
  *  Running out of time stops them all, with one log line. */
-async function layOutProjects(deps: Deps, projectIds: string[], deadline: Date): Promise<void> {
+async function layOutProjects(deps: Deps, projectIds: string[], deadline: Date, mode: RunMode): Promise<void> {
   for (const [i, projectId] of projectIds.entries()) {
     try {
-      await ensureDriveFolders(deps, projectId, deadline)
+      await layOutProject(deps, projectId, deadline, mode)
     } catch (err) {
       if (err instanceof DriveTimeUp) {
         // IDs and counts only. projectsLeft counts this Project too.
@@ -133,14 +141,21 @@ async function layOutProjects(deps: Deps, projectIds: string[], deadline: Date):
  *  logs it) and DriveTimeUp when time runs out; a later run picks up where this one
  *  stopped. A run that loses the claim to another account logs it and returns. */
 export async function ensureDriveFolders(deps: Deps, projectId: string, deadline: Date): Promise<void> {
+  await layOutProject(deps, projectId, deadline, 'request')
+}
+
+async function layOutProject(deps: Deps, projectId: string, deadline: Date, mode: RunMode): Promise<void> {
   const ctx = await deps.store.getDriveContext(projectId)
   if (!ctx) return
-  const run = await openRun(deps, ctx, deadline)
+  const run = await openRun(deps, ctx, deadline, mode)
   if (!run) return
   try {
     const project = await run.project()
     const groups = [ctx.mainGroup, ...ctx.subGroups].filter((g): g is DriveGroup => g !== null)
-    for (const g of groups) await run.group(g, project)
+    // Missing folders first: a run short of time makes them before it verifies stored ones.
+    for (const g of [...groups.filter((x) => x.folderId === null), ...groups.filter((x) => x.folderId !== null)]) {
+      await run.group(g, project)
+    }
     await run.finish()
   } catch (err) {
     if (err instanceof DriveClaimLost) return void lostClaim(projectId)
@@ -161,7 +176,7 @@ export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: D
   if (!ctx) return null
   const target = [ctx.mainGroup, ...ctx.subGroups].find((g) => g?.groupId === groupId)
   if (!target) return null
-  const run = await openRun(deps, ctx, deadline)
+  const run = await openRun(deps, ctx, deadline, 'request')
   if (!run) return null
   try {
     const folderId = await run.group(target, await run.project())
@@ -176,7 +191,7 @@ export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: D
 /** null (logged) when the Project's Drive cannot be used: no valid account, or the
  *  active connection belongs to another Google account (changing accounts is #3's flow).
  *  That check is only a cheap first look: the claim decides. */
-async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
+async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunMode) {
   const { projectId } = ctx
   const account = ctx.account
   if (!account || account.tokenStatus !== 'valid' || account.refreshTokenCiphertext === null) {
@@ -202,19 +217,28 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
     return claim
   }
 
-  /** Keeps `stored` while Drive still has it; otherwise makes one and stores it. A
-   *  recreated parent means its children went with it, so they are made anew. One step:
-   *  `makeCalls` is how many Google or LINE calls `make` may need. `claimed`: the ID is a
-   *  Project or group folder, so the run claims the Project before it stores it. */
-  async function ensure(
-    stored: string | null, parent: Folder | null, makeCalls: number, claimed: boolean, make: () => Promise<string>,
+  /** A verify step, one call: Drive still has the stored folder. */
+  async function stillThere(folderId: string): Promise<boolean> {
+    checkTime(deps, deadline, 1)
+    return (await google.getFolder(token, folderId)) === 'ok'
+  }
+
+  /** A name step, one call, only when no name is stored: LINE's group summary. Its own
+   *  step, checked here rather than in groupName, whose catch would turn DriveTimeUp into
+   *  the fallback name. The name it finds is stored, so a later run skips it. */
+  async function nameOf(g: DriveGroup, fallback: string): Promise<string> {
+    if (!g.name) checkTime(deps, deadline, 1)
+    return groupName(deps, g, fallback)
+  }
+
+  /** A make step, the only atomic one: `calls` calls in `make` (create, and share for a
+   *  Project folder), then, for a Project or group folder (`claimed`), the claim, then the
+   *  compare-and-set write of the new ID over `stored`. */
+  async function makeAndStore(
+    stored: string | null, calls: number, claimed: boolean, make: () => Promise<string>,
     save: (from: string | null, to: string) => Promise<{ folderId: string | null }>,
   ): Promise<Folder> {
-    const verify = stored !== null && !parent?.recreated
-    checkTime(deps, deadline, (verify ? 1 : 0) + makeCalls)
-    if (verify && (await google.getFolder(token, stored)) === 'ok') {
-      return { id: stored, recreated: false }
-    }
+    checkTime(deps, deadline, calls)
     const id = await make()
     created++
     if (claimed) await claimProject()
@@ -227,8 +251,10 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
 
   let root: Folder | null = null
   async function rootFolder(): Promise<Folder> {
-    root ??= await ensure(
-      storedRootId, null, 1, false,
+    if (root) return root
+    if (storedRootId !== null && (await stillThere(storedRootId))) return (root = { id: storedRootId, recreated: false })
+    root = await makeAndStore(
+      storedRootId, 1, false,
       () => google.createFolder(token, ROOT_FOLDER, null),
       (from, to) => deps.store.setDriveRootFolder(accountId, from, to),
     )
@@ -237,14 +263,19 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
 
   let project: Folder | null = null
   return {
+    /** Both modes verify a stored Project folder: it is the parent of every folder a run
+     *  makes. A recreated parent means its children went with it, so they are made anew. */
     async project(): Promise<Folder> {
+      if (project) return project
       const parent = await rootFolder()
-      // The name lookup (when no name is stored), the create and the share.
-      const lookup = ctx.mainGroup !== null && !ctx.mainGroup.name ? 1 : 0
-      project ??= await ensure(
-        ctx.projectFolderId, parent, lookup + 2, true,
+      const stored = ctx.projectFolderId
+      if (stored !== null && !parent.recreated && (await stillThere(stored))) {
+        return (project = { id: stored, recreated: false })
+      }
+      const name = ctx.mainGroup ? await nameOf(ctx.mainGroup, PROJECT_FALLBACK) : PROJECT_FALLBACK
+      project = await makeAndStore(
+        stored, 2, true,
         async () => {
-          const name = ctx.mainGroup ? await groupName(deps, ctx.mainGroup, PROJECT_FALLBACK) : PROJECT_FALLBACK
           const id = await google.createFolder(token, name, parent.id)
           // Shared before its ID is stored: a stored Project folder is always shared.
           // Files inside inherit it; nothing is ever shared one by one.
@@ -255,16 +286,16 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date) {
       )
       return project
     },
+    /** A stored group folder is verified on a request; the finisher trusts it (a sign-in
+     *  or ensureGroupFolder verifies it later). */
     async group(g: DriveGroup, parent: Folder): Promise<string> {
+      const stored = g.folderId
+      if (stored !== null && !parent.recreated && (mode === 'finish' || (await stillThere(stored)))) return stored
       const isMain = g.groupId === ctx.mainGroup?.groupId
-      // The name lookup (a Sub group with no stored name) and the create.
-      const lookup = !isMain && !g.name ? 1 : 0
-      const folder = await ensure(
-        g.folderId, parent, lookup + 1, true,
-        async () => {
-          const name = isMain ? MAIN_GROUP_FOLDER : await groupName(deps, g, SUB_GROUP_FALLBACK)
-          return google.createFolder(token, name, parent.id)
-        },
+      const name = isMain ? MAIN_GROUP_FOLDER : await nameOf(g, SUB_GROUP_FALLBACK)
+      const folder = await makeAndStore(
+        stored, 1, true,
+        () => google.createFolder(token, name, parent.id),
         (from, to) => deps.store.setGroupDriveFolder(g.groupId, from, to),
       )
       return folder.id

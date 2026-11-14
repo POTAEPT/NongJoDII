@@ -554,21 +554,41 @@ describe('time limit: each route allows 60 s, its after() work included', () => 
     expect(infoEvents()).toContainEqual({ event: 'drive_sync_incomplete', projectId, projectsLeft: 1 })
   })
 
-  it.each([
-    { name: 'ทีมหลัก', made: true },
-    { name: null, made: false },
-  ])('counts the LINE name lookup in the Project folder step (stored name: $name)', async ({ name, made }) => {
+  it('times the LINE name lookup as its own step, and keeps the name it found for the next run', async () => {
     const h = setup()
-    const { projectId } = await seedProject(h, { name })
+    const { groupId, projectId } = await seedProject(h, { name: null })
     h.line.groupNames.set(MAIN_LINE_GROUP, 'ชื่อจาก LINE')
+    h.line.groupSummaryMs = DRIVE_CALL_MAX_MS
     await finishSignIn(h)
-    // 25 s left when the after() work starts: enough for the refresh, the root folder and a
-    // named Project folder (create, share); not for one that asks LINE for its name first.
+    // 25 s left when the after() work starts: the lookup fits (11 s), but its 10 s leave 15 s,
+    // too little for the Project folder step (create and share: 21 s).
     h.setNow(new Date(TEST_NOW.getTime() + DRIVE_HARD_STOP_MS - 25_000))
     await h.runDeferred()
-    expect(Boolean(projectRow(h, projectId).driveProjectFolderId)).toBe(made)
-    expect(h.line.groupSummaryCalls).toEqual([])
+    expect(h.line.groupSummaryCalls).toEqual([MAIN_LINE_GROUP])
+    expect(h.store.tables.groups.find((g) => g.id === groupId)?.name).toBe('ชื่อจาก LINE')
+    expect(projectRow(h, projectId).driveProjectFolderId ?? null).toBeNull()
     expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+
+    // The next run has the name already: no second lookup.
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(h.line.groupSummaryCalls).toEqual([MAIN_LINE_GROUP])
+    expect(madeWith(h, projectRow(h, projectId).driveProjectFolderId)).toBe('at:rt-1')
+    expect(h.google.folders.get(projectRow(h, projectId).driveProjectFolderId as string)?.name).toBe('ชื่อจาก LINE')
+  })
+
+  it('does not start a LINE name lookup that could run past the hard stop', async () => {
+    const h = setup()
+    await seedProject(h, { name: null })
+    h.line.groupNames.set(MAIN_LINE_GROUP, 'ชื่อจาก LINE')
+    await finishSignIn(h)
+    h.google.callMs = DRIVE_CALL_MAX_MS
+    h.line.groupSummaryMs = DRIVE_CALL_MAX_MS
+    // 30 s left when the after() work starts: the refresh and the root folder take 10 s each,
+    // so 10 s are left for the lookup, which needs 11.
+    h.setNow(new Date(TEST_NOW.getTime() + DRIVE_HARD_STOP_MS - 30_000))
+    await h.runDeferred()
+    expect(h.google.callLog.map((c) => c.call.split(':')[0])).toEqual(['exchange', 'refresh', 'create'])
+    expect(h.line.groupSummaryCalls).toEqual([])
   })
 
   it('counts from the start of the setup form request, not from its after() work', async () => {
@@ -822,6 +842,96 @@ describe('finished setup: every folder ID stored, not the connection row', () =>
     expect(await h.store.listUnfinishedDriveProjects(...window())).toEqual([])
     h.google.callLog = []
     await tick(h, after(15 * MIN), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+  })
+})
+
+describe('retries reach the missing folders: the finisher trusts stored group folders', () => {
+  /** How many of the Project's groups have a folder ID stored. */
+  const storedGroupFolders = (h: H, projectId: string) =>
+    h.store.tables.groups.filter((g) => g.projectId === projectId && groupFolderId(h, g.id) !== null).length
+
+  it.each([
+    { ms: 5_000, afterSignIn: 4, perTick: [7] },
+    { ms: DRIVE_CALL_MAX_MS, afterSignIn: 0, perTick: [2, 4, 6, 7] },
+  ])('one Project with 6 Sub groups and $ms ms calls: each tick stores more folder IDs until all 7 are there', async ({ ms, afterSignIn, perTick }) => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    for (let i = 1; i <= 6; i++) seedSubGroup(h, projectId, { lineGroupId: `Csub${i}`, name: `ทีมย่อย ${i}` })
+    h.google.callMs = ms
+    await signIn(h)
+    expect(storedGroupFolders(h, projectId)).toBe(afterSignIn)
+    const seen: number[] = []
+    for (let k = 1; k <= perTick.length; k++) {
+      await tick(h, after(k * 15 * MIN), [driveSetupJob])
+      seen.push(storedGroupFolders(h, projectId))
+    }
+    expect(seen).toEqual(perTick)
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+    // Finished: the next tick makes no Google call.
+    h.google.callLog = []
+    await tick(h, after((perTick.length + 1) * 15 * MIN), [driveSetupJob])
+    expect(h.google.callLog).toEqual([])
+  })
+
+  it('the finisher trusts a stored group folder and verifies none; a sign-in verifies it and remakes a lost one', async () => {
+    const h = setup()
+    const { groupId, projectId } = await seedProject(h)
+    const kept = seedSubGroup(h, projectId, { lineGroupId: 'Csub1', name: 'ทีมย่อย 1' })
+    const lost = seedSubGroup(h, projectId, { lineGroupId: 'Csub2', name: 'ทีมย่อย 2' })
+    await signIn(h)
+    // Main group files lost its ID; Sub group 2's folder was deleted for good in Drive.
+    h.store.tables.group_setups.find((r) => r.groupId === groupId)!.driveFolderId = null
+    const lostFolder = groupFolderId(h, lost) as string
+    h.google.remove(lostFolder)
+    h.google.callLog = []
+    await tick(h, after(15 * MIN), [driveSetupJob])
+    // It made the missing folder and checked only the root and the Project folder above it.
+    expect(groupFolderId(h, groupId)).not.toBeNull()
+    expect(h.google.callLog.map((c) => c.call.split(':')[0])).toEqual(['refresh', 'get', 'get', 'create'])
+    expect(groupFolderId(h, lost)).toBe(lostFolder)
+    expect(groupFolderId(h, kept)).not.toBeNull()
+
+    await signIn(h) // a request verifies every stored folder
+    expect(groupFolderId(h, lost)).not.toBe(lostFolder)
+    expect(h.google.folders.has(groupFolderId(h, lost) as string)).toBe(true)
+  })
+
+  it('a sign-in short of time makes the missing group folders before it verifies the stored ones', async () => {
+    const h = setup()
+    const { projectId } = await seedProject(h)
+    for (let i = 1; i <= 6; i++) seedSubGroup(h, projectId, { lineGroupId: `Csub${i}`, name: `ทีมย่อย ${i}` })
+    h.google.callMs = 5_000
+    await signIn(h) // 4 of the 7 group folders
+    expect(storedGroupFolders(h, projectId)).toBe(4)
+    await signIn(h) // the 3 missing ones come first; it runs out of time while verifying
+    expect(storedGroupFolders(h, projectId)).toBe(7)
+    expect(infoEvents().filter((e) => e.event === 'drive_sync_incomplete')).toHaveLength(2)
+  })
+
+  it('two unfinished Projects: the finisher stays on the first until it is done, then finishes the second', async () => {
+    const h = setup()
+    const a = await seedProject(h, { name: 'A', lineGroupId: 'Ca' })
+    const b = await seedProject(h, { name: 'B', lineGroupId: 'Cb' })
+    const [firstId, secondId] = [a.projectId, b.projectId].sort() // the order the finisher walks them
+    for (let i = 1; i <= 8; i++) seedSubGroup(h, firstId, { lineGroupId: `Cf${i}`, name: `แรก ${i}` })
+    seedSubGroup(h, secondId, { lineGroupId: 'Cs1', name: 'สอง 1' })
+    h.google.driveError = new AdapterError('google drive create 500')
+    await signIn(h) // Drive is down: neither Project gets a folder
+    h.google.driveError = null
+    h.google.callMs = 5_000
+
+    const progress: number[][] = []
+    for (let k = 1; k <= 3; k++) {
+      await tick(h, after(k * 15 * MIN), [driveSetupJob])
+      progress.push([storedGroupFolders(h, firstId), storedGroupFolders(h, secondId)])
+    }
+    // The first Project (main group and 8 Sub groups) takes two ticks; the second (main
+    // group and 1 Sub group) the third.
+    expect(progress).toEqual([[5, 0], [9, 0], [9, 2]])
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+    h.google.callLog = []
+    await tick(h, after(4 * 15 * MIN), [driveSetupJob])
     expect(h.google.callLog).toEqual([])
   })
 })

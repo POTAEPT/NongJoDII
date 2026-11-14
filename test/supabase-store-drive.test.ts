@@ -107,8 +107,9 @@ describe('SupabaseStore Google accounts (#14: the latest account is the last sig
   })
 
   it('findGoogleAccountByLineUser reads the account that signed in last', async () => {
-    const { store, chains } = stubDb([ok({ id: 'a1', token_status: 'revoked' })])
-    expect(await store.findGoogleAccountByLineUser('U1')).toMatchObject({ id: 'a1', tokenStatus: 'revoked' })
+    const { store, chains } = stubDb([ok({ id: 'a1', token_status: 'revoked', connected_at: '2026-11-14T03:00:00+00:00' })])
+    expect(await store.findGoogleAccountByLineUser('U1')).toEqual({ id: 'a1', tokenStatus: 'revoked', signedInAt: AT })
+    expect(chains[0]).toContainEqual({ method: 'select', args: ['id, token_status, connected_at'] })
     expect(chains[0]).toContainEqual({ method: 'eq', args: ['line_user_id', 'U1'] })
     expect(chains[0]).toContainEqual({ method: 'order', args: ['connected_at', { ascending: false }] })
     expect(chains[0]).toContainEqual({ method: 'limit', args: [1] })

@@ -42,14 +42,17 @@ export class GoogleHttpClient implements GooglePort {
     }
   }
 
-  buildAuthUrl(state: string): string {
+  buildAuthUrl(state: string, opts?: { chooseAccount?: boolean }): string {
     const q = new URLSearchParams({
       client_id: this.clientId,
       redirect_uri: this.redirectUri,
       response_type: 'code',
       scope: SCOPE,
       access_type: 'offline', // refresh_token is only returned with offline access
-      prompt: 'consent', // re-consent each time, so a refresh token comes back on every sign-in
+      // consent: re-consent each time, so a refresh token comes back on every sign-in.
+      // select_account (#14, change of account): the account chooser comes first, so the
+      // Owner can pick another account than the one the browser is signed in to.
+      prompt: opts?.chooseAccount ? 'select_account consent' : 'consent',
       state,
     })
     return `${AUTH_URL}?${q.toString()}`

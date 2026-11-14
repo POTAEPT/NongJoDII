@@ -67,6 +67,40 @@ describe('google sign-in start', () => {
   })
 })
 
+describe('google sign-in start for a change of account (#14)', () => {
+  async function confirmedOwner(h: ReturnType<typeof setup>) {
+    const g = h.store.seedGroup({ lineGroupId: 'Cmain', nominatedOwnerLineUserId: OWNER })
+    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+    expect((await h.store.confirmGroupOwner(g.id, OWNER, TEST_NOW)).outcome).toBe('confirmed')
+  }
+
+  it('2c. the confirmed Owner of a Project gets a url that makes Google ask which account', async () => {
+    const h = setup()
+    await confirmedOwner(h)
+    const res = await start(h, { idToken: OWNER_TOKEN, change: true })
+    expect(res.status).toBe(200)
+    const url = new URL((res.body as { url: string }).url)
+    expect(url.searchParams.get('choose_account')).toBe('1')
+    expect(openState(url.searchParams.get('state') as string, TEST_NOW, TEST_KEY)).toEqual({ lineUserId: OWNER })
+  })
+
+  it('2d. anyone else is refused with 403, and gets no url', async () => {
+    const h = setup()
+    expect(await start(h, { idToken: OWNER_TOKEN, change: true })).toEqual({ status: 403, body: { error: 'not_owner' } })
+    // Named as Owner but not confirmed yet: still refused.
+    const g = h.store.seedGroup({ lineGroupId: 'Cmain', nominatedOwnerLineUserId: OWNER })
+    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+    expect((await start(h, { idToken: OWNER_TOKEN, change: true })).status).toBe(403)
+  })
+
+  it('2e. a plain sign-in does not ask which account, whoever starts it', async () => {
+    const h = setup()
+    const res = await start(h)
+    expect(new URL((res.body as { url: string }).url).searchParams.get('choose_account')).toBeNull()
+    expect((await start(h, { idToken: OWNER_TOKEN, change: 'yes' })).status).toBe(200) // only `true` asks for a change
+  })
+})
+
 describe('google sign-in callback', () => {
   it('3. happy path stores the account with the refresh token encrypted', async () => {
     const h = setup()
@@ -241,28 +275,50 @@ describe('google status', () => {
     }
   })
 
+  const NONE = { connected: false, signInAgain: false, canChange: false, signedInAt: null }
+
   it('13. no Google account gives connected false', async () => {
     const h = setup()
-    expect(await status(h)).toEqual({ status: 200, body: { connected: false } })
+    expect(await status(h)).toEqual({ status: 200, body: NONE })
   })
 
-  it('14. after a successful sign-in gives connected true', async () => {
+  it('14. after a successful sign-in gives connected true, with the time of that sign-in', async () => {
     const h = setup()
     expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
-    expect(await status(h)).toEqual({ status: 200, body: { connected: true } })
+    expect(await status(h)).toEqual({
+      status: 200, body: { connected: true, signInAgain: false, canChange: false, signedInAt: TEST_NOW.toISOString() },
+    })
   })
 
-  it('15. a revoked account gives connected false', async () => {
+  it('15. a revoked or expired account gives connected false and asks to sign in again (#14)', async () => {
     const h = setup()
     expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
-    h.store.tables.google_accounts[0].tokenStatus = 'revoked'
-    expect(await status(h)).toEqual({ status: 200, body: { connected: false } })
+    for (const tokenStatus of ['revoked', 'expired'] as const) {
+      h.store.tables.google_accounts[0].tokenStatus = tokenStatus
+      expect(await status(h)).toEqual({
+        status: 200, body: { connected: false, signInAgain: true, canChange: false, signedInAt: TEST_NOW.toISOString() },
+      })
+    }
+  })
+
+  it('15b. only the confirmed Owner of a Project may change the account (#14)', async () => {
+    const h = setup()
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
+    const g = h.store.seedGroup({ lineGroupId: 'Cmain', nominatedOwnerLineUserId: OWNER })
+    h.store.seedMember({ groupId: g.id, lineUserId: OWNER, displayName: 'Owner Name' })
+    expect((await status(h)).body).toMatchObject({ connected: true, canChange: false }) // named, not confirmed
+    expect((await h.store.confirmGroupOwner(g.id, OWNER, TEST_NOW)).outcome).toBe('confirmed')
+    expect((await status(h)).body).toMatchObject({ connected: true, canChange: true })
+    // A later sign-in moves the time the page compares against.
+    h.setNow(new Date(TEST_NOW.getTime() + MIN))
+    expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
+    expect((await status(h)).body).toMatchObject({ signedInAt: new Date(TEST_NOW.getTime() + MIN).toISOString() })
   })
 
   it('16. another user sees only their own status (client lineUserId ignored)', async () => {
     const h = setup()
     h.line.idTokens.set('idtok-other', { lineUserId: 'Uother', displayName: null })
     expect(await finishGoogleSignIn(h.deps, params({ code: 'c', state: await startedState(h) }), h.defer)).toBe('ok')
-    expect(await status(h, { idToken: 'idtok-other', lineUserId: OWNER })).toEqual({ status: 200, body: { connected: false } })
+    expect(await status(h, { idToken: 'idtok-other', lineUserId: OWNER })).toEqual({ status: 200, body: NONE })
   })
 })

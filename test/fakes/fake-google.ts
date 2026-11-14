@@ -66,8 +66,9 @@ export class FakeGoogle implements GooglePort {
   shareError: Error | null = null
   private seq = 0
 
-  buildAuthUrl(state: string): string {
-    return `https://accounts.example/auth?state=${encodeURIComponent(state)}`
+  /** choose_account=1 stands for Google's prompt=select_account (#14). */
+  buildAuthUrl(state: string, opts?: { chooseAccount?: boolean }): string {
+    return `https://accounts.example/auth?state=${encodeURIComponent(state)}` + (opts?.chooseAccount ? '&choose_account=1' : '')
   }
 
   async exchangeCode(code: string): Promise<GoogleTokenResult> {

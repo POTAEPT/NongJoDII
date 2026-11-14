@@ -642,9 +642,12 @@ export class FakeStore implements StorePort {
     fk(this.hasLineUser(a.lineUserId), 'google_accounts.line_user_id')
     let row = this.tables.google_accounts.find((g) => g.googleSubject === a.googleSubject)
     if (row) {
-      Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid' })
+      Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid', signedInAt: new Date(a.signedInAt.getTime()) })
     } else {
-      row = { ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid', updatedAt: this.clock() }
+      row = {
+        ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid', updatedAt: this.clock(),
+        signedInAt: new Date(a.signedInAt.getTime()),
+      }
       this.tables.google_accounts.push(row)
     }
     this.touchGoogleAccount(row)
@@ -666,10 +669,10 @@ export class FakeStore implements StorePort {
   }
 
   /** A user with several Google accounts gets the one that signed in last. */
-  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
+  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null> {
     this.fault('findGoogleAccountByLineUser')
     const row = this.latestGoogleAccount(lineUserId)
-    return row ? { id: row.id, tokenStatus: row.tokenStatus } : null
+    return row ? { id: row.id, tokenStatus: row.tokenStatus, signedInAt: new Date((row.signedInAt ?? row.updatedAt).getTime()) } : null
   }
 
   /** The conditional UPDATE: only a 'valid' row that still holds this token changes. */

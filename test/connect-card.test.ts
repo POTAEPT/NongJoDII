@@ -52,7 +52,7 @@ describe('connect card', () => {
     vi.restoreAllMocks()
   })
 
-  it('3. a connected Owner gets the already-connected text', async () => {
+  it('3. a connected Owner gets the already-connected card, with a button to the LIFF google view (#14: change of account)', async () => {
     const { send, line, store } = setup()
     await store.upsertLineUser({ lineUserId: OWNER, displayName: null })
     await store.upsertGoogleAccount({
@@ -60,9 +60,11 @@ describe('connect card', () => {
       signedInAt: TEST_NOW,
     })
     await send(ev.follow({ userId: OWNER }))
-    expect(line.replies[0].messages).toEqual([
-      { type: 'text', text: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ' },
-    ])
+    expect(line.replies[0].messages).toHaveLength(1)
+    const t = card(line.replies[0].messages[0])
+    expect(t.text).toBe('เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ')
+    expect(t.actions).toEqual([{ type: 'uri', label: 'จัดการ Google Drive', uri: liffUrl(TEST_LIFF_ID, 'google') }])
+    expect([...t.actions[0].label].length).toBeLessThanOrEqual(20)
   })
 
   it('3b. a revoked account still gets the card', async () => {

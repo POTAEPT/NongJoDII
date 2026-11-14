@@ -974,17 +974,17 @@ export class SupabaseStore implements StorePort {
     return { id: row.id }
   }
 
-  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
+  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null> {
     const { data, error } = await this.db
       .from('google_accounts')
-      .select('id, token_status')
+      .select('id, token_status, connected_at')
       .eq('line_user_id', lineUserId)
       .order('connected_at', { ascending: false })
       .limit(1)
       .maybeSingle()
     check('findGoogleAccountByLineUser', error)
-    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired' } | null
-    return row ? { id: row.id, tokenStatus: row.token_status } : null
+    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired'; connected_at: string } | null
+    return row ? { id: row.id, tokenStatus: row.token_status, signedInAt: toDate(row.connected_at) } : null
   }
 
   async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {

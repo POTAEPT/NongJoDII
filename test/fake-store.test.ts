@@ -442,7 +442,7 @@ describe('FakeStore', () => {
     await store.upsertGoogleAccount({ lineUserId: 'U1', googleSubject: 'g1', email: 'e@x', grantedScopes: ['openid'], refreshTokenCiphertext: 'v1.b', signedInAt: SENT_AT })
     expect(store.tables.google_accounts).toHaveLength(1)
     expect(store.tables.google_accounts[0]).toMatchObject({ email: 'e@x', refreshTokenCiphertext: 'v1.b', tokenStatus: 'valid' })
-    expect(await store.findGoogleAccountByLineUser('U1')).toEqual({ id: store.tables.google_accounts[0].id, tokenStatus: 'valid' })
+    expect(await store.findGoogleAccountByLineUser('U1')).toEqual({ id: store.tables.google_accounts[0].id, tokenStatus: 'valid', signedInAt: SENT_AT })
     expect(await store.findGoogleAccountByLineUser('U2')).toBeNull()
   })
 

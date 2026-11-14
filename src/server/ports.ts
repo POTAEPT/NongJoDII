@@ -40,7 +40,8 @@ export type GoogleTokenResult = {
 /** What Drive says about a stored folder ID: 'trashed' counts as deleted (#13). */
 export type DriveFolderState = 'ok' | 'trashed' | 'missing'
 export interface GooglePort {
-  buildAuthUrl(state: string): string
+  /** chooseAccount (#14, change of account): Google shows its account chooser first. */
+  buildAuthUrl(state: string, opts?: { chooseAccount?: boolean }): string
   exchangeCode(code: string): Promise<GoogleTokenResult>
   /** A short-lived access token from the stored refresh token. Rejects with
    *  GoogleTokenRevoked when Google answers invalid_grant (revoked or expired grant). */
@@ -361,8 +362,8 @@ export interface StorePort {
    *  connected_at = signedInAt, so a person's latest account is the one that signed in
    *  last, whatever else wrote to the rows since (#14). Answers the row's ID. */
   upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }>
-  /** The person's latest account: connected_at DESC. */
-  findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>
+  /** The person's latest account: connected_at DESC. signedInAt is that connected_at. */
+  findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null>
   /** #14: one UPDATE that sets token_status 'revoked' and clears the refresh token, only
    *  while the row is still 'valid' and still holds `refreshTokenCiphertext` (the token
    *  Google refused). revoked: this call changed the row. So one caller per revocation gets

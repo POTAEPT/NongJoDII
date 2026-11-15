@@ -1079,7 +1079,6 @@ export class FakeStore implements StorePort {
   async listMemberCheckGroups(): Promise<MemberCheckGroup[]> {
     this.fault('listMemberCheckGroups')
     return this.tables.groups
-      .filter((g) => g.projectId !== null)
       .map((g) => ({ g, s: this.scheduleOf(g.id) }))
       .filter(({ s }) => s.leftAt === null)
       .sort((a, b) => a.g.id.localeCompare(b.g.id))

@@ -140,7 +140,7 @@ export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleB
 /** A set-up group (attached to a Project, bot still in it) with reminders on, and its
  *  daily slot: Bangkok time 'HH:MM:SS' and the Bangkok date it was last sent. */
 export type DailyReminderGroup = { groupId: string; lineGroupId: string; time: string; lastSentOn: string | null }
-/** #32: a set-up group (attached to a Project, bot still in it) for the daily member check,
+/** #32: a group the bot is still in, for the daily member check,
  *  with the Bangkok date its check last completed. */
 export type MemberCheckGroup = { groupId: string; lineGroupId: string; lastCheckedOn: string | null }
 /** A live Task as the daily reminder reads it (#44). */
@@ -344,7 +344,7 @@ export interface StorePort {
   /** Clears the claim made `at` without completing the day, so the next tick retries. */
   releaseDailyReminder(groupId: string, at: Date): Promise<void>
   // #32 daily member check: the same claim, finish and release as the daily reminder.
-  /** groups where project_id is not null and left_at is null. Every page, by id. */
+  /** groups where left_at is null (set up or not, as the memberLeft webhook). Every page, by id. */
   listMemberCheckGroups(): Promise<MemberCheckGroup[]>
   /** One statement: sets member_check_claimed_at = at where member_check_on is null or before
    *  todayBkk and no claim younger than `staleBefore` holds the group. */

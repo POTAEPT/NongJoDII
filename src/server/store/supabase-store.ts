@@ -871,7 +871,6 @@ export class SupabaseStore implements StorePort {
       const { data, error } = await this.db
         .from('groups')
         .select('id, line_group_id, member_check_on')
-        .not('project_id', 'is', null)
         .is('left_at', null)
         .order('id')
         .range(from, from + PAGE_SIZE - 1)

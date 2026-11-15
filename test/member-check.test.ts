@@ -148,22 +148,41 @@ describe('daily member check (#32)', () => {
 
   it('stops at the deadline, and the next tick finishes the rest', async () => {
     const t = setup()
-    t.biwLeaves() // Biw is checked last
+    t.biwLeaves() // Biw is asked last
     t.line.profileMs = 20_000
     await t.tick(SLOT)
-    // 55 s from the tick's start, 10 s per LINE call; a check also keeps time for the card's
-    // two calls, so the third starts with 15 s left and is not made.
-    expect(t.line.profileCalls.map((c) => c.lineUserId)).toEqual([OWNER, TON])
+    // 55 s from the tick's start, 10 s per LINE call. Biw is asked with 15 s left; after the
+    // 404 there is no time for the card's two calls, so the tick stops before marking him.
+    expect(t.line.profileCalls.map((c) => c.lineUserId)).toEqual([OWNER, TON, BIW])
     expect(t.member(BIW).leftAt).toBeNull()
     expect(t.line.pushes).toEqual([])
 
     t.line.profileMs = 0
     await t.tick(new Date(SLOT.getTime() + 15 * MIN))
-    expect(t.checked(BIW)).toBe(1)
+    expect(t.checked(BIW)).toBe(2)
     expect(t.member(BIW).leftAt).not.toBeNull()
     expect(t.leaveCards()).toHaveLength(1)
     await t.tick(new Date(SLOT.getTime() + 30 * MIN))
-    expect(t.checked(BIW)).toBe(1)
+    expect(t.checked(BIW)).toBe(2)
+  })
+
+  it('a group the tick has no time for is left to the next tick', async () => {
+    const t = setup()
+    t.line.profileMs = 20_000
+    const other = t.store.seedGroup({ lineGroupId: 'Cother', projectId: t.group.projectId })
+    t.store.seedMember({ groupId: other.id, lineUserId: 'Ustranger', displayName: 'x' })
+    t.line.groupNames.set('Cother', 'อื่น')
+    t.line.profiles.set('Cother:Ustranger', 'x')
+    await t.tick(SLOT)
+    await t.tick(new Date(SLOT.getTime() + 15 * MIN))
+    t.line.profileMs = 0
+    await t.tick(new Date(SLOT.getTime() + 30 * MIN))
+    // Every Member of both groups was asked by the end, and each group finished once.
+    for (const u of [OWNER, TON, BIW]) expect(t.checked(u)).toBeGreaterThanOrEqual(1)
+    expect(t.checked('Ustranger')).toBe(1)
+    const calls = t.line.profileCalls.length
+    await t.tick(new Date(SLOT.getTime() + 45 * MIN))
+    expect(t.line.profileCalls).toHaveLength(calls)
   })
 
   it('marks nobody in a group the bot is no longer in', async () => {
@@ -176,12 +195,13 @@ describe('daily member check (#32)', () => {
     expect(t.line.pushes).toEqual([])
   })
 
-  it('skips groups that are not set up', async () => {
+  it('checks groups that are not set up too, as the leave webhook handles them', async () => {
     const t = setup()
     const other = t.store.seedGroup({ lineGroupId: 'Cother' })
     t.store.seedMember({ groupId: other.id, lineUserId: 'Ustranger', displayName: 'x' })
     t.line.groupNames.set('Cother', 'อื่น')
     await t.tick(SLOT)
-    expect(t.line.profileCalls.some((c) => c.lineGroupId === 'Cother')).toBe(false)
+    expect(t.line.profileCalls).toContainEqual({ lineGroupId: 'Cother', lineUserId: 'Ustranger' })
+    expect(t.store.tables.group_members.find((m) => m.groupId === other.id)!.leftAt).not.toBeNull()
   })
 })

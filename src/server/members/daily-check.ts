@@ -7,7 +7,7 @@ import { handleMemberLeft, recordMemberLeft } from './left'
 
 // #32: the daily member check, a backup for lost memberLeft events. Once a Bangkok day, from
 // MEMBER_CHECK_TIME, the tick asks LINE for the group member profile of each live Member of
-// each set-up group. A 404 means the person left: the bot runs the same leave as the webhook
+// each group the bot is in (set up or not, as the memberLeft webhook). A 404 means the person left: the bot runs the same leave as the webhook
 // (recordMemberLeft, then handleMemberLeft's one card). A profile reply changes nothing. Any
 // other answer (5xx, 429, a timeout) marks nobody; tomorrow's run asks again. The check posts
 // nothing else.
@@ -28,8 +28,9 @@ export const MEMBER_CHECK_TIME = '08:00'
 export const MEMBER_CHECK_CLAIM_TTL_MS = 10 * 60_000
 
 /** LINE calls the leave card can make one after another: the quota and member count (run
- *  together), then the push. Kept free before each profile call, so a person is never marked
- *  left without time for their card: a later run would skip them, and the card would be lost. */
+ *  together), then the push. Checked after a 404 and before the leave is written, so a person
+ *  is never marked left without time for their card: a later run would skip them, and the
+ *  card would be lost. Without the time, the tick stops there and the next one asks again. */
 const CARD_CALLS = 2
 
 export type MemberCheckResult = 'not_due' | 'claimed_elsewhere' | 'not_in_group' | 'checked'
@@ -50,9 +51,9 @@ export async function runMemberCheckForGroup(
   let left = 0
   let errors = 0
   try {
-    // LINE answers 404 for every member of a group the bot is no longer in. The bot's own
-    // leave can be lost too (its handling belongs to #11), so ask about the group first and
-    // mark nobody when LINE no longer knows it.
+    // LINE may answer 404 for every member of a group the bot is no longer in, and the bot's
+    // own leave event can be lost too (its handling belongs to #11). So ask about the group
+    // first and mark nobody when LINE no longer knows it.
     checkTime(deps, deadline, 1)
     let inGroup = true
     try {
@@ -65,7 +66,7 @@ export async function runMemberCheckForGroup(
       if (!inGroup) result = 'not_in_group'
     } else {
       for (const m of await deps.store.listLiveMembers(groupId)) {
-        checkTime(deps, deadline, 1 + CARD_CALLS)
+        checkTime(deps, deadline, 1)
         members++
         let profile: { displayName: string } | null
         try {
@@ -76,6 +77,7 @@ export async function runMemberCheckForGroup(
           continue
         }
         if (profile !== null) continue
+        checkTime(deps, deadline, CARD_CALLS)
         // Stamped with the tick's start, read before the call: a join that lands since is
         // newer and wins (markMemberLeft applies only a leave newer than the last event).
         const released = await recordMemberLeft(deps, { groupId, lineUserIds: [m.lineUserId], at: now })
@@ -104,7 +106,7 @@ export async function runMemberCheckForGroup(
   return result
 }
 
-/** Tick job: every set-up group whose check is due today. One group's failure is logged and
+/** Tick job: every group whose check is due today. One group's failure is logged and
  *  never stops the others; running out of time stops them all, with one log line. */
 export const memberCheckJob: TickJob = {
   name: 'member_check',

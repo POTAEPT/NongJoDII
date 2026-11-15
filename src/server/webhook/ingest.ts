@@ -33,7 +33,8 @@ export type Job =
       imageSet: { id: string; index: number | null; total: number | null } | null
       senderLineUserId: string | null; sentAt: Date; receivedAt: Date; replyToken: string | null
     }
-  | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
+  // 1:1 follow or message (#12, Task 5). text: a text message's text, for the chat menu (#84); null otherwise.
+  | { kind: 'user_chat'; lineUserId: string; replyToken: string | null; text: string | null }
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
   // #29: people who joined a group, already saved as Members at ingest. The Job answers with
   // the welcome reply and fetches their LINE names so pickers can tell new Members apart.
@@ -219,7 +220,8 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
   })
   // 1:1 follow or message. No messages row: messages.group_id is NOT NULL.
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
-    return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
+    const text = event.type === 'message' && message?.type === 'text' && typeof message.text === 'string' ? message.text : null
+    return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null, text }
   }
   // Every other event (room...) is only recorded. Join and leave (#52, #11), unsend (#24),
   // memberLeft and memberJoined (#29) are handled above.

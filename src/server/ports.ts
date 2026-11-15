@@ -146,6 +146,8 @@ export type TaskPatch = {
 export type DashboardMembership = {
   groupId: string; projectId: string; projectOwnerLineUserId: string; isPm: boolean; left: boolean
 }
+/** #84: one group in the 1:1 chat menu. */
+export type UserGroup = { groupId: string; name: string | null; isOwner: boolean }
 export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
 export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
 /** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
@@ -575,6 +577,9 @@ export interface StorePort {
   // #17 Dashboard read. The id lists are groups the caller already decided the requester may see.
   /** The requester's rows (live and left) in groups that belong to a Project and still have the bot. */
   listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]>
+  /** #84: the groups this person is a live Member of while the bot is still in them, for the
+   *  1:1 chat menu. isOwner: they are the group's confirmed Owner. */
+  listUserGroups(lineUserId: string): Promise<UserGroup[]>
   /** Groups of these Projects that still have the bot: main group first, then by join time, then id. */
   listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]>
   /** Live Members (left_at is null) of these groups, by LINE name. */

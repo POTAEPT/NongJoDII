@@ -13,6 +13,7 @@ import type {
   DriveContext,
   DriveGroup,
   DashboardGroupRow,
+  UserGroup,
   DashboardMemberRow,
   DashboardMembership,
   DashboardTaskRow,
@@ -1504,6 +1505,23 @@ export class SupabaseStore implements StorePort {
       }
       if (rows.length < DASHBOARD_PAGE) return out
     }
+  }
+
+  async listUserGroups(lineUserId: string): Promise<UserGroup[]> {
+    type Row = { group_id: string; groups: { name: string | null; nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null } }
+    const rows = await readAllPages<Row>('listUserGroups', (from, to) =>
+      this.db
+        .from('group_members')
+        .select('group_id, groups!inner(name, left_at, nominated_owner_line_user_id, owner_confirmed_at)')
+        .eq('line_user_id', lineUserId)
+        .is('left_at', null)
+        .is('groups.left_at', null)
+        .order('group_id')
+        .range(from, to))
+    return rows.map((r) => ({
+      groupId: r.group_id, name: r.groups.name,
+      isOwner: r.groups.owner_confirmed_at !== null && r.groups.nominated_owner_line_user_id === lineUserId,
+    }))
   }
 
   async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {

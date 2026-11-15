@@ -23,6 +23,11 @@ export interface LinePort {
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
   getMessageQuota(): Promise<{ limit: number | null; used: number }>
+  /** The bot leaves the group (POST /v2/bot/group/{id}/leave, #11). 'left': LINE answered
+   *  200. 'not_in_group': LINE answered 404, so the bot is not in the group (it was removed,
+   *  or an earlier leave went through and its answer was lost). Rejects on anything else
+   *  (another 4xx, a 5xx, a timeout): the bot may still be in the group. */
+  leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'>
 }
 
 // ---- OpenRouter ----
@@ -149,6 +154,9 @@ export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleB
 /** A set-up group (attached to a Project, bot still in it) with reminders on, and its
  *  daily slot: Bangkok time 'HH:MM:SS' and the Bangkok date it was last sent. */
 export type DailyReminderGroup = { groupId: string; lineGroupId: string; time: string; lastSentOn: string | null }
+/** #32: a group the bot is still in, for the daily member check,
+ *  with the Bangkok date its check last completed. */
+export type MemberCheckGroup = { groupId: string; lineGroupId: string; lastCheckedOn: string | null }
 /** A live Task as the daily reminder reads it (#44). */
 export type ReminderTask = {
   id: string; title: string; status: TaskStatus
@@ -374,6 +382,22 @@ export interface StorePort {
   finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void>
   /** Clears the claim made `at` without completing the day, so the next tick retries. */
   releaseDailyReminder(groupId: string, at: Date): Promise<void>
+  // #32 daily member check: the same claim, finish and release as the daily reminder.
+  /** groups where left_at is null (set up or not, as the memberLeft webhook). Every page, by id. */
+  listMemberCheckGroups(): Promise<MemberCheckGroup[]>
+  /** One statement: sets member_check_claimed_at = at where member_check_on is null or before
+   *  todayBkk and no claim younger than `staleBefore` holds the group. */
+  claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }>
+  /** Marks the day checked (member_check_on = todayBkk) and clears the claim, only while the
+   *  claim made `at` still holds the group. */
+  finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void>
+  /** Clears the claim made `at` without completing the day, so the next tick goes on. */
+  releaseMemberCheck(groupId: string, at: Date): Promise<void>
+  /** The group's live Members not yet checked on todayBkk (group_members.member_checked_on
+   *  null or earlier), by line_user_id, so a tick that ran short resumes where it stopped. */
+  listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]>
+  /** Sets member_checked_on = todayBkk on the person's membership row. */
+  markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void>
   /** The group's live Tasks that are not Done, oldest first. */
   listReminderTasks(groupId: string): Promise<ReminderTask[]>
   // #45 answers to reminder cards. Each is one UPDATE whose WHERE holds the precondition,
@@ -516,6 +540,30 @@ export interface StorePort {
   /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
    *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. */
   detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]>
+  // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
+  // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
+  /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One
+   *  UPDATE by line_group_id: left_at = at and delete_after = at + 7 days, only where
+   *  left_at is null (an existing mark never moves) and joined_at <= at (a leave older
+   *  than the latest re-invite changes nothing). Answers the delete_after the group holds
+   *  afterwards; null when no group has this ID or the bot is in it after a newer join. */
+  markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }>
+  /** groups.delete_after of a group the bot left; null while the bot is in it or no such group. */
+  getGroupDeleteAfter(groupId: string): Promise<Date | null>
+  /** The bot joined the group at `at` (a join event). Separate idempotent UPDATEs: first,
+   *  with no confirmed Owner and an owner_left_at older than `at`, owner_left_at = at (the
+   *  7-day Owner count starts again, #30); then joined_at = at where it is older; then
+   *  left_at and delete_after are cleared where left_at <= at (a re-invite inside the 7
+   *  days). The Owner reset runs first, so a redelivery after a half-failure redoes all. */
+  markBotJoined(j: { groupId: string; at: Date }): Promise<void>
+  /** IDs of the groups whose delete_after <= now, oldest delete date first, at most `limit`. */
+  listPurgeDueGroups(now: Date, limit: number): Promise<string[]>
+  /** One DELETE: the group row where id = groupId and delete_after <= now. Its messages,
+   *  Summaries, Tasks, file records, Members and insights go with it (on delete cascade);
+   *  usage keeps its rows with group_id null; push counts and webhook event IDs have no
+   *  link and stay. A group re-invited since it was listed is no longer due and stays.
+   *  Never touches Drive. purged: this call deleted the row. */
+  purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }>
 }
 
 // ---- Composition ----

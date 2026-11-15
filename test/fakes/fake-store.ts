@@ -26,6 +26,7 @@ import type {
   PushBudgetClaim,
   NewWeeklyInsight,
   DailyReminderGroup,
+  MemberCheckGroup,
   DriveContext,
   DriveGroup,
   DetachedSubGroup,
@@ -62,6 +63,8 @@ export type GroupMemberRecord = {
   isPm?: boolean // group_members.is_pm; absent = false
   /** Time of the latest memberLeft or memberJoined event applied; absent or null when none. */
   membershipEventAt?: Date | null
+  /** group_members.member_checked_on (#32): Bangkok date of the last daily check; absent = null. */
+  memberCheckedOn?: string | null
 }
 
 /** Same rule as SupabaseStore's membershipOlderThan. */
@@ -108,6 +111,14 @@ export type GroupScheduleRecord = {
   dailyReminderTime: string; dailyReminderLastSentOn: string | null
   /** groups.daily_reminder_claimed_at: the live attempt's claim, or null. */
   dailyReminderClaimedAt?: Date | null
+  /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
+  memberCheckOn?: string | null
+  memberCheckClaimedAt?: Date | null
+  /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = long ago) and
+   *  groups.owner_left_at. Absent = null. */
+  deleteAfter?: Date | null
+  joinedAt?: Date | null
+  ownerLeftAt?: Date | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 /** The other groups columns setup writes (#52). No row = schema defaults. */
@@ -1096,6 +1107,56 @@ export class FakeStore implements StorePort {
     if (s && s.dailyReminderClaimedAt?.getTime() === at.getTime()) s.dailyReminderClaimedAt = null
   }
 
+  // ---- #32 daily member check ----
+  async listMemberCheckGroups(): Promise<MemberCheckGroup[]> {
+    this.fault('listMemberCheckGroups')
+    return this.tables.groups
+      .map((g) => ({ g, s: this.scheduleOf(g.id) }))
+      .filter(({ s }) => s.leftAt === null)
+      .sort((a, b) => a.g.id.localeCompare(b.g.id))
+      .map(({ g, s }) => ({ groupId: g.id, lineGroupId: g.lineGroupId, lastCheckedOn: s.memberCheckOn ?? null }))
+  }
+
+  async claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    this.fault('claimMemberCheck')
+    if (!this.hasGroup(groupId)) return { claimed: false }
+    const s = this.scheduleOf(groupId)
+    if (s.memberCheckOn != null && s.memberCheckOn >= todayBkk) return { claimed: false }
+    const held = s.memberCheckClaimedAt ?? null
+    if (held !== null && held.getTime() >= staleBefore.getTime()) return { claimed: false }
+    s.memberCheckClaimedAt = new Date(at)
+    return { claimed: true }
+  }
+
+  async finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    this.fault('finishMemberCheck')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.memberCheckClaimedAt?.getTime() === at.getTime()) {
+      s.memberCheckOn = todayBkk
+      s.memberCheckClaimedAt = null
+    }
+  }
+
+  async releaseMemberCheck(groupId: string, at: Date): Promise<void> {
+    this.fault('releaseMemberCheck')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.memberCheckClaimedAt?.getTime() === at.getTime()) s.memberCheckClaimedAt = null
+  }
+
+  async listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]> {
+    this.fault('listMembersToCheck')
+    return this.tables.group_members
+      .filter((m) => m.groupId === groupId && m.leftAt === null && (m.memberCheckedOn == null || m.memberCheckedOn < todayBkk))
+      .map((m) => m.lineUserId)
+      .sort()
+  }
+
+  async markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void> {
+    this.fault('markMemberChecked')
+    const row = this.tables.group_members.find((m) => m.groupId === groupId && m.lineUserId === lineUserId)
+    if (row) row.memberCheckedOn = todayBkk
+  }
+
   /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */
   async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
     this.fault('listReminderTasks')
@@ -1411,6 +1472,71 @@ export class FakeStore implements StorePort {
       out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  // ---- #11 removal and recovery ----
+  async markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }> {
+    this.fault('markBotLeft')
+    const g = this.tables.groups.find((row) => row.lineGroupId === m.lineGroupId)
+    if (!g) return { deleteAfter: null }
+    const s = this.scheduleOf(g.id)
+    const joinedAt = s.joinedAt ?? null
+    if (s.leftAt === null && (joinedAt === null || joinedAt <= m.at)) {
+      s.leftAt = new Date(m.at.getTime())
+      s.deleteAfter = new Date(m.at.getTime() + 7 * 86_400_000)
+    }
+    return { deleteAfter: s.deleteAfter ? new Date(s.deleteAfter.getTime()) : null }
+  }
+
+  async getGroupDeleteAfter(groupId: string): Promise<Date | null> {
+    this.fault('getGroupDeleteAfter')
+    const d = this.tables.group_schedules.find((r) => r.groupId === groupId)?.deleteAfter ?? null
+    return d ? new Date(d.getTime()) : null
+  }
+
+  async markBotJoined(j: { groupId: string; at: Date }): Promise<void> {
+    this.fault('markBotJoined')
+    const g = this.tables.groups.find((row) => row.id === j.groupId)
+    if (!g) return
+    const s = this.scheduleOf(g.id)
+    if (g.ownerConfirmedAt === null && s.ownerLeftAt != null && s.ownerLeftAt < j.at) s.ownerLeftAt = new Date(j.at.getTime())
+    if (s.joinedAt == null || s.joinedAt < j.at) s.joinedAt = new Date(j.at.getTime())
+    if (s.leftAt !== null && s.leftAt <= j.at) {
+      s.leftAt = null
+      s.deleteAfter = null
+    }
+  }
+
+  async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
+    this.fault('listPurgeDueGroups')
+    return this.tables.group_schedules
+      .filter((s) => s.deleteAfter != null && s.deleteAfter <= now)
+      .sort((a, b) => (a.deleteAfter as Date).getTime() - (b.deleteAfter as Date).getTime())
+      .slice(0, limit)
+      .map((s) => s.groupId)
+  }
+
+  /** Mirrors the schema's cascade: group-keyed rows go, ai_usage keeps its rows with
+   *  groupId null, push_log and webhook_events have no group link and stay. */
+  async purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }> {
+    this.fault('purgeGroup')
+    const s = this.tables.group_schedules.find((r) => r.groupId === groupId)
+    if (!s || s.deleteAfter == null || s.deleteAfter > now) return { purged: false }
+    const t = this.tables
+    const summaryIds = new Set(t.summaries.filter((x) => x.groupId === groupId).map((x) => x.id))
+    t.groups = t.groups.filter((g) => g.id !== groupId)
+    t.group_members = t.group_members.filter((x) => x.groupId !== groupId)
+    t.messages = t.messages.filter((x) => x.groupId !== groupId)
+    t.summaries = t.summaries.filter((x) => x.groupId !== groupId)
+    t.task_candidates = t.task_candidates.filter((x) => !summaryIds.has(x.summaryId))
+    t.tasks = t.tasks.filter((x) => x.groupId !== groupId)
+    t.task_prompts = t.task_prompts.filter((x) => x.groupId !== groupId)
+    t.fair_use_notices = t.fair_use_notices.filter((x) => x.groupId !== groupId)
+    t.group_schedules = t.group_schedules.filter((x) => x.groupId !== groupId)
+    t.weekly_insights = t.weekly_insights.filter((x) => x.groupId !== groupId)
+    t.group_setups = t.group_setups.filter((x) => x.groupId !== groupId)
+    for (const u of t.ai_usage) if (u.groupId === groupId) u.groupId = null
+    return { purged: true }
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

@@ -5,6 +5,7 @@ import { log, logError } from '@/server/log'
 import { memberCheckJob } from '@/server/members/daily-check'
 import type { Deps } from '@/server/ports'
 import { dailyRemindersJob } from '@/server/reminders/daily'
+import { purgeJob } from '@/server/removal/purge'
 
 /** One piece of work the 15-minute tick runs. `now` is read once per tick, so every
  *  job of one tick sees the same instant. A job decides for itself what is due (for
@@ -15,10 +16,12 @@ export type TickJob = { name: string; run(deps: Deps, now: Date): Promise<void> 
  *  others leave; then the weekly insight; then the daily Drive access check (#14), which
  *  works on one tick a day; then the daily member check (#32), which goes on over later
  *  ticks when one runs short, so it comes after the jobs with no time check of their own;
- *  the Drive setup finisher (#13) last, as it sends nothing to LINE. The last three stop on
- *  their own when the tick's time runs short. Still to come: the purge and the 7-day Owner
- *  rules (#11, #30, #31). */
-export const TICK_JOBS: TickJob[] = [dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, memberCheckJob, driveSetupJob]
+ *  the daily purge (#11), on its own night slot; the Drive setup finisher (#13) last, as it
+ *  sends nothing to LINE. The last four stop on their own when the tick's time runs short.
+ *  Still to come: the 7-day Owner rules (#30, #31). */
+export const TICK_JOBS: TickJob[] = [
+  dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, memberCheckJob, purgeJob, driveSetupJob,
+]
 
 /** Runs each job one after another. One job's failure is logged and never stops the
  *  ones after it. */

@@ -100,6 +100,19 @@ export class FakeLine implements LinePort {
     return { ...this.quota }
   }
 
+  /** Every leaveGroup call (#11), recorded before failLeave / leaveNotInGroup apply. */
+  leaveCalls: string[] = []
+  /** Makes leaveGroup reject, as the real adapter does on a LINE 5xx or a timeout. */
+  failLeave = false
+  /** Makes leaveGroup answer 'not_in_group' (LINE 404). */
+  leaveNotInGroup = false
+
+  async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
+    this.leaveCalls.push(lineGroupId)
+    if (this.failLeave) throw new AdapterError('line leave 500')
+    return this.leaveNotInGroup ? 'not_in_group' : 'left'
+  }
+
   async verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null> {
     this.verifyCalls.push(idToken)
     const identity = this.idTokens.get(idToken)

@@ -5,8 +5,8 @@ import { setupCard } from './card'
 // #52: the bot joined a group. It answers with the #2a setup card (a reply: free, no push)
 // and stores the group's name from LINE. The two steps are independent: a slow or failed
 // name lookup never costs the reply token, and a failed reply still stores the name.
-// Setup data already saved (a re-invite) is left as it is; left_at and delete_after of a
-// re-invite belong to #11.
+// Setup data already saved (a re-invite) is left as it is; ingest has already cleared the
+// re-invite's deletion mark (#11).
 
 export async function handleJoin(
   deps: Deps,

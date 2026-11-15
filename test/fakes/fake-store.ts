@@ -31,6 +31,7 @@ import type {
   DriveGroup,
   ReminderTask,
   MessageRef,
+  QuotedFileLookup,
   ProgressPromptRow,
   SetupOutcome,
   StorePort,
@@ -88,6 +89,10 @@ export type GoogleAccountRecord = {
   updatedAt: Date                     // set on every write, like the table's trigger
   signedInAt?: Date                   // google_accounts.connected_at: the last sign-in (#14)
 }
+/** public.files (#4 writes it; #33 reads it). Seeded with seedFile until #4 lands. */
+export type FileRecord = {
+  id: string; groupId: string; messageId: string | null; fileName: string; driveLink: string; savedAt: Date
+}
 export type DriveConnectionRecord = {
   id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
   statusChangedAt?: Date | null   // absent = null; set when the row is retired (#14)
@@ -105,6 +110,11 @@ export type GroupScheduleRecord = {
   /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
   memberCheckOn?: string | null
   memberCheckClaimedAt?: Date | null
+  /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = long ago) and
+   *  groups.owner_left_at. Absent = null. */
+  deleteAfter?: Date | null
+  joinedAt?: Date | null
+  ownerLeftAt?: Date | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 /** The other groups columns setup writes (#52). No row = schema defaults. */
@@ -134,6 +144,7 @@ export type FakeTables = {
   group_setups: GroupSetupRecord[]
   projects: ProjectRecord[]
   drive_connections: DriveConnectionRecord[]
+  files: FileRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -166,6 +177,7 @@ export class FakeStore implements StorePort {
     group_setups: [],
     projects: [],
     drive_connections: [],
+    files: [],
   }
 
   /** The database's now(), for columns it stamps itself (google_accounts.updated_at).
@@ -540,7 +552,20 @@ export class FakeStore implements StorePort {
     const [gone] = this.tables.messages.splice(i, 1)
     // task_prompts.trigger_message_id is ON DELETE SET NULL.
     for (const p of this.tables.task_prompts) if (p.triggerMessageId === gone.id) p.triggerMessageId = null
+    // files.message_id is ON DELETE SET NULL too: the saved file stays.
+    for (const f of this.tables.files) if (f.messageId === gone.id) f.messageId = null
     return { deleted: true }
+  }
+
+  // ---- #33 file request ----
+  async findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup> {
+    this.fault('findQuotedFile')
+    const m = this.tables.messages.find((row) => row.groupId === groupId && row.lineMessageId === lineMessageId)
+    if (!m) return { kind: 'no_message' }
+    const newest = this.tables.files
+      .filter((f) => f.messageId === m.id)
+      .sort((a, b) => b.savedAt.getTime() - a.savedAt.getTime() || (a.id < b.id ? 1 : -1))[0]
+    return newest ? { kind: 'file', fileName: newest.fileName, driveLink: newest.driveLink } : { kind: 'no_file' }
   }
 
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
@@ -1351,6 +1376,71 @@ export class FakeStore implements StorePort {
     return rows.map((x) => this.toTaskRow(x))
   }
 
+  // ---- #11 removal and recovery ----
+  async markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }> {
+    this.fault('markBotLeft')
+    const g = this.tables.groups.find((row) => row.lineGroupId === m.lineGroupId)
+    if (!g) return { deleteAfter: null }
+    const s = this.scheduleOf(g.id)
+    const joinedAt = s.joinedAt ?? null
+    if (s.leftAt === null && (joinedAt === null || joinedAt <= m.at)) {
+      s.leftAt = new Date(m.at.getTime())
+      s.deleteAfter = new Date(m.at.getTime() + 7 * 86_400_000)
+    }
+    return { deleteAfter: s.deleteAfter ? new Date(s.deleteAfter.getTime()) : null }
+  }
+
+  async getGroupDeleteAfter(groupId: string): Promise<Date | null> {
+    this.fault('getGroupDeleteAfter')
+    const d = this.tables.group_schedules.find((r) => r.groupId === groupId)?.deleteAfter ?? null
+    return d ? new Date(d.getTime()) : null
+  }
+
+  async markBotJoined(j: { groupId: string; at: Date }): Promise<void> {
+    this.fault('markBotJoined')
+    const g = this.tables.groups.find((row) => row.id === j.groupId)
+    if (!g) return
+    const s = this.scheduleOf(g.id)
+    if (g.ownerConfirmedAt === null && s.ownerLeftAt != null && s.ownerLeftAt < j.at) s.ownerLeftAt = new Date(j.at.getTime())
+    if (s.joinedAt == null || s.joinedAt < j.at) s.joinedAt = new Date(j.at.getTime())
+    if (s.leftAt !== null && s.leftAt <= j.at) {
+      s.leftAt = null
+      s.deleteAfter = null
+    }
+  }
+
+  async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
+    this.fault('listPurgeDueGroups')
+    return this.tables.group_schedules
+      .filter((s) => s.deleteAfter != null && s.deleteAfter <= now)
+      .sort((a, b) => (a.deleteAfter as Date).getTime() - (b.deleteAfter as Date).getTime())
+      .slice(0, limit)
+      .map((s) => s.groupId)
+  }
+
+  /** Mirrors the schema's cascade: group-keyed rows go, ai_usage keeps its rows with
+   *  groupId null, push_log and webhook_events have no group link and stay. */
+  async purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }> {
+    this.fault('purgeGroup')
+    const s = this.tables.group_schedules.find((r) => r.groupId === groupId)
+    if (!s || s.deleteAfter == null || s.deleteAfter > now) return { purged: false }
+    const t = this.tables
+    const summaryIds = new Set(t.summaries.filter((x) => x.groupId === groupId).map((x) => x.id))
+    t.groups = t.groups.filter((g) => g.id !== groupId)
+    t.group_members = t.group_members.filter((x) => x.groupId !== groupId)
+    t.messages = t.messages.filter((x) => x.groupId !== groupId)
+    t.summaries = t.summaries.filter((x) => x.groupId !== groupId)
+    t.task_candidates = t.task_candidates.filter((x) => !summaryIds.has(x.summaryId))
+    t.tasks = t.tasks.filter((x) => x.groupId !== groupId)
+    t.task_prompts = t.task_prompts.filter((x) => x.groupId !== groupId)
+    t.fair_use_notices = t.fair_use_notices.filter((x) => x.groupId !== groupId)
+    t.group_schedules = t.group_schedules.filter((x) => x.groupId !== groupId)
+    t.weekly_insights = t.weekly_insights.filter((x) => x.groupId !== groupId)
+    t.group_setups = t.group_setups.filter((x) => x.groupId !== groupId)
+    for (const u of t.ai_usage) if (u.groupId === groupId) u.groupId = null
+    return { purged: true }
+  }
+
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
   /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
   seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {
@@ -1386,6 +1476,18 @@ export class FakeStore implements StorePort {
     const i = this.tables.group_members.findIndex((m) => m.groupId === p.groupId && m.lineUserId === p.lineUserId)
     if (i === -1) this.tables.group_members.push(record)
     else this.tables.group_members[i] = record
+  }
+
+  /** A files row as #4 will write it (#33 reads it). messageId is messages.id or null. */
+  seedFile(p: { groupId: string; messageId: string | null; fileName: string; driveLink: string; savedAt?: Date }): FileRecord {
+    fk(this.hasGroup(p.groupId), 'files.group_id')
+    fk(p.messageId === null || this.tables.messages.some((m) => m.id === p.messageId), 'files.message_id')
+    const row: FileRecord = {
+      id: randomUUID(), groupId: p.groupId, messageId: p.messageId, fileName: p.fileName, driveLink: p.driveLink,
+      savedAt: p.savedAt ?? SEED_NOW,
+    }
+    this.tables.files.push(row)
+    return { ...row }
   }
 
   /** A Project row owned by `ownerLineUserId` (creates the line_users row); attach groups with seedGroup({ projectId }). */

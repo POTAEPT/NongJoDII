@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { AdapterError } from '../log'
+import { BOT_DELETE_AFTER_MS } from '../removal/leave'
 import type {
   AiUsageActual,
   AiUsageCap,
@@ -19,6 +20,7 @@ import type {
   Member,
   Membership,
   MessageRef,
+  QuotedFileLookup,
   NewAiUsage,
   NewCandidate,
   NewGoogleAccount,
@@ -284,6 +286,31 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('deleteMessageByLineId', error)
     return { deleted: (data ?? []).length > 0 }
+  }
+
+  // ---- #33 file request ----
+  async findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup> {
+    // Scoped to the asking group: line_message_id is unique across groups, and a quote id
+    // from elsewhere must not reveal another group's Drive link.
+    const { data: message, error: messageError } = await this.db
+      .from('messages')
+      .select('id')
+      .eq('group_id', groupId)
+      .eq('line_message_id', lineMessageId)
+      .maybeSingle()
+    check('findQuotedFile', messageError)
+    if (!message) return { kind: 'no_message' }
+    // files.message_id is not unique, so take the newest row rather than maybeSingle().
+    const { data: files, error: fileError } = await this.db
+      .from('files')
+      .select('file_name, drive_link')
+      .eq('message_id', (message as { id: string }).id)
+      .order('saved_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(1)
+    check('findQuotedFile', fileError)
+    const file = ((files ?? []) as { file_name: string; drive_link: string }[])[0]
+    return file ? { kind: 'file', fileName: file.file_name, driveLink: file.drive_link } : { kind: 'no_file' }
   }
 
   // ---- #15 Summary ----
@@ -1670,5 +1697,74 @@ export class SupabaseStore implements StorePort {
       .filter(([id, accountId]) => missing.has(id) && (holders.get(id) ?? accountId) === accountId)
       .map(([id]) => id)
       .sort()
+  }
+
+  // ---- #11 removal and recovery ----
+  async markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }> {
+    const at = m.at.toISOString()
+    // Only an unmarked group, and only a leave newer than the latest join applied.
+    const { error } = await this.db
+      .from('groups')
+      .update({ left_at: at, delete_after: new Date(m.at.getTime() + BOT_DELETE_AFTER_MS).toISOString() })
+      .eq('line_group_id', m.lineGroupId)
+      .is('left_at', null)
+      .lte('joined_at', at)
+    check('markBotLeft', error)
+    const read = await this.db.from('groups').select('delete_after').eq('line_group_id', m.lineGroupId).maybeSingle()
+    check('markBotLeft', read.error)
+    const row = read.data as { delete_after: string | null } | null
+    return { deleteAfter: row ? toDate(row.delete_after) : null }
+  }
+
+  async getGroupDeleteAfter(groupId: string): Promise<Date | null> {
+    const { data, error } = await this.db.from('groups').select('delete_after').eq('id', groupId).maybeSingle()
+    check('getGroupDeleteAfter', error)
+    const row = data as { delete_after: string | null } | null
+    return row ? toDate(row.delete_after) : null
+  }
+
+  async markBotJoined(j: { groupId: string; at: Date }): Promise<void> {
+    const at = j.at.toISOString()
+    // The 7-day Owner count starts again while no Owner is confirmed (#30). First, so a
+    // redelivery after a half-failure still reaches it.
+    const owner = await this.db
+      .from('groups')
+      .update({ owner_left_at: at })
+      .eq('id', j.groupId)
+      .is('owner_confirmed_at', null)
+      .lt('owner_left_at', at)
+    check('markBotJoined', owner.error)
+    const joined = await this.db.from('groups').update({ joined_at: at }).eq('id', j.groupId).lt('joined_at', at)
+    check('markBotJoined', joined.error)
+    const cleared = await this.db
+      .from('groups')
+      .update({ left_at: null, delete_after: null })
+      .eq('id', j.groupId)
+      .lte('left_at', at)
+    check('markBotJoined', cleared.error)
+  }
+
+  async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
+    const { data, error } = await this.db
+      .from('groups')
+      .select('id')
+      .lte('delete_after', now.toISOString())
+      .order('delete_after', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(limit)
+    check('listPurgeDueGroups', error)
+    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+
+  async purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }> {
+    // The due check is part of the DELETE: a group re-invited since it was listed stays.
+    const { data, error } = await this.db
+      .from('groups')
+      .delete()
+      .eq('id', groupId)
+      .lte('delete_after', now.toISOString())
+      .select('id')
+    check('purgeGroup', error)
+    return { purged: (data ?? []).length > 0 }
   }
 }

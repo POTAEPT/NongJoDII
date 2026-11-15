@@ -167,6 +167,8 @@ export class FakeStore implements StorePort {
     | { op: 'group'; groupId: string; to: string }
   )[] = []
 
+  /** group_members writes made by saveGroupSettings: one database request each in SupabaseStore. */
+  settingsMemberWrites = 0
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
   // Write order of google_accounts rows, so the newest connection wins on lookup.
   private googleWrites = new Map<string, number>()
@@ -1065,6 +1067,7 @@ export class FakeStore implements StorePort {
     })
     this.setupOf(w.groupId).featureSaveFiles = w.features.saveFiles
     for (const m of w.members) {
+      this.settingsMemberWrites++
       const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
       if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
     }

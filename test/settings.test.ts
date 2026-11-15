@@ -129,24 +129,29 @@ describe('submitSettings (#28)', () => {
 
   it('writes only the Members whose nicknames or role changed', async () => {
     const t = setup()
-    const spy = vi.spyOn(t.store, 'saveGroupSettings')
     await submitSettings(t.deps, t.body({
       members: [
         { lineUserId: OWNER, nicknames: ['โอ๋'], role: 'หัวหน้า' }, // as stored
         { lineUserId: BIW, nicknames: ['บิว', 'Bew'], role: 'ทำสไลด์' }, // role changed
       ],
     }))
-    expect(spy.mock.calls[0][0].members).toEqual([{ lineUserId: BIW, nicknames: ['บิว', 'Bew'], role: 'ทำสไลด์' }])
-    expect(t.row(BIW)).toMatchObject({ role: 'ทำสไลด์' })
+    expect(t.store.settingsMemberWrites).toBe(1)
+    expect(t.row(BIW)).toMatchObject({ nicknames: ['บิว', 'Bew'], role: 'ทำสไลด์' })
+    expect(t.row(OWNER)).toMatchObject({ nicknames: ['โอ๋'], role: 'หัวหน้า' })
   })
 
   it('a save of the times alone writes no Member', async () => {
     const t = setup()
-    const spy = vi.spyOn(t.store, 'saveGroupSettings')
     await submitSettings(t.deps, t.body({
       members: [{ lineUserId: OWNER, nicknames: ['โอ๋'], role: 'หัวหน้า' }, { lineUserId: BIW, nicknames: ['บิว', 'Bew'], role: 'ออกแบบ' }],
     }))
-    expect(spy.mock.calls[0][0].members).toEqual([])
+    expect(t.store.settingsMemberWrites).toBe(0)
+  })
+
+  it('a nickname split differently still counts as a change', async () => {
+    const t = setup()
+    await submitSettings(t.deps, t.body({ members: [{ lineUserId: BIW, nicknames: ['บิว\nBew'], role: 'ออกแบบ' }] }))
+    expect(t.row(BIW)).toMatchObject({ nicknames: ['บิว\nBew'] })
   })
 
   it('a listed person who left is skipped and the rest saves', async () => {

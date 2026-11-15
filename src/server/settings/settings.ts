@@ -70,7 +70,7 @@ export async function submitSettings(deps: Deps, body: unknown): Promise<ApiResu
   const live = new Map((await deps.store.listLiveMembers(group.groupId)).map((m) => [m.lineUserId, m]))
   const changed = v.members.filter((m) => {
     const now = live.get(m.lineUserId)
-    return now !== undefined && (now.role !== m.role || now.nicknames.join('\n') !== m.nicknames.join('\n'))
+    return now !== undefined && (now.role !== m.role || JSON.stringify(now.nicknames) !== JSON.stringify(m.nicknames))
   })
   const { saved } = await deps.store.saveGroupSettings({
     groupId: group.groupId, ownerLineUserId: requester, workDescription: v.workDescription,

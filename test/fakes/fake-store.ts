@@ -72,6 +72,8 @@ export type CandidateRecord = CandidateRow & {
 }
 export type TaskRecord = Omit<TaskRow, 'lineGroupId'> & {
   lastEditedByLineUserId: string | null; lastActivityAt: Date | null; doneAt: Date | null
+  /** #23: who soft-deleted it ("ไม่ใช่งาน"); absent = never set. */
+  deletedByLineUserId?: string | null
   announcePendingToken: string | null; announcePendingAt: Date | null
 }
 export type PushLogRecord = { id: string; purpose: string; lineTargetId: string; messageCount: number; sentAt: Date }
@@ -1136,6 +1138,24 @@ export class FakeStore implements StorePort {
     const row = this.openLiveTask(t.taskId)
     if (!row || row.assigneeLineUserId !== null) return { updated: false }
     Object.assign(row, { assigneeLineUserId: t.by, status: 'in_process', lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
+  async deleteTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('deleteTask')
+    fk(this.hasLineUser(t.by), 'tasks.deleted_by_line_user_id')
+    const row = this.openLiveTask(t.taskId)
+    if (!row || row.assigneeLineUserId !== null) return { updated: false }
+    Object.assign(row, { deletedAt: t.at, deletedByLineUserId: t.by })
+    return { updated: true }
+  }
+
+  async restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('restoreTask')
+    fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
+    const row = this.tables.tasks.find((x) => x.id === t.taskId && x.deletedAt !== null && (x.deletedByLineUserId ?? null) !== null)
+    if (!row) return { updated: false }
+    Object.assign(row, { deletedAt: null, deletedByLineUserId: null, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
     return { updated: true }
   }
 

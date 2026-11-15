@@ -1,6 +1,7 @@
 // Postback data of the daily reminder buttons (#44 sends them, #45 answers them).
-// IDs and dates only (rules: Baseline). The `a` codes differ from the progress cards' (pg, pw,
-// pk, px in progress/postback.ts), whose parser ignores any code it does not know.
+// IDs and dates only (rules: Baseline). #23's "ไม่ใช่งาน" and "กู้คืน" ride here too (the td
+// codes). The `a` codes differ from the progress cards' (pg, pw, pk, px in progress/postback.ts),
+// whose parser ignores any code it does not know.
 
 export type ReminderAction =
   | { kind: 'done'; taskId: string }                       // "เสร็จแล้ว"
@@ -8,8 +9,12 @@ export type ReminderAction =
   | { kind: 'postpone_to'; taskId: string; date: string }  // a choice: +1 day, +3 days, +1 week ('YYYY-MM-DD')
   | { kind: 'postpone_pick'; taskId: string }              // "เลือกวันเอง": the date comes from the picker
   | { kind: 'take'; taskId: string }                       // "ฉันรับเอง" on a Task with no owner
+  | { kind: 'discard'; taskId: string }                    // #23 "ไม่ใช่งาน": replies with a confirm
+  | { kind: 'discard_yes'; taskId: string }                // the confirm's "ลบงาน": soft-deletes the Task
+  | { kind: 'discard_no'; taskId: string }                 // the confirm's "ไม่ลบ": changes nothing
+  | { kind: 'restore'; taskId: string }                    // "กู้คืน" on the deleted reply: undoes the delete
 
-const CODE = { done: 'rd', postpone: 'rp', postpone_to: 'rpt', postpone_pick: 'rpc', take: 'rt' } as const
+const CODE = { done: 'rd', postpone: 'rp', postpone_to: 'rpt', postpone_pick: 'rpc', take: 'rt', discard: 'td', discard_yes: 'tdy', discard_no: 'tdn', restore: 'tdu' } as const
 const KIND_OF: Record<string, ReminderAction['kind']> = Object.fromEntries(
   Object.entries(CODE).map(([kind, code]) => [code, kind as ReminderAction['kind']]),
 )

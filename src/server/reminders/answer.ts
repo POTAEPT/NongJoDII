@@ -5,6 +5,7 @@ import { log } from '../log'
 import { releaseIfLeft } from '../members/recheck'
 import type { Deps, TaskRow } from '../ports'
 import { resultCard } from '../progress/card'
+import { deletedCard, discardConfirmCard, restoredCard, TASK_ACTION_TEXT } from '../tasks/card'
 import { BKK_OFFSET_MS, bangkokIsoWeekday, bangkokParts, bangkokTodayLabel, formatThaiDayMonth } from '../time/bangkok'
 import { ISO_DATE, type ReminderAction, encodeReminderAction, parseReminderAction } from './postback'
 
@@ -54,6 +55,7 @@ export type ReminderResult =
   | 'done' | 'asked_date' | 'postponed' | 'taken'
   | 'not_allowed' | 'no_owner' | 'already_taken' | 'gone' | 'past_date' | 'left'
   | 'picker' | 'no_open_tasks' | 'needs_login' | 'not_mine'
+  | 'confirm_discard' | 'kept' | 'deleted' | 'restored' | 'not_deleted' // #23
 
 export type ReminderOutcome = { result: ReminderResult; message: LineMessage }
 
@@ -126,6 +128,7 @@ export async function resolveReminderAction(
   p: { groupId: string; userId: string; action: ReminderAction; pickedDate: string | null },
 ): Promise<ReminderOutcome> {
   const { groupId, userId, action } = p
+  if (action.kind === 'restore') return restoreAction(deps, { groupId, userId, taskId: action.taskId })
   const task = await deps.store.getTask(action.taskId)
   if (!task || task.groupId !== groupId || task.deletedAt !== null || task.status === 'done') {
     return { result: 'gone', message: text(ANSWER_TEXT.gone) }
@@ -134,16 +137,28 @@ export async function resolveReminderAction(
   const nameOf = (id: string) => members.find((m) => m.lineUserId === id)?.displayName ?? 'สมาชิก'
   const now = deps.now()
 
-  if (action.kind === 'take') {
-    const membership = await deps.store.getMembership(groupId, userId)
-    if (membership === 'left') return { result: 'left', message: text(ANSWER_TEXT.left) }
-    if (membership === 'none') {
-      // A first-time presser: LINE sent the press from this group, so they are in it. Register
-      // them as a Member first, so the Task shows their name and stays editable (the edit
-      // endpoint accepts only a live Member as the assignee).
-      await deps.store.touchGroupMember(groupId, userId, 'message')
-      members = await deps.store.listLiveMembers(groupId)
+  if (action.kind === 'discard' || action.kind === 'discard_yes' || action.kind === 'discard_no') {
+    // #23 "ไม่ใช่งาน". Only a Task nobody has taken: once someone owns it, it is their work.
+    if (task.assigneeLineUserId !== null) {
+      return { result: 'already_taken', message: text(ANSWER_TEXT.alreadyTaken(nameOf(task.assigneeLineUserId))) }
     }
+    if (action.kind === 'discard') return { result: 'confirm_discard', message: discardConfirmCard(task) }
+    if (action.kind === 'discard_no') return { result: 'kept', message: text(TASK_ACTION_TEXT.kept(task.title)) }
+    if ((await registerPresser(deps, groupId, userId)) === 'left') return { result: 'left', message: text(ANSWER_TEXT.left) }
+    if (!(await deps.store.deleteTask({ taskId: task.id, by: userId, at: now })).updated) {
+      const fresh = await deps.store.getTask(task.id)
+      return fresh?.assigneeLineUserId && fresh.deletedAt === null
+        ? { result: 'already_taken', message: text(ANSWER_TEXT.alreadyTaken(nameOf(fresh.assigneeLineUserId))) }
+        : { result: 'gone', message: text(ANSWER_TEXT.gone) }
+    }
+    log('task_deleted', { groupId, taskId: task.id })
+    return { result: 'deleted', message: deletedCard(task) }
+  }
+
+  if (action.kind === 'take') {
+    const presser = await registerPresser(deps, groupId, userId)
+    if (presser === 'left') return { result: 'left', message: text(ANSWER_TEXT.left) }
+    if (presser === 'added') members = await deps.store.listLiveMembers(groupId)
     if (task.assigneeLineUserId !== null) {
       return { result: 'already_taken', message: text(ANSWER_TEXT.alreadyTaken(nameOf(task.assigneeLineUserId))) }
     }
@@ -197,6 +212,38 @@ export async function resolveReminderAction(
   if (!(await deps.store.postponeTask({ taskId: task.id, dueAt, by: userId, at: now })).updated) return lostWrite()
   log('reminder_postponed', { groupId, taskId: task.id })
   return { result: 'postponed', message: postponedCard(task.title, formatWhen(dueAt)) }
+}
+
+/** 'left' = the presser left the group. A first-time presser: LINE sent the press from this
+ *  group, so they are in it. Register them as a Member first, so the Task shows their name and
+ *  stays editable (the edit endpoint accepts only a live Member as the assignee), and so the
+ *  line_users row exists for the write. */
+async function registerPresser(deps: Deps, groupId: string, userId: string): Promise<'left' | 'member' | 'added'> {
+  const membership = await deps.store.getMembership(groupId, userId)
+  if (membership === 'left') return 'left'
+  if (membership === 'none') {
+    await deps.store.touchGroupMember(groupId, userId, 'message')
+    return 'added'
+  }
+  return 'member'
+}
+
+/** #23 "กู้คืน" on the deleted reply: any Member who has not left may undo the delete. */
+async function restoreAction(
+  deps: Deps, p: { groupId: string; userId: string; taskId: string },
+): Promise<ReminderOutcome> {
+  const task = await deps.store.getTask(p.taskId)
+  if (!task || task.groupId !== p.groupId) return { result: 'gone', message: text(ANSWER_TEXT.gone) }
+  if (task.deletedAt === null) return { result: 'not_deleted', message: text(TASK_ACTION_TEXT.notDeleted) }
+  if ((await registerPresser(deps, p.groupId, p.userId)) === 'left') return { result: 'left', message: text(ANSWER_TEXT.left) }
+  if (!(await deps.store.restoreTask({ taskId: task.id, by: p.userId, at: deps.now() })).updated) {
+    const fresh = await deps.store.getTask(task.id)
+    return fresh && fresh.deletedAt === null
+      ? { result: 'not_deleted', message: text(TASK_ACTION_TEXT.notDeleted) }
+      : { result: 'gone', message: text(ANSWER_TEXT.gone) }
+  }
+  log('task_restored', { groupId: p.groupId, taskId: task.id })
+  return { result: 'restored', message: restoredCard(task, deps.config.liffId) }
 }
 
 /** Figma 6A-3: "เลื่อนแล้ว · ส่งใหม่: …". The altText keeps the full sentence (the LIFF

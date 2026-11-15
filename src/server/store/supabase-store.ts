@@ -6,6 +6,7 @@ import type {
   AnnounceClaim,
   CandidateRow,
   DailyReminderGroup,
+  DetachedSubGroup,
   DriveContext,
   DriveGroup,
   GroupRow,
@@ -22,7 +23,10 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  OwnerChangeOutcome,
+  OwnerChangeState,
   OwnerConfirmOutcome,
+  TakeoverAnswerOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
   ProgressAnswer,
@@ -1448,5 +1452,78 @@ export class SupabaseStore implements StorePort {
       .filter(([id, accountId]) => missing.has(id) && (holders.get(id) ?? accountId) === accountId)
       .map(([id]) => id)
       .sort()
+  }
+
+  // ---- #31 Project Owner change ----
+  async changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }> {
+    const { error } = await this.db.rpc('change_project_owner', { p_project_id: projectId, p_new_owner: newOwnerLineUserId })
+    // check_violation: the main group does not name this person as its nominee.
+    if (error?.code === '23514') return { outcome: 'not_nominee' }
+    check('changeProjectOwner', error)
+    return { outcome: 'changed' }
+  }
+
+  async getOwnerChange(projectId: string): Promise<OwnerChangeState | null> {
+    const m = 'getOwnerChange'
+    const { data: p, error } = await this.db
+      .from('projects')
+      .select('id, owner_line_user_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check(m, error)
+    const project = p as { id: string; owner_line_user_id: string } | null
+    if (!project) return null
+    type Row = {
+      id: string; line_group_id: string; name: string | null; is_main: boolean
+      nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null; takeover_asked_at: string | null
+    }
+    const rows = await readAllPages<Row>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('id, line_group_id, name, is_main, nominated_owner_line_user_id, owner_confirmed_at, takeover_asked_at')
+        .eq('project_id', projectId)
+        .order('id')
+        .range(from, to))
+    const main = rows.find((r) => r.is_main)
+    return {
+      projectId: project.id,
+      ownerLineUserId: project.owner_line_user_id,
+      mainGroup: main
+        ? {
+            groupId: main.id, lineGroupId: main.line_group_id, name: main.name,
+            nominatedOwnerLineUserId: main.nominated_owner_line_user_id, ownerConfirmedAt: toDate(main.owner_confirmed_at),
+          }
+        : null,
+      waiting: rows
+        .filter((r) => !r.is_main && r.takeover_asked_at !== null)
+        .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name, askedAt: toDate(r.takeover_asked_at) as Date })),
+    }
+  }
+
+  async answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }> {
+    const { error } = await this.db.rpc('answer_subgroup_takeover', {
+      p_project_id: projectId, p_takeover_group_ids: takeoverGroupIds,
+    })
+    // check_violation: a chosen Sub group is no longer waiting (the daily rule detached it).
+    // serialization_failure: the groups changed while the answer was saved. Nothing was written.
+    if (error?.code === '23514' || error?.code === '40001') return { outcome: 'changed' }
+    check('answerSubgroupTakeover', error)
+    return { outcome: 'saved' }
+  }
+
+  async detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]> {
+    // The documented daily statement (initial schema, change_project_owner):
+    //   update groups set project_id = null, takeover_asked_at = null
+    //    where takeover_asked_at < <cutoff> returning ...
+    // project_id and takeover_asked_at change together (groups_takeover_pending_rules).
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ project_id: null, takeover_asked_at: null })
+      .lt('takeover_asked_at', askedBefore.toISOString())
+      .select('id, line_group_id, name')
+    check('detachExpiredTakeovers', error)
+    return ((data ?? []) as { id: string; line_group_id: string; name: string | null }[])
+      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name }))
+      .sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 }

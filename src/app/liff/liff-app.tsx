@@ -8,6 +8,7 @@ import { ProgressView } from './progress-view'
 import { ReviewView } from './review-view'
 import { SettingsView } from './settings-view'
 import { SetupView } from './setup-view'
+import { TakeoverView } from './takeover-view'
 import { TaskView } from './task-view'
 import { initLiff, type LiffViewProps } from './liff-sdk'
 import { readLiffParams, type LiffParams } from './params'
@@ -56,5 +57,6 @@ export function LiffApp({ liffId }: { liffId: string }) {
   if (params.view === 'owner') return <OwnerView {...viewProps} />
   if (params.view === 'me') return <MeView {...viewProps} />
   if (params.view === 'settings') return <SettingsView {...viewProps} />
+  if (params.view === 'takeover') return <TakeoverView {...viewProps} />
   return <StatusScreen kind="error" title="เปิดหน้านี้ไม่สำเร็จ" message={OPEN_FAILED} />
 }

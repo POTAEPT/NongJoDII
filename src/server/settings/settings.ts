@@ -1,5 +1,6 @@
-import { log } from '../log'
+import { log, logError } from '../log'
 import type { ApiResult, Deps, GroupSetup } from '../ports'
+import { botLeaveGroup } from '../removal/leave'
 import { badRequest } from '../review/load'
 import { FALLBACK_NAME, lineNameOf, openSetupGroup } from '../setup/load'
 import { setupState } from '../setup/rules'
@@ -10,7 +11,7 @@ import type { SettingsLoad, SettingsMember } from './types'
 // Every live Member may look; only the Owner may change. The Owner is the person the group
 // names (groups.nominated_owner_line_user_id) once they confirmed (owner_confirmed_at); every
 // group of a Project names the same person, so this covers Sub groups too. Changing the
-// Owner belongs to the Owner change flow (#30, #31), and Stop using to #11.
+// Owner belongs to the Owner change flow (#30, #31). Stop using (#11) is stopUsing below.
 
 function isConfirmedOwner(group: GroupSetup, lineUserId: string): boolean {
   return group.ownerConfirmedAt !== null && group.nominatedOwnerLineUserId === lineUserId
@@ -86,4 +87,25 @@ export async function submitSettings(deps: Deps, body: unknown): Promise<ApiResu
   if (!saved) return notOwner
   log('settings_saved', { groupId: group.groupId })
   return { status: 200, body: { saved: true } }
+}
+
+/** POST /api/settings/stop-using { idToken, groupId, confirm: true }: Stop using (#11). The
+ *  confirmed Owner makes the bot leave the group; the group's data is deleted 7 days later
+ *  unless the bot is invited back first, and files stay in the Owner's Drive. `confirm`
+ *  is the page's confirm step: without it nothing happens. LINE refusing or failing the
+ *  leave answers 502 and marks nothing, so the Owner can try again. */
+export async function stopUsing(deps: Deps, body: unknown): Promise<ApiResult> {
+  const gate = await openSetupGroup(deps, body)
+  if (!gate.ok) return gate.result
+  const { group, requester } = gate
+  if (!isConfirmedOwner(group, requester)) return notOwner
+  if ((body as { confirm?: unknown }).confirm !== true) return badRequest('confirm')
+  let deleteAfter: Date | null
+  try {
+    ({ deleteAfter } = await botLeaveGroup(deps, { groupId: group.groupId, reason: 'stop_using', now: deps.now() }))
+  } catch (err) {
+    logError('stop_using_failed', { groupId: group.groupId }, err)
+    return { status: 502, body: { error: 'line_failed' } }
+  }
+  return { status: 200, body: { left: true, deleteAfter: deleteAfter?.toISOString() ?? null } }
 }

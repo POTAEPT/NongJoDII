@@ -52,6 +52,12 @@ describe('SupabaseStore.listWeeklySummaryGroups', () => {
     expect(calls).toContainEqual({ method: 'order', args: ['id'] })
   })
 
+  it('leaves out groups whose Owner left (#30)', async () => {
+    const { store, calls } = stubDb([rows(1)])
+    await store.listWeeklySummaryGroups(3)
+    expect(calls).toContainEqual({ method: 'is', args: ['owner_left_at', null] })
+  })
+
   it('asks for one more page when the last full page ends exactly on the page size', async () => {
     const { store, calls } = stubDb([rows(PAGE_SIZE), []])
     expect(await store.listWeeklySummaryGroups(3)).toHaveLength(PAGE_SIZE)
@@ -82,5 +88,20 @@ describe('SupabaseStore.listReminderTasks (#44)', () => {
     expect(calls).toContainEqual({ method: 'order', args: ['created_at', { ascending: true }] })
     expect(calls).toContainEqual({ method: 'neq', args: ['status', 'done'] })
     expect(calls).toContainEqual({ method: 'is', args: ['deleted_at', null] })
+  })
+})
+
+describe('SupabaseStore.listMemberCheckGroups (#32)', () => {
+  const groupRows = (n: number, offset = 0) =>
+    Array.from({ length: n }, (_, i) => ({ id: `g-${offset + i}`, line_group_id: `C${offset + i}`, member_check_on: null }))
+
+  it('reads every page, and asks only for groups the bot is still in', async () => {
+    const { store, calls } = stubDb([groupRows(PAGE_SIZE), groupRows(2, PAGE_SIZE)])
+    const groups = await store.listMemberCheckGroups()
+    expect(groups).toHaveLength(PAGE_SIZE + 2)
+    expect(groups[PAGE_SIZE + 1]).toEqual({ groupId: `g-${PAGE_SIZE + 1}`, lineGroupId: `C${PAGE_SIZE + 1}`, lastCheckedOn: null })
+    expect(calls.some((c) => c.method === 'not')).toBe(false) // set up or not
+    expect(calls).toContainEqual({ method: 'is', args: ['left_at', null] })
+    expect(calls.filter((c) => c.method === 'range')).toHaveLength(2)
   })
 })

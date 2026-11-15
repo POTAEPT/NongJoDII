@@ -6,7 +6,7 @@ const API = 'https://api.line.me'
 /** Content downloads have their own host (Messaging API reference, "Get content"). */
 const DATA_API = 'https://api-data.line.me'
 
-/** LINE Messaging API (reply, push, quota, group member profile, group summary) and LINE Login ID token verify.
+/** LINE Messaging API (reply, push, quota, group member profile, group summary, leave group) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
 export class LineHttpClient implements LinePort {
   private readonly token: string
@@ -129,6 +129,16 @@ export class LineHttpClient implements LinePort {
       if (name === 'TimeoutError' || name === 'AbortError') throw new AdapterError('line timeout')
       throw err
     }
+  }
+
+  /** POST /v2/bot/group/{groupId}/leave (LINE answers 200, 400 or 404). 404: the bot is
+   *  not in the group. */
+  async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
+    const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/leave`
+    const res = await this.fetchImpl(url, { method: 'POST', headers: { Authorization: `Bearer ${this.token}` } })
+    if (res.status === 404) return 'not_in_group'
+    if (res.status !== 200) throw new AdapterError(`line leave ${res.status}`)
+    return 'left'
   }
 
   /** LINE checks the signature, aud (= the LINE Login channel ID) and exp. */

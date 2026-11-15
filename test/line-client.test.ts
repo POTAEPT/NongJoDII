@@ -322,3 +322,19 @@ describe('LineHttpClient.getMessageContent (#4)', () => {
     expect((err as Error).message).toBe('line timeout')
   })
 })
+
+describe('LineHttpClient.leaveGroup (#11)', () => {
+  it('posts to the leave endpoint with the Bearer token and answers left on 200', async () => {
+    const { client, calls } = stubFetch(200)
+    await expect(client.leaveGroup('C/1')).resolves.toBe('left')
+    expect(calls[0].url).toBe('https://api.line.me/v2/bot/group/C%2F1/leave')
+    expect(calls[0].init.method).toBe('POST')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+  })
+
+  it('answers not_in_group on 404 and throws AdapterError on 400 or 500', async () => {
+    await expect(stubFetch(404).client.leaveGroup('C1')).resolves.toBe('not_in_group')
+    await expect(stubFetch(400).client.leaveGroup('C1')).rejects.toThrow(new AdapterError('line leave 400'))
+    await expect(stubFetch(500).client.leaveGroup('C1')).rejects.toThrow(new AdapterError('line leave 500'))
+  })
+})

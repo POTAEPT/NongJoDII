@@ -1,4 +1,6 @@
 import type { LineEvent } from '@/server/line/types'
+import { recordMemberLeft } from '@/server/members/left'
+import { markOwnerLeftOnLeave } from '@/server/members/owner-left'
 import type { Deps, MessageMention, TaskRow } from '@/server/ports'
 
 export type Job =
@@ -17,8 +19,10 @@ export type Job =
   | {
       // #29: people who left a group (LINE memberLeft) and the open Tasks released from them,
       // already saved at ingest. eventId keys the one push the card may make.
+      // #30 ownerLeft: the LINE user ID of the group's Owner when they are among the leavers
+      // (owner_left_at already set at ingest), else null; the job then posts the owner_needed card.
       kind: 'member_left'; groupId: string; lineGroupId: string
-      released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string
+      released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string; ownerLeft: string | null
     }
   | {
       // #4: a file or image sent in a group. LINE sends only the ID and metadata; the job
@@ -121,7 +125,12 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
   if (source.type === 'group' && event.type === 'join') {
     // The group row first (idempotent), the ledger claim last, as for a postback: a
     // redelivered join answers once.
-    const group = await store.ensureGroup(source.groupId)
+    let group = await store.ensureGroup(source.groupId)
+    // #11 re-invite. Data already past its delete date goes now, whatever the purge's
+    // timing, and the group starts fresh; inside the 7 days the mark is cleared (and,
+    // with no confirmed Owner, the 7-day Owner count starts again). Both idempotent.
+    if ((await store.purgeGroup(group.id, eventTimestamp)).purged) group = await store.ensureGroup(source.groupId)
+    await store.markBotJoined({ groupId: group.id, at: eventTimestamp })
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'join', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
@@ -130,12 +139,26 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
     return { kind: 'group_join', groupId: group.id, lineGroupId: source.groupId, replyToken: event.replyToken ?? null }
   }
 
+  if (source.type === 'group' && event.type === 'leave') {
+    // #11: LINE removed the bot from the group. Mark first, the ledger row last, as for
+    // unsend: a failed write answers 500 and LINE's redelivery retries it. The mark is set
+    // only where none is (a leave the bot made itself already set it, and the date never
+    // moves) and only when the leave is newer than the latest join, so a stale leave cannot
+    // mark a re-invited group. By line_group_id: a group never stored gets no row.
+    await store.markBotLeft({ lineGroupId: source.groupId, at: eventTimestamp })
+    await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'leave', lineGroupId: source.groupId, eventTimestamp, isRedelivery,
+    })
+    return null
+  }
+
   if (event.type === 'unsend' && typeof event.unsend?.messageId === 'string') {
     // Delete first, the ledger row last: a failed delete answers 500 before the event is
-    // recorded, so LINE's redelivery retries it. The delete is idempotent (an unknown or
+    // recorded, so LINE's redelivery retries it. The unsend is idempotent (an unknown or
     // already deleted message deletes nothing), so it needs no store-once gate and no Job.
-    // Confirmed Tasks have no link to messages, so they stay (#24).
-    await store.deleteMessageByLineId(event.unsend.messageId)
+    // It also keeps a tombstone of the message ID, so the message is not stored again when
+    // its own event arrives late. Confirmed Tasks have no link to messages, so they stay (#24).
+    await store.unsendMessage(event.unsend.messageId)
     await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'unsend',
       lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,
@@ -157,23 +180,15 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
     // waits for the job, gated by the ledger row so a redelivered leave posts once. (A
     // redelivery after the writes but before the ledger row finds nothing left to release
     // and posts no card; the Tasks still show in the daily reminders.)
-    const released: { lineUserId: string; tasks: TaskRow[] }[] = []
-    for (const lineUserId of lineUserIds) {
-      await store.upsertLineUser({ lineUserId, displayName: null }) // group_members.line_user_id FK
-      await store.markMemberLeft({ groupId: group.id, lineUserId, at: eventTimestamp })
-      // A leave older than a rejoin already applied changed nothing: the person is a current
-      // Member, so the release finds them live and keeps their Tasks. It checks and releases
-      // in one database step, so a newer join cannot slip between the two; and it does not
-      // trust `updated`, so a redelivery after the write but before the release still releases.
-      const tasks = await store.releaseTasksIfLeft({ groupId: group.id, lineUserId })
-      if (tasks.length > 0) released.push({ lineUserId, tasks })
-    }
+    const released = await recordMemberLeft(deps, { groupId: group.id, lineUserIds, at: eventTimestamp })
+    // #30: the Owner among the leavers pauses the Owner-backed features, also before the ledger row.
+    const ownerLeft = await markOwnerLeftOnLeave(deps, group, lineUserIds, eventTimestamp)
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'memberLeft', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
     })
-    if (!inserted || released.length === 0) return null
-    return { kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, released, eventId: event.webhookEventId }
+    if (!inserted || (released.length === 0 && ownerLeft === null)) return null
+    return { kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, released, eventId: event.webhookEventId, ownerLeft }
   }
 
   if (source.type === 'group' && event.type === 'memberJoined') {
@@ -206,8 +221,8 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (leave, room...) is only recorded; handling belongs to #2 and #11.
-  // Unsend (#24), memberLeft and memberJoined (#29) are handled above.
+  // Every other event (room...) is only recorded. Join and leave (#52, #11), unsend (#24),
+  // memberLeft and memberJoined (#29) are handled above.
   return null
 }
 

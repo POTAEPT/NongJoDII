@@ -109,7 +109,8 @@ export const ev: {
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
   groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string; pickedDate?: string }): LineEvent
-  join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean }): LineEvent
+  join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean; timestamp?: number }): LineEvent
+  leave(p: { groupId?: string; eventId?: string; redelivery?: boolean; timestamp?: number }): LineEvent
   unsend(p: { messageId: string; groupId?: string; userId?: string; eventId?: string; redelivery?: boolean }): LineEvent
   memberLeft(p: { userIds: string[]; groupId?: string; eventId?: string; redelivery?: boolean; timestamp?: number }): LineEvent
   memberJoined(p: { userIds: string[]; groupId?: string; eventId?: string; timestamp?: number }): LineEvent
@@ -195,9 +196,20 @@ export const ev: {
     return {
       type: 'join',
       mode: 'active',
-      timestamp: TEST_NOW.getTime(),
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
       source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
       replyToken: p.replyToken ?? next('rt'),
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: p.redelivery ?? false },
+    }
+  },
+  leave(p) {
+    // The bot was removed from the group (#11). LINE sends no replyToken and no userId.
+    return {
+      type: 'leave',
+      mode: 'active',
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },
     }

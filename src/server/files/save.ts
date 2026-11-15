@@ -3,6 +3,7 @@ import { DRIVE_HARD_STOP_MS, DriveTimeUp, openGroupDrive } from '../google/drive
 import { pushToGroupWithinBudget, retryKeyFrom, type GroupPushResult } from '../line/push-budget'
 import type { LineMessage } from '../line/types'
 import { log, logError } from '../log'
+import { ownerBackedOn } from '../members/owner-left'
 import type { Deps, SavedFile } from '../ports'
 import { bangkokParts } from '../time/bangkok'
 import type { Job } from '../webhook/ingest'
@@ -59,7 +60,9 @@ export async function handleGroupFile(deps: Deps, job: FileJob): Promise<FileSav
   const ids = { groupId: job.groupId, messageType: job.messageType }
 
   const group = await deps.store.getGroupById(job.groupId)
-  if (!group?.projectId || group.ownerConfirmedAt === null) return skipped(ids, 'paused', 'no_owner')
+  // Paused while the Owner left (#30) or a Sub group waits for the take-over answer (#31):
+  // both clear owner_confirmed_at.
+  if (!group?.projectId || !ownerBackedOn(group)) return skipped(ids, 'paused', 'no_owner')
   const setup = await deps.store.getGroupSetup(job.groupId)
   if (!setup?.features.saveFiles) return skipped(ids, 'paused', 'feature_off')
   if (job.fileSize !== null && job.fileSize > MAX_FILE_BYTES) return skipped(ids, 'too_large', 'too_large')

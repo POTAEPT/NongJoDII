@@ -1,6 +1,7 @@
-import { badge, bubble, button, buttonRow, header, keyValue, panel, text, uri } from '../line/flex-ui'
+import { badge, bubble, button, header, keyValue, panel, text, uri } from '../line/flex-ui'
 import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
+import { unownedTaskFooter } from '../tasks/card'
 import { formatThaiShort } from '../time/bangkok'
 
 /** Every "Tasks created" message starts with this. The bot pushes it, so it does
@@ -32,7 +33,8 @@ const ALT_MAX = 400
 export type AnnouncedTask = CreatedTask & { taskId: string }
 
 /** The group card after Tasks are created (Figma UI v4 #4): one bubble per Task with its
- *  due date, status and the LIFF Task page ("เพิ่มผู้รับ" when it has no owner, "แก้งาน").
+ *  due date and status. An owned Task gets "แก้งาน" (the LIFF Task page); an unowned one gets
+ *  มอบหมาย, ฉันรับเอง and ไม่ใช่งาน (#23, tasks/card.ts).
  *  The altText is the text message above, so notifications and forwards keep the prefix. */
 export function buildTaskFeedbackCard(tasks: AnnouncedTask[], liffId: string): LineMessage {
   const bubbles = tasks.map((t) => {
@@ -49,9 +51,7 @@ export function buildTaskFeedbackCard(tasks: AnnouncedTask[], liffId: string): L
         ]),
         ...(t.assigned ? [] : [text('งานนี้ยังไม่มีผู้รับ', { color: '#545454' })]),
       ],
-      [t.assigned
-        ? button('secondary', edit)
-        : buttonRow(button('primary', uri('เพิ่มผู้รับ', liffUrl(liffId, 'task', t.taskId))), button('secondary', edit))],
+      t.assigned ? [button('secondary', edit)] : unownedTaskFooter(t.taskId, liffId),
     )
   })
   const altText = buildTaskFeedback(tasks)

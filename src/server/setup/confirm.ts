@@ -2,6 +2,7 @@ import { driveDeadline, syncDriveForOwner } from '../google/drive-folders'
 import { log } from '../log'
 import type { ApiResult, Defer, Deps } from '../ports'
 import { openSetupGroup } from './load'
+import { takeOverOwner } from './owner-change'
 import type { OwnerConfirmResult } from './types'
 
 /** POST /api/setup/confirm-owner, from the #2e card's button. Only the verified nominee
@@ -15,6 +16,8 @@ export async function confirmOwner(deps: Deps, body: unknown, defer: Defer): Pro
   const gate = await openSetupGroup(deps, body)
   if (!gate.ok) return gate.result
   const { group, requester } = gate
+  // #30: the Owner left this group; the presser takes the role over (owner-change.ts).
+  if (group.ownerLeftAt !== null) return takeOverOwner(deps, group, requester, defer, deadline)
   const { outcome } = await deps.store.confirmGroupOwner(group.groupId, requester, deps.now())
   if (outcome === 'not_nominee') return { status: 403, body: { error: 'not_nominee' } }
   if (outcome === 'not_member') return { status: 403, body: { error: 'forbidden' } }

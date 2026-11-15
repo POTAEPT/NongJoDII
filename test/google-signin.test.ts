@@ -242,7 +242,7 @@ describe('renderCallbackPage', () => {
     expect(res.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
     const html = await res.text()
     expect(html).toContain('<!doctype html><html lang="th">')
-    expect(html).toContain('<title>NongJoDII</title>')
+    expect(html).toContain('<title>น้องจดดี</title>')
     expect(html).toContain('ยกเลิกการเข้าสู่ระบบ Google')
   })
 

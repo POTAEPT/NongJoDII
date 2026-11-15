@@ -3,15 +3,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchGoogleStatus as fetchStatus, type GoogleFailure, phaseOnOpen, retryStep, returnStep, returnVisit } from './google-status'
 import type { LiffViewProps } from './liff-sdk'
+import { Button, IconCheck, IconCloud, IconLock, Notice, Page, StatusScreen } from './ui'
+
+// Connect Google Drive (#3, #14), styled like Figma UI v4 #11.
+const TITLE = 'เชื่อม Google Drive'
 
 type Phase =
   | 'checking' | 'starting' | 'opened' | 'connected' | 'sign_in_again' | 'change_unfinished'
   | 'not_connected' | 'unauthorized' | 'failed'
 
 const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected' | 'sign_in_again' | 'change_unfinished'>, string> = {
-  opened: 'เปิดเบราว์เซอร์เพื่อเข้าสู่ระบบ Google แล้ว เมื่อเสร็จให้กลับมาที่แชท LINE',
+  opened: 'เปิดเบราว์เซอร์เพื่อเข้าสู่ระบบ Google แล้ว เมื่อเสร็จให้กลับมาที่แชต LINE',
   not_connected: 'ยังไม่ได้เชื่อม Google Drive กรุณาลองใหม่',
-  unauthorized: 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง',
+  unauthorized: 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชตอีกครั้ง',
   failed: 'เริ่มเชื่อม Google Drive ไม่สำเร็จ กรุณาลองใหม่',
 }
 
@@ -144,26 +148,26 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
     }
   }, [phase, recheck])
 
-  if (phase === 'starting') return <p className="p-4 text-base">กำลังเตรียมเชื่อม Google Drive...</p>
-  if (phase === 'checking') return <p className="p-4 text-base">กำลังตรวจสอบการเชื่อม Google Drive...</p>
+  const close = () => liff.closeWindow()
+  if (phase === 'starting') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังเตรียมเชื่อม Google Drive..." />
+  if (phase === 'checking') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังตรวจสอบการเชื่อม Google Drive..." />
   if (phase === 'connected') {
     return (
-      <div className="p-4 text-base">
-        <p className="text-lg font-bold">{justSignedIn ? 'เชื่อม Google Drive สำเร็จ' : 'เชื่อม Google Drive ไว้แล้ว'}</p>
-        <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
-          ปิดหน้านี้
-        </button>
+      <Page title={TITLE} onBack={close} bottom={<Button onClick={close}>ปิดหน้านี้</Button>}>
+        <div className="flex flex-col items-center pt-6 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-done-bg text-done"><IconCheck className="h-7 w-7" /></span>
+          <h2 className="mt-4 text-xl font-semibold">{justSignedIn ? 'เชื่อม Google Drive สำเร็จ' : 'เชื่อม Google Drive ไว้แล้ว'}</h2>
+          <p className="mt-2 text-sm text-ink-2">ไฟล์ใหม่ในกลุ่มจะถูกเก็บในโฟลเดอร์ NongJoDII ใน Drive ของคุณ</p>
+        </div>
         {canChange && (
-          <div className="mt-8 border-t pt-4">
-            <p className="text-sm text-gray-600">
+          <section className="mt-8 space-y-3 rounded-2xl border border-line bg-page p-4">
+            <p className="text-sm text-ink-2">
               เปลี่ยนไปใช้บัญชี Google อื่นได้ ไฟล์ที่เก็บไว้แล้วจะอยู่ในไดรฟ์เดิม ส่วนไฟล์ใหม่จะเก็บในโฟลเดอร์ใหม่ในไดรฟ์ของบัญชีใหม่
             </p>
-            <button type="button" className="mt-2 rounded border px-4 py-2" onClick={() => signIn(true)}>
-              เปลี่ยนบัญชี Google
-            </button>
-          </div>
+            <Button variant="outline" onClick={() => signIn(true)}>เปลี่ยนบัญชี Google</Button>
+          </section>
         )}
-      </div>
+      </Page>
     )
   }
   if (phase === 'change_unfinished') {
@@ -172,42 +176,57 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
     // nothing), or a change that stopped part-way. Either the change action moves the
     // Project, or a sign-in with the first account puts things back.
     return (
-      <div className="p-4 text-base">
-        <p className="text-lg font-bold">บัญชี Google นี้ยังไม่ได้เชื่อมกับกลุ่ม</p>
-        <p className="mt-2">
-          กลุ่มของคุณยังเชื่อมกับบัญชี Google อีกบัญชีหนึ่งอยู่ น้องจดดีจึงยังเก็บไฟล์ใหม่ไม่ได้ งานและไฟล์ที่เก็บไว้แล้วยังอยู่ครบ
-        </p>
-        <p className="mt-2 text-sm text-gray-600">
-          หากต้องการย้ายมาใช้บัญชีใหม่ ให้กดเปลี่ยนบัญชี Google ไฟล์ที่เก็บไว้แล้วจะอยู่ในไดรฟ์เดิม หากไม่ต้องการเปลี่ยน ให้เข้าสู่ระบบด้วยบัญชีเดิม
-        </p>
-        <button type="button" className="mt-4 block rounded border px-4 py-2 font-bold" onClick={() => signIn(true)}>
-          เปลี่ยนบัญชี Google
-        </button>
-        <button type="button" className="mt-2 block rounded border px-4 py-2" onClick={() => signIn(false)}>
-          เข้าสู่ระบบด้วยบัญชีเดิม
-        </button>
-      </div>
+      <Page title={TITLE} onBack={close} bottom={
+        <div className="space-y-2">
+          <Button onClick={() => signIn(true)}>เปลี่ยนบัญชี Google</Button>
+          <Button variant="outline" onClick={() => signIn(false)}>เข้าสู่ระบบด้วยบัญชีเดิม</Button>
+        </div>
+      }>
+        <div className="flex flex-col items-center pt-6 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-warn-bg text-warn"><IconCloud className="h-7 w-7" /></span>
+          <h2 className="mt-4 text-xl font-semibold">บัญชี Google นี้ยังไม่ได้เชื่อมกับกลุ่ม</h2>
+          <p className="mt-2 text-sm text-ink-2">
+            กลุ่มของคุณยังเชื่อมกับบัญชี Google อีกบัญชีหนึ่งอยู่ น้องจดดีจึงยังเก็บไฟล์ใหม่ไม่ได้ งานและไฟล์ที่เก็บไว้แล้วยังอยู่ครบ
+          </p>
+        </div>
+        <div className="mt-6">
+          <Notice tone="info">
+            หากต้องการย้ายมาใช้บัญชีใหม่ ให้กดเปลี่ยนบัญชี Google ไฟล์ที่เก็บไว้แล้วจะอยู่ในไดรฟ์เดิม หากไม่ต้องการเปลี่ยน ให้เข้าสู่ระบบด้วยบัญชีเดิม
+          </Notice>
+        </div>
+      </Page>
     )
   }
   if (phase === 'sign_in_again') {
     return (
-      <div className="p-4 text-base">
-        <p className="text-lg font-bold">กรุณาเข้าสู่ระบบ Google อีกครั้ง</p>
-        <p className="mt-2">
-          น้องจดดีเข้าถึง Google Drive ของคุณไม่ได้แล้ว จึงยังเก็บไฟล์ใหม่ไม่ได้ งานทั้งหมดยังอยู่ครบ
+      <Page title={TITLE} onBack={close} bottom={<Button onClick={() => signIn(false)}>เข้าสู่ระบบ Google</Button>}>
+        <div className="flex flex-col items-center pt-6 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-warn-bg text-warn"><IconLock className="h-7 w-7" /></span>
+          <h2 className="mt-4 text-xl font-semibold">กรุณาเข้าสู่ระบบ Google อีกครั้ง</h2>
+          <p className="mt-2 text-sm text-ink-2">
+            น้องจดดีเข้าถึง Google Drive ของคุณไม่ได้แล้ว จึงยังเก็บไฟล์ใหม่ไม่ได้ งานทั้งหมดยังอยู่ครบ
+          </p>
+        </div>
+      </Page>
+    )
+  }
+  if (phase === 'opened') {
+    return (
+      <Page title={TITLE} onBack={close} bottom={<Button variant="outline" onClick={retry}>ลองอีกครั้ง</Button>}>
+        <div className="flex flex-col items-center pt-6 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-soft text-primary"><IconCloud className="h-7 w-7" /></span>
+          <h2 className="mt-4 text-lg font-semibold">เข้าสู่ระบบ Google ในเบราว์เซอร์</h2>
+          <p className="mt-2 text-sm text-ink-2">{COPY.opened}</p>
+        </div>
+        <p className="mt-6 flex items-start gap-2 rounded-xl bg-primary-soft px-3 py-3 text-sm text-primary">
+          <IconLock className="mt-0.5 h-4 w-4 shrink-0" />
+          ขอสิทธิ์เฉพาะไฟล์ที่น้องจดดีสร้าง (drive.file) ไม่เห็นไฟล์อื่นใน Drive ของคุณ
         </p>
-        <button type="button" className="mt-4 rounded border px-4 py-2 font-bold" onClick={() => signIn(false)}>
-          เข้าสู่ระบบ Google
-        </button>
-      </div>
+      </Page>
     )
   }
   return (
-    <div className="p-4 text-base">
-      <p>{COPY[phase]}</p>
-      <button type="button" className="mt-4 rounded border px-4 py-2" onClick={retry}>
-        ลองอีกครั้ง
-      </button>
-    </div>
+    <StatusScreen kind="error" appTitle={TITLE} onBack={close} title="เชื่อม Google Drive ไม่สำเร็จ" message={COPY[phase]}
+      onRetry={retry} onClose={close} />
   )
 }

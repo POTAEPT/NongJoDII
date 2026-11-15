@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { messagesText } from './flex-text'
 import type { LineEvent, LineMessage } from '@/server/line/types'
 import type { LlmRequest } from '@/server/ports'
 import { loadReview } from '@/server/review/load'
@@ -34,7 +35,7 @@ afterEach(() => {
 function textOf(messages: LineMessage[]): string {
   const m = messages[0]
   if (m.type !== 'text') throw new Error('first message is not text')
-  return m.text
+  return messagesText(messages)
 }
 
 type Answer = { summary: string; tasks: Record<string, unknown>[] }
@@ -123,10 +124,12 @@ describe('#5.2 candidates carry sender and time context', () => {
     expect(text).toContain(`จาก Bank T. เวลา ${formatThaiShort(sentAt)}`)
     expect(text).toContain('จาก Bank T. เวลา 12 พ.ย. 09:01')
     // Only the first candidate has a source; the other two lines carry no จาก.
-    expect(text.match(/จาก/g)).toHaveLength(1)
-    const noSource = text.split('\n').filter((l) => /^\d+\. (จองห้อง|ซื้อของ)/.test(l))
-    expect(noSource).toHaveLength(2)
-    expect(noSource.every((l) => !l.includes('จาก'))).toBe(true)
+    expect(text.match(/^จาก /gm)).toHaveLength(1)
+    // The card lists each Task as its title, then the owner line, then a source line if any.
+    const lines = text.split('\n')
+    const afterOwner = lines.flatMap((l, i) => (/^(จองห้อง|ซื้อของ)/.test(l) ? [lines[i + 2] ?? ''] : []))
+    expect(afterOwner).toHaveLength(2)
+    expect(afterOwner.every((l) => !l.startsWith('จาก '))).toBe(true)
   })
 })
 

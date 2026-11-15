@@ -1,5 +1,6 @@
 import { liffUrl } from '../liff-links'
-import type { LineDatePickerAction, LineMessage, LinePostbackAction } from '../line/types'
+import { bubble, button, caption, column, header, keyValue, panel, postback } from '../line/flex-ui'
+import type { LineDatePickerAction, LineMessage } from '../line/types'
 import { log } from '../log'
 import { releaseIfLeft } from '../members/recheck'
 import type { Deps, TaskRow } from '../ports'
@@ -26,10 +27,15 @@ const THAI_WEEKDAY_SHORT = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', '
 export const POSTPONE_DAYS = [1, 3, 7] as const
 
 export const ANSWER_TEXT = {
+  postponeTitle: 'เลื่อนเป็นวันไหนดี?',
   postponeQuestion: (title: string) => `เลื่อน “${title}” ไปวันไหน?`,
-  postponeChoice: (days: number, label: string) => (days === 7 ? `+1 สัปดาห์ (${label})` : `+${days} วัน (${label})`),
+  postponeChoice: (days: number, label: string) =>
+    days === 1 ? `พรุ่งนี้ (${label})` : days === 7 ? `สัปดาห์หน้า (${label})` : `อีก ${days} วัน (${label})`,
   pickDate: 'เลือกวันเอง',
   postponed: (title: string, when: string) => `เลื่อนกำหนด “${title}” เป็น ${when} แล้ว`,
+  postponedTitle: 'เลื่อนแล้ว',
+  newDue: 'ส่งใหม่',
+  remindAgain: 'เดี๋ยวเตือนอีกครั้งก่อนถึงกำหนดนะ',
   notAllowed: (name: string) => `เฉพาะ ${name} ที่ตอบงานนี้ได้`,
   noOwner: 'งานนี้ยังไม่มีผู้รับ กด “ฉันรับเอง” ก่อน',
   alreadyTaken: (name: string) => `งานนี้มีผู้รับแล้ว (${name})`,
@@ -76,11 +82,6 @@ function formatWhen(due: Date): string {
   return `${dayLabel(bangkokTodayLabel(due))} ${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}`
 }
 
-function postbackButton(label: string, data: string, primary: boolean) {
-  const action: LinePostbackAction = { type: 'postback', label, data, displayText: label }
-  return { type: 'button', style: primary ? 'primary' : 'secondary', color: primary ? '#1F5BAD' : '#DCE8F7', height: 'sm', action }
-}
-
 /** Figma 6A-2: +1 day, +3 days, +1 week, and a date picker. Dates count from today. */
 export function postponeChoicesCard(task: TaskRow, now: Date): LineMessage {
   const today = bangkokTodayLabel(now)
@@ -92,20 +93,15 @@ export function postponeChoicesCard(task: TaskRow, now: Date): LineMessage {
   return {
     type: 'flex',
     altText: ANSWER_TEXT.postponeQuestion(task.title),
-    contents: {
-      type: 'bubble', size: 'kilo',
-      body: {
-        type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg',
-        contents: [
-          { type: 'text', text: ANSWER_TEXT.postponeQuestion(task.title), wrap: true, weight: 'bold', size: 'md', color: '#14213D' },
-          ...POSTPONE_DAYS.map((n) => {
-            const date = bangkokDatePlus(now, n)
-            return postbackButton(ANSWER_TEXT.postponeChoice(n, dayLabel(date)), encodeReminderAction({ kind: 'postpone_to', taskId: task.id, date }), false)
-          }),
-          { type: 'button', style: 'link', color: '#1F5BAD', height: 'sm', action: picker },
-        ],
-      },
-    },
+    contents: bubble([
+      header('info', ANSWER_TEXT.postponeTitle),
+      caption(task.title, { size: 'sm' }),
+      column(POSTPONE_DAYS.map((n) => {
+        const date = bangkokDatePlus(now, n)
+        return button('outline', postback(ANSWER_TEXT.postponeChoice(n, dayLabel(date)), encodeReminderAction({ kind: 'postpone_to', taskId: task.id, date })))
+      })),
+      button('ghost', picker),
+    ]),
   }
 }
 
@@ -115,17 +111,11 @@ function pickTaskCard(tasks: TaskRow[], kind: 'done' | 'postpone', more: number)
   const clip = (s: string) => (s.length > 40 ? `${s.slice(0, 39)}…` : s)
   return {
     type: 'flex', altText: title,
-    contents: {
-      type: 'bubble', size: 'kilo',
-      body: {
-        type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg',
-        contents: [
-          { type: 'text', text: title, wrap: true, weight: 'bold', size: 'md', color: '#14213D' },
-          ...tasks.map((t) => postbackButton(clip(t.title), encodeReminderAction({ kind, taskId: t.id }), false)),
-          ...(more > 0 ? [{ type: 'text', text: ANSWER_TEXT.moreTasks(more), wrap: true, size: 'xs', color: '#6B7280' }] : []),
-        ],
-      },
-    },
+    contents: bubble([
+      header('info', title),
+      column(tasks.map((t) => button('outline', postback(clip(t.title), encodeReminderAction({ kind, taskId: t.id }))))),
+      ...(more > 0 ? [caption(ANSWER_TEXT.moreTasks(more))] : []),
+    ]),
   }
 }
 
@@ -206,7 +196,22 @@ export async function resolveReminderAction(
   if (date < bangkokTodayLabel(now)) return { result: 'past_date', message: text(ANSWER_TEXT.pastDate) }
   if (!(await deps.store.postponeTask({ taskId: task.id, dueAt, by: userId, at: now })).updated) return lostWrite()
   log('reminder_postponed', { groupId, taskId: task.id })
-  return { result: 'postponed', message: text(ANSWER_TEXT.postponed(task.title, formatWhen(dueAt))) }
+  return { result: 'postponed', message: postponedCard(task.title, formatWhen(dueAt)) }
+}
+
+/** Figma 6A-3: "เลื่อนแล้ว · ส่งใหม่: …". The altText keeps the full sentence (the LIFF
+ *  login page shows it). */
+function postponedCard(title: string, when: string): LineMessage {
+  return {
+    type: 'flex',
+    altText: ANSWER_TEXT.postponed(title, when),
+    contents: bubble([
+      header('success', ANSWER_TEXT.postponedTitle),
+      caption(title, { size: 'sm' }),
+      panel([keyValue(ANSWER_TEXT.newDue, when)]),
+      caption(ANSWER_TEXT.remindAgain),
+    ]),
+  }
 }
 
 function loginMessage(liffId: string, data: string): LineMessage {

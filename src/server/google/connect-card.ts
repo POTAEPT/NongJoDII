@@ -1,6 +1,58 @@
+import { bubble, button, header, iconRow, panel, postback, text, uri } from '@/server/line/flex-ui'
+import type { LineMessage } from '@/server/line/types'
 import { liffUrl } from '@/server/liff-links'
 import { logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
+
+// The 1:1 chat answer (Figma UI v4 #1 ต้อนรับ + เชื่อม Drive): a card that explains what
+// connecting Drive does, with "เชื่อม Google Drive" and "ไว้ทีหลัง". "ไว้ทีหลัง" is a postback
+// that only shows the user's choice in the chat: 1:1 postbacks are recorded, not answered.
+
+export const CONNECT_TEXT = {
+  title: 'เชื่อม Google Drive ของคุณ',
+  intro: 'เพื่อให้ไฟล์จากกลุ่มที่คุณเป็นเจ้าของไม่หมดอายุ น้องจดดีจะเก็บไฟล์ไว้ใน Drive ของคุณเอง',
+  folder: 'สร้างโฟลเดอร์ NongJoDII ใน Drive ของคุณ',
+  scope: 'เข้าถึงเฉพาะไฟล์ที่น้องจดดีสร้างเท่านั้น',
+  connect: 'เชื่อม Google Drive',
+  later: 'ไว้ทีหลัง',
+  connectedTitle: 'เชื่อม Google Drive ไว้แล้ว',
+  connected: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ',
+  manage: 'จัดการ Google Drive',
+} as const
+
+/** Postback data of "ไว้ทีหลัง". No handler reads it (1:1 postbacks are only recorded). */
+export const CONNECT_LATER_DATA = 'a=drive_later'
+
+export function connectDriveCard(liffId: string): LineMessage {
+  return {
+    type: 'flex',
+    altText: CONNECT_TEXT.connect,
+    contents: bubble(
+      [
+        header('info', CONNECT_TEXT.title),
+        text(CONNECT_TEXT.intro, { color: '#545454' }),
+        panel([iconRow('📁', CONNECT_TEXT.folder), iconRow('🔒', CONNECT_TEXT.scope)]),
+      ],
+      [
+        button('primary', uri(CONNECT_TEXT.connect, liffUrl(liffId, 'google'))),
+        button('ghost', postback(CONNECT_TEXT.later, CONNECT_LATER_DATA)),
+      ],
+    ),
+  }
+}
+
+/** #14: the answer when the person's Google account is connected. Its button opens the LIFF
+ *  Google view, where the Owner can change the account. */
+export function connectedCard(liffId: string): LineMessage {
+  return {
+    type: 'flex',
+    altText: CONNECT_TEXT.connectedTitle,
+    contents: bubble(
+      [header('success', CONNECT_TEXT.connectedTitle), text('น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ', { color: '#545454' })],
+      [button('secondary', uri(CONNECT_TEXT.manage, liffUrl(liffId, 'google')))],
+    ),
+  }
+}
 
 export async function sendConnectDriveCard(
   deps: Deps,
@@ -17,28 +69,8 @@ export async function sendConnectDriveCard(
   }
   if (account?.tokenStatus === 'valid') {
     // #14: the button opens the LIFF Google view, where the Owner can change the account.
-    await deps.line.reply(job.replyToken, [
-      {
-        type: 'template',
-        altText: 'เชื่อม Google Drive ไว้แล้ว',
-        template: {
-          type: 'buttons',
-          text: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ',
-          actions: [{ type: 'uri', label: 'จัดการ Google Drive', uri: liffUrl(deps.config.liffId, 'google') }],
-        },
-      },
-    ])
+    await deps.line.reply(job.replyToken, [connectedCard(deps.config.liffId)])
     return
   }
-  await deps.line.reply(job.replyToken, [
-    {
-      type: 'template',
-      altText: 'เชื่อม Google Drive',
-      template: {
-        type: 'buttons',
-        text: 'เชื่อม Google Drive ของคุณ เพื่อให้น้องจดดีเก็บไฟล์ของกลุ่มที่คุณเป็นเจ้าของไว้ในไดรฟ์ของคุณเอง',
-        actions: [{ type: 'uri', label: 'เชื่อม Google Drive', uri: liffUrl(deps.config.liffId, 'google') }],
-      },
-    },
-  ])
+  await deps.line.reply(job.replyToken, [connectDriveCard(deps.config.liffId)])
 }

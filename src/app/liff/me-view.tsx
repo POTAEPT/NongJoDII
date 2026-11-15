@@ -3,13 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MyProfile } from '@/server/members/profile'
 import { NICKNAME_MAX, NICKNAMES_PER_MEMBER_MAX, ROLE_MAX } from '@/server/setup/rules'
-import { post } from './api'
+import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
+import { Avatar, Button, Field, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
 
 // #29 "my info", opened from the welcome reply to a join. `id` is groups.id. The server
 // takes the person from the verified LIFF ID token, so a Member edits only their own row.
 
-const ERR_401 = 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
 const ERR_403 = 'คุณไม่ได้อยู่ในกลุ่มนี้แล้ว'
 const ERR_404 = 'ไม่พบกลุ่มนี้'
 const ERR_LOAD = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
@@ -72,23 +72,16 @@ export function MeView({ liff, idToken, id }: LiffViewProps) {
     }
   }
 
-  if (load.kind === 'loading') return <p className="p-4 text-base">กำลังโหลด...</p>
+  const close = () => liff.closeWindow()
+  const TITLE = 'ข้อมูลของฉัน'
+  if (load.kind === 'loading') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังโหลด..." />
   if (load.kind === 'error') {
     return (
-      <div className="p-4 text-base">
-        <p>{load.message}</p>
-        <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => void fetchProfile()}>
-          ลองอีกครั้ง
-        </button>
-      </div>
+      <StatusScreen kind="error" appTitle={TITLE} onBack={close} title="โหลดข้อมูลไม่สำเร็จ" message={load.message}
+        onRetry={() => void fetchProfile()} onClose={close} />
     )
   }
-  const close = (
-    <button type="button" className="mt-4 w-full rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
-      กลับไปที่แชท
-    </button>
-  )
-  if (saved) return <div className="p-4 text-base"><p className="font-bold">บันทึกแล้ว ✓</p>{close}</div>
+  if (saved) return <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="บันทึกแล้ว" message="น้องจดดีจะใช้ชื่อเล่นนี้อ่านแชตของกลุ่ม" onClose={close} />
 
   const { data } = load
   const edit = (f: () => void) => {
@@ -96,19 +89,34 @@ export function MeView({ liff, idToken, id }: LiffViewProps) {
     f()
   }
   return (
-    <div className="space-y-4 p-4 text-base">
-      <h1 className="text-lg font-bold">ข้อมูลของฉันในกลุ่ม {data.groupName ?? 'นี้'}</h1>
-      <p className="text-sm">ชื่อ LINE: <span className="font-bold">{data.displayName}</span></p>
-      <section className="space-y-2">
-        <span className="text-sm">ชื่อเล่น (ที่คนในกลุ่มใช้เรียกคุณ)</span>
+    <Page
+      title={TITLE}
+      onBack={close}
+      bottom={
+        <div className="space-y-2">
+          {error && <Notice>{error}</Notice>}
+          <Button disabled={saving} onClick={() => void save()}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+        </div>
+      }
+    >
+      <section className="flex items-center gap-3 rounded-2xl border border-line bg-page p-4">
+        <Avatar name={data.displayName} id={data.displayName} size="md" />
+        <div className="min-w-0">
+          <p className="truncate font-semibold">{data.displayName}</p>
+          <p className="truncate text-xs text-ink-3">ชื่อใน LINE · กลุ่ม {data.groupName ?? 'นี้'}</p>
+        </div>
+      </section>
+      <section className="mt-4 space-y-2">
+        <span className="block text-sm font-semibold">ชื่อเล่น (ที่คนในกลุ่มใช้เรียกคุณ)</span>
         <div className="flex flex-wrap gap-2">
           {nicknames.map((n, i) => (
-            <span key={i} className="flex items-center rounded-full border px-2">
+            <span key={i} className="flex items-center rounded-full border border-line bg-page pl-3 pr-1">
               <input
                 type="text"
                 aria-label="ชื่อเล่น"
+                placeholder="ชื่อเล่น"
                 maxLength={NICKNAME_MAX}
-                className="w-24 bg-transparent p-1 text-sm"
+                className="w-24 bg-transparent py-1 text-sm focus:outline-none"
                 value={n}
                 disabled={saving}
                 onChange={(e) => edit(() => setNicknames(nicknames.map((x, j) => (j === i ? e.target.value : x))))}
@@ -116,7 +124,7 @@ export function MeView({ liff, idToken, id }: LiffViewProps) {
               <button
                 type="button"
                 aria-label="ลบชื่อเล่น"
-                className="px-1 text-gray-500"
+                className="flex h-7 w-7 items-center justify-center rounded-full text-ink-3"
                 disabled={saving}
                 onClick={() => edit(() => setNicknames(nicknames.filter((_, j) => j !== i)))}
               >
@@ -127,36 +135,29 @@ export function MeView({ liff, idToken, id }: LiffViewProps) {
           {nicknames.length < NICKNAMES_PER_MEMBER_MAX && (
             <button
               type="button"
-              className="rounded-full border border-dashed px-3 py-1 text-sm text-blue-700"
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong px-3 py-1 text-sm font-semibold text-primary"
               disabled={saving}
               onClick={() => edit(() => setNicknames([...nicknames, '']))}
             >
-              + ชื่อเล่น
+              <IconPlus className="h-3.5 w-3.5" /> ชื่อเล่น
             </button>
           )}
         </div>
       </section>
-      <label className="block">
-        <span className="text-sm">หน้าที่</span>
-        <input
-          type="text"
-          maxLength={ROLE_MAX}
-          className="mt-1 w-full rounded border p-2"
-          value={role}
-          disabled={saving}
-          onChange={(e) => edit(() => setRole(e.target.value))}
-        />
-      </label>
-      <p className="text-xs text-gray-500">ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น ทุกหน้าจอแสดงชื่อ LINE</p>
-      {error && <p role="alert">{error}</p>}
-      <button
-        type="button"
-        className="w-full rounded border px-4 py-2 font-bold"
-        disabled={saving}
-        onClick={() => void save()}
-      >
-        {saving ? 'กำลังบันทึก...' : 'บันทึก'}
-      </button>
-    </div>
+      <div className="mt-4">
+        <Field label="หน้าที่">
+          <input
+            type="text"
+            maxLength={ROLE_MAX}
+            className={inputClass}
+            placeholder="เช่น Design, PM, Dev"
+            value={role}
+            disabled={saving}
+            onChange={(e) => edit(() => setRole(e.target.value))}
+          />
+        </Field>
+      </div>
+      <p className="mt-3 text-xs text-ink-3">ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น ทุกหน้าจอแสดงชื่อ LINE</p>
+    </Page>
   )
 }

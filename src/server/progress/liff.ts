@@ -87,7 +87,7 @@ function datePickerOf(m: LineMessage): ProgressLiffBody['datePick'] | null {
     if (found || !node || typeof node !== 'object') return
     const n = node as Record<string, unknown>
     const a = n.action as Record<string, unknown> | undefined
-    if (n.type === 'button' && a?.type === 'datetimepicker' && typeof a.label === 'string' && typeof a.data === 'string'
+    if ((n.type === 'button' || n.type === 'box') && a?.type === 'datetimepicker' && typeof a.label === 'string' && typeof a.data === 'string'
       && typeof a.min === 'string' && typeof a.initial === 'string') {
       found = { label: a.label, data: a.data, min: a.min, initial: a.initial }
       return
@@ -98,7 +98,8 @@ function datePickerOf(m: LineMessage): ProgressLiffBody['datePick'] | null {
   return found
 }
 
-/** The postback buttons of a Flex message, in order. */
+/** The postback buttons of a Flex message, in order. A button is a Flex `button`, or a
+ *  `box` with an action (the cards draw their buttons as boxes, flex-ui.ts). */
 export function postbackChoices(m: LineMessage): { label: string; data: string }[] {
   if (m.type !== 'flex') return []
   const out: { label: string; data: string }[] = []
@@ -106,7 +107,7 @@ export function postbackChoices(m: LineMessage): { label: string; data: string }
     if (!node || typeof node !== 'object') return
     const n = node as Record<string, unknown>
     const a = n.action as { type?: unknown; label?: unknown; data?: unknown } | undefined
-    if (n.type === 'button' && a?.type === 'postback' && typeof a.label === 'string' && typeof a.data === 'string') {
+    if ((n.type === 'button' || n.type === 'box') && a?.type === 'postback' && typeof a.label === 'string' && typeof a.data === 'string') {
       out.push({ label: a.label, data: a.data })
     }
     for (const v of Object.values(n)) walk(v)

@@ -51,7 +51,7 @@ function actions(m: LineMessage): { type: string; label: string; data?: string; 
     if (Array.isArray(node)) return node.forEach(walk)
     if (!node || typeof node !== 'object') return
     const n = node as Record<string, unknown>
-    if (n.type === 'button' && n.action) out.push(n.action as { type: string; label: string })
+    if ((n.type === 'button' || n.type === 'box') && n.action) out.push(n.action as { type: string; label: string })
     Object.values(n).forEach(walk)
   }
   if (m.type === 'flex') walk(m.contents)

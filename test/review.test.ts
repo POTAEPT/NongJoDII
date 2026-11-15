@@ -379,7 +379,9 @@ describe('Tasks created feedback', () => {
     expect(res).toEqual({ status: 200, body: { posted: true } satisfies NotifyResult })
     expect(t.line.pushes).toHaveLength(1)
     expect(t.line.pushes[0].to).toBe(t.group.lineGroupId)
-    expect(t.line.pushes[0].messages[0]).toMatchObject({ type: 'text', text: expect.stringContaining('1. ทำสไลด์') })
+    expect(t.line.pushes[0].messages[0]).toMatchObject({ type: 'flex', altText: expect.stringContaining('1. ทำสไลด์') })
+    // Figma #4: the card links each created Task's LIFF page.
+    expect(JSON.stringify(t.line.pushes[0].messages[0])).toContain(`view=task&id=${ids[0]}`)
     const live = (await t.store.listLiveMembers(t.group.id)).length
     expect(t.store.tables.push_log).toEqual([
       { id: expect.any(String), purpose: 'task_created', lineTargetId: t.group.lineGroupId, messageCount: live, sentAt: expect.any(Date) },

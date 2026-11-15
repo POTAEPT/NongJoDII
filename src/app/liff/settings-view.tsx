@@ -3,17 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, ROLE_MAX, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import type { SettingsLoad } from '@/server/settings/types'
-import { post } from './api'
+import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
+import { Avatar, Button, Chip, Field, IconCheck, IconLock, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
 import { initialSettingsForm, settingsFieldMessage, toSettingsBody, validateSettings } from './settings-model'
 import { FEATURES, TimeSelect } from './setup-parts'
 import { addNickname, removeNickname, setNickname, setRole, type SetupForm } from './setup-model'
 
-// #28 Settings, opened from the "NongJoDII ตั้งค่า" card. `id` is groups.id. Two tabs:
+// #28 Settings, opened from the "น้องจดดี ตั้งค่า" card. `id` is groups.id. Two tabs:
 // the group's settings (the confirmed Owner edits, everyone else looks) and a static plan
 // mock with no payment. Changing the Owner (#30, #31) and Stop using (#11) come later.
 
-const ERR_401 = 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
 const ERR_403 = 'คุณไม่ได้อยู่ในกลุ่มนี้'
 const ERR_NOT_OWNER = 'เฉพาะเจ้าของบอทของกลุ่มนี้เท่านั้นที่แก้การตั้งค่าได้'
 const ERR_404 = 'ไม่พบกลุ่มนี้'
@@ -81,29 +81,20 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
     }
   }
 
-  if (load.kind === 'loading') return <p className="p-4 text-base">กำลังโหลด...</p>
+  const close = () => liff.closeWindow()
+  const TITLE = 'ตั้งค่า'
+  if (load.kind === 'loading') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังโหลด..." />
   if (load.kind === 'error') {
     return (
-      <div className="p-4 text-base">
-        <p>{load.message}</p>
-        <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => void fetchSettings()}>
-          ลองอีกครั้ง
-        </button>
-      </div>
+      <StatusScreen kind="error" appTitle={TITLE} onBack={close} title="โหลดข้อมูลไม่สำเร็จ" message={load.message}
+        onRetry={() => void fetchSettings()} onClose={close} />
     )
   }
   const { data } = load
-  const close = (
-    <button type="button" className="mt-4 w-full rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
-      กลับไปที่แชท
-    </button>
-  )
   if (data.state === 'not_set_up') {
     return (
-      <div className="p-4 text-base">
-        <p>กลุ่มนี้ยังตั้งค่าไม่เสร็จ กรุณาใช้ปุ่ม &quot;ตั้งค่ากลุ่ม&quot; ในการ์ดที่น้องจดดีส่งในกลุ่ม</p>
-        {close}
-      </div>
+      <StatusScreen kind="forbidden" appTitle={TITLE} onBack={close} title="กลุ่มนี้ยังตั้งค่าไม่เสร็จ"
+        message={'กรุณาใช้ปุ่ม "ตั้งค่ากลุ่ม" ในการ์ดที่น้องจดดีส่งในกลุ่ม'} onClose={close} />
     )
   }
   if (!form) return null
@@ -114,18 +105,28 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
     setSaved(false)
     setForm(next)
   }
+  const editing = tab === 'settings' && data.canEdit
 
   return (
-    <div className="p-4 text-base">
-      <h1 className="text-lg font-bold">ตั้งค่า{data.groupName ? ` · ${data.groupName}` : ''}</h1>
-      <div className="mt-3 flex gap-2" role="tablist">
+    <Page
+      title={data.groupName ? `${TITLE} · ${data.groupName}` : TITLE}
+      onBack={close}
+      bottom={editing ? (
+        <div className="space-y-2">
+          {error && <Notice>{error}</Notice>}
+          {saved && <Notice tone="success">บันทึกแล้ว</Notice>}
+          <Button disabled={saving} onClick={() => void save()}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+        </div>
+      ) : <Button variant="outline" onClick={close}>กลับไปที่แชต</Button>}
+    >
+      <div className="flex gap-1 rounded-full bg-line p-1" role="tablist">
         {(['settings', 'plans'] as const).map((t) => (
           <button
             key={t}
             type="button"
             role="tab"
             aria-selected={tab === t}
-            className={`flex-1 rounded-full border px-3 py-1 text-sm ${tab === t ? 'bg-blue-700 text-white' : ''}`}
+            className={`flex-1 rounded-full px-3 py-2 text-sm font-semibold ${tab === t ? 'bg-page text-ink shadow-sm' : 'text-ink-2'}`}
             onClick={() => setTab(t)}
           >
             {t === 'settings' ? 'ตั้งค่ากลุ่ม' : 'แพ็กเกจ'}
@@ -135,38 +136,48 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
 
       {tab === 'plans' ? <Plans /> : (
         <div className="mt-4 space-y-4">
-          <p className="text-sm">
-            เจ้าของบอท: <span className="font-bold">{data.owner?.displayName ?? '-'}</span>
-          </p>
-          {!data.canEdit && <p className="rounded border p-2 text-sm text-gray-600">{ERR_NOT_OWNER} คุณดูได้อย่างเดียว</p>}
+          <section className="flex items-center gap-3 rounded-2xl border border-line bg-page p-4">
+            {data.owner
+              ? <Avatar name={data.owner.displayName} id={data.owner.displayName} size="md" />
+              : <span className="flex h-9 w-9 items-center justify-center rounded-full bg-line text-ink-3"><IconLock className="h-4 w-4" /></span>}
+            <div className="min-w-0">
+              <p className="text-xs text-ink-3">เจ้าของบอท</p>
+              <p className="truncate font-semibold">{data.owner?.displayName ?? '-'}</p>
+            </div>
+          </section>
+          {!data.canEdit && <Notice tone="info">{ERR_NOT_OWNER} คุณดูได้อย่างเดียว</Notice>}
 
-          <section className="space-y-1">
-            <span className="text-sm font-bold">กลุ่มนี้ทำเรื่องอะไร</span>
+          <Field label="กลุ่มนี้ทำเรื่องอะไร">
             <textarea
               maxLength={WORK_DESCRIPTION_MAX}
               rows={4}
-              className="w-full rounded border p-2"
+              className={inputClass}
               value={form.workDescription}
               disabled={ro}
               onChange={(e) => set({ ...form, workDescription: e.target.value })}
             />
-          </section>
+          </Field>
 
           <section className="space-y-2">
-            <span className="text-sm font-bold">{data.canEdit ? 'ชื่อเล่นและหน้าที่' : 'สมาชิก'}</span>
+            <span className="block text-sm font-semibold">{data.canEdit ? 'ชื่อเล่นและหน้าที่' : 'สมาชิก'}</span>
             {form.members.map((m) => (
-              <div key={m.lineUserId} className="space-y-2 rounded border p-3">
-                <span className="font-bold">{m.displayName}</span>
+              <div key={m.lineUserId} className="space-y-3 rounded-2xl border border-line bg-page p-4">
+                <div className="flex items-center gap-3">
+                  <Avatar name={m.displayName} id={m.lineUserId} size="md" />
+                  <span className="min-w-0 flex-1 truncate font-semibold">{m.displayName}</span>
+                  {!data.canEdit && m.role && <Chip>{m.role}</Chip>}
+                </div>
                 {data.canEdit && (
                   <>
                     <div className="flex flex-wrap gap-2">
                       {m.nicknames.map((n, i) => (
-                        <span key={i} className="flex items-center rounded-full border px-2">
+                        <span key={i} className="flex items-center rounded-full border border-line bg-subtle pl-3 pr-1">
                           <input
                             type="text"
                             aria-label="ชื่อเล่น"
+                            placeholder="ชื่อเล่น"
                             maxLength={NICKNAME_MAX}
-                            className="w-24 bg-transparent p-1 text-sm"
+                            className="w-24 bg-transparent py-1 text-sm focus:outline-none"
                             value={n}
                             disabled={ro}
                             onChange={(e) => set(setNickname(form, m.lineUserId, i, e.target.value))}
@@ -174,7 +185,7 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
                           <button
                             type="button"
                             aria-label="ลบชื่อเล่น"
-                            className="px-1 text-gray-500"
+                            className="flex h-7 w-7 items-center justify-center rounded-full text-ink-3"
                             disabled={ro}
                             onClick={() => set(removeNickname(form, m.lineUserId, i))}
                           >
@@ -184,120 +195,118 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
                       ))}
                       <button
                         type="button"
-                        className="rounded-full border border-dashed px-3 py-1 text-sm text-blue-700"
+                        className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong px-3 py-1 text-sm font-semibold text-primary"
                         disabled={ro}
                         onClick={() => set(addNickname(form, m.lineUserId))}
                       >
-                        + ชื่อเล่น
+                        <IconPlus className="h-3.5 w-3.5" /> ชื่อเล่น
                       </button>
                     </div>
-                    <label className="block">
-                      <span className="text-sm">หน้าที่</span>
+                    <Field label="หน้าที่">
                       <input
                         type="text"
                         maxLength={ROLE_MAX}
-                        className="mt-1 w-full rounded border p-2"
+                        className={inputClass}
                         value={m.role}
                         disabled={ro}
                         onChange={(e) => set(setRole(form, m.lineUserId, e.target.value))}
                       />
-                    </label>
+                    </Field>
                   </>
                 )}
               </div>
             ))}
-            <p className="text-xs text-gray-500">ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น ทุกหน้าจอแสดงชื่อ LINE</p>
+            <p className="text-xs text-ink-3">ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น ทุกหน้าจอแสดงชื่อ LINE</p>
           </section>
 
           <section className="space-y-2">
-            <span className="text-sm font-bold">ฟีเจอร์</span>
-            {FEATURES.map((f) => (
-              <label key={f.key} className="flex items-start gap-3 rounded border p-3">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={form.features[f.key]}
-                  disabled={ro}
-                  onChange={(e) => set({ ...form, features: { ...form.features, [f.key]: e.target.checked } })}
-                />
-                <span>
-                  <span className="block font-bold">{f.label}</span>
-                  <span className="block text-sm text-gray-600">{f.sub}</span>
-                </span>
-              </label>
-            ))}
+            <span className="block text-sm font-semibold">ฟีเจอร์</span>
+            {FEATURES.map((f) => {
+              const on = form.features[f.key]
+              return (
+                <label key={f.key}
+                  className={`flex items-center gap-3 rounded-xl border p-4 ${ro ? '' : 'cursor-pointer'} ${on ? 'border-primary bg-primary-soft' : 'border-line bg-page'}`}>
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={on}
+                    disabled={ro}
+                    onChange={(e) => set({ ...form, features: { ...form.features, [f.key]: e.target.checked } })}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold">{f.label}</span>
+                    <span className="block text-xs text-ink-3">{f.sub}</span>
+                  </span>
+                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 ${on ? 'border-primary bg-primary text-white' : 'border-line-strong'}`}>
+                    {on && <IconCheck className="h-4 w-4" />}
+                  </span>
+                </label>
+              )
+            })}
           </section>
 
-          <section className="rounded border p-3">
-            <span className="text-sm font-bold">เตือนงานทุกวัน</span>
-            <TimeSelect value={form.dailyReminderTime} disabled={ro} onChange={(v) => set({ ...form, dailyReminderTime: v })} />
+          <section className="space-y-2 rounded-2xl border border-line bg-page p-4">
+            <Field label="เตือนงานทุกวัน">
+              <TimeSelect value={form.dailyReminderTime} disabled={ro} onChange={(v) => set({ ...form, dailyReminderTime: v })} />
+            </Field>
           </section>
-          <section className="rounded border p-3">
-            <span className="text-sm font-bold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {WEEKDAYS.map((d) => (
-                <button
-                  key={d.iso}
-                  type="button"
-                  aria-pressed={form.weeklySummaryWeekday === d.iso}
-                  className={`rounded-full border px-3 py-1 text-sm ${form.weeklySummaryWeekday === d.iso ? 'bg-blue-700 text-white' : ''}`}
-                  disabled={ro}
-                  onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
-                >
-                  {d.label}
-                </button>
-              ))}
+          <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
+            <span className="block text-sm font-semibold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
+            <div className="flex flex-wrap gap-2">
+              {WEEKDAYS.map((d) => {
+                const on = form.weeklySummaryWeekday === d.iso
+                return (
+                  <button
+                    key={d.iso}
+                    type="button"
+                    aria-pressed={on}
+                    className={`rounded-full px-4 py-1.5 text-sm font-semibold ${on ? 'bg-primary text-white' : 'border border-line bg-page text-ink-2'}`}
+                    disabled={ro}
+                    onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
+                  >
+                    {d.label}
+                  </button>
+                )
+              })}
             </div>
             <TimeSelect value={form.weeklySummaryTime} disabled={ro} onChange={(v) => set({ ...form, weeklySummaryTime: v })} />
           </section>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-ink-3">
             เวลาเป็นเวลาประเทศไทย เปลี่ยนแล้วมีผลในรอบถัดไป ถ้าวันนี้เตือนไปแล้ว เวลาใหม่จะเริ่มพรุ่งนี้
           </p>
-
-          {data.canEdit && (
-            <div className="space-y-2">
-              {error && <p role="alert">{error}</p>}
-              {saved && <p className="font-bold">บันทึกแล้ว ✓</p>}
-              <button
-                type="button"
-                className="w-full rounded border px-4 py-2 font-bold"
-                disabled={saving}
-                onClick={() => void save()}
-              >
-                {saving ? 'กำลังบันทึก...' : 'บันทึก'}
-              </button>
-            </div>
-          )}
-          {close}
         </div>
       )}
-    </div>
+    </Page>
   )
 }
 
-/** Static plan mock (decided: no payment code). */
+/** Static plan mock (decided: no payment code). Styled like Figma UI v4 16A. */
 function Plans() {
   return (
     <div className="mt-4 space-y-3">
-      <section className="rounded border-2 border-blue-700 p-3">
-        <p className="font-bold">Free <span className="text-sm font-normal text-blue-700">· แพ็กเกจปัจจุบัน</span></p>
-        <ul className="mt-2 list-disc pl-5 text-sm">
-          <li>ใช้ได้ทุกฟีเจอร์: สรุปแชต ติดตามและเตือนงาน เก็บไฟล์ สรุปรายสัปดาห์</li>
-          <li>เก็บไฟล์ใน Google Drive ของเจ้าของบอท</li>
-          <li>ใช้ AI ได้ตามโควตาการใช้งานที่เหมาะสมต่อเดือน น้องจดดีจะเตือนเมื่อใช้ไป 80%</li>
+      <section className="rounded-2xl border-2 border-primary bg-page p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-lg font-semibold">แผน Free</p>
+          <Chip tone="done">แพ็กเกจปัจจุบัน</Chip>
+        </div>
+        <ul className="mt-3 space-y-2 text-sm text-ink-2">
+          <li className="flex gap-2"><IconCheck className="mt-0.5 h-4 w-4 shrink-0 text-done" />ใช้ได้ทุกฟีเจอร์: สรุปแชต ติดตามและเตือนงาน เก็บไฟล์ สรุปรายสัปดาห์</li>
+          <li className="flex gap-2"><IconCheck className="mt-0.5 h-4 w-4 shrink-0 text-done" />เก็บไฟล์ใน Google Drive ของเจ้าของบอท</li>
+          <li className="flex gap-2"><IconCheck className="mt-0.5 h-4 w-4 shrink-0 text-done" />ใช้ AI ได้ตามโควตาการใช้งานที่เหมาะสมต่อเดือน น้องจดดีจะเตือนเมื่อใช้ไป 80%</li>
         </ul>
       </section>
-      <section className="rounded border p-3">
-        <p className="font-bold">Team <span className="text-sm font-normal text-gray-500">· เร็ว ๆ นี้</span></p>
-        <ul className="mt-2 list-disc pl-5 text-sm">
-          <li>โควตา AI มากขึ้นสำหรับทีมที่คุยกันเยอะ</li>
-          <li>ดูแลหลายโปรเจกต์ในที่เดียว</li>
+      <section className="rounded-2xl border border-line bg-page p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-lg font-semibold">แผน Team</p>
+          <Chip tone="warn">เร็ว ๆ นี้</Chip>
+        </div>
+        <ul className="mt-3 space-y-2 text-sm text-ink-2">
+          <li className="flex gap-2"><IconCheck className="mt-0.5 h-4 w-4 shrink-0 text-ink-3" />โควตา AI มากขึ้นสำหรับทีมที่คุยกันเยอะ</li>
+          <li className="flex gap-2"><IconCheck className="mt-0.5 h-4 w-4 shrink-0 text-ink-3" />ดูแลหลายโปรเจกต์ในที่เดียว</li>
         </ul>
-        <button type="button" className="mt-3 w-full rounded border px-4 py-2 text-gray-500" disabled>
-          ยังไม่เปิดให้สมัคร
-        </button>
+        <Button variant="outline" className="mt-4" disabled>ยังไม่เปิดให้สมัคร</Button>
       </section>
-      <p className="text-xs text-gray-500">หน้านี้เป็นตัวอย่างแพ็กเกจ ยังไม่มีการเก็บเงิน</p>
+      <p className="text-center text-xs text-ink-3">หน้านี้เป็นตัวอย่างแพ็กเกจ ยังไม่มีการเก็บเงิน</p>
     </div>
   )
 }

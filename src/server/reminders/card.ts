@@ -1,21 +1,13 @@
-import type { LineMessage, LinePostbackAction } from '../line/types'
-import type { TaskStatus } from '../ports'
+import { COLOR, bubble, button, buttonRow, caption, header, keyValue, panel, postback, text, title, type Tone } from '../line/flex-ui'
+import type { LineMessage } from '../line/types'
 import { BKK_OFFSET_MS, bangkokParts } from '../time/bangkok'
 import { encodeReminderAction } from './postback'
 import type { ReminderItem, ReminderReason } from './select'
 
 // #44 (8b) The daily reminder post: one Flex carousel per group per day. The first bubble
-// sums up the day; then one bubble per Task with its reasons and the Done / Postpone
-// buttons (answered in #45). Same look as the Track progress cards (progress/card.ts).
-// Cards show LINE names, never nicknames (decided 2026-11-11).
-
-const C = { text: '#14213D', muted: '#8A94A6', primary: '#1F5BAD', primarySoft: '#DCE8F7', red: '#B42318' } as const
-
-const STATUS_BADGE: Record<TaskStatus, { label: string; bg: string; fg: string }> = {
-  not_assigned: { label: 'ยังไม่มีผู้รับ', bg: '#FCEFC7', fg: '#7A4B00' },
-  in_process: { label: 'กำลังทำ', bg: '#DCE8F7', fg: '#1F5BAD' },
-  done: { label: 'เสร็จ', bg: '#DDF3E6', fg: '#17703F' },
-}
+// sums up the day; then one bubble per Task, styled like Figma "UI v4" 6A / 6B / 6C: the
+// most urgent reason as the header, the owner and due date, and the Done / Postpone
+// buttons (answered in #45). Cards show LINE names, never nicknames (decided 2026-11-11).
 
 const TITLE_MAX = 60
 const DAY_MS = 86_400_000
@@ -24,10 +16,12 @@ export const REMINDER_TEXT = {
   title: 'แจ้งเตือนงานวันนี้',
   more: (n: number) => `และอีก ${n} งาน ดูได้ใน Dashboard`,
   done: 'เสร็จแล้ว',
-  postpone: 'เลื่อนกำหนด', // Figma "UI แก้ V.1", frame 6A
-  take: 'ฉันรับเอง',       // Figma 6C: a Task with no owner offers this instead (#45, option ก)
-  owner: (name: string) => `คนทำ: ${name}`,
+  postpone: 'ขอเลื่อน',  // Figma UI v4, frame 6A
+  take: 'ฉันรับเอง',     // Figma 6C: a Task with no owner offers this instead (#45, option ก)
+  owner: 'ผู้รับ',
+  due: 'กำหนดส่ง',
   noOwner: 'ยังไม่มีผู้รับ',
+  noDue: 'ยังไม่กำหนด',
 } as const
 
 /** Bangkok calendar days from a to b (b later = positive). */
@@ -76,34 +70,19 @@ export function reasonCounts(items: ReminderItem[]): { overdue: number; dueSoon:
   return c
 }
 
-function text(t: string, extra: Record<string, unknown> = {}) {
-  return { type: 'text', text: t, wrap: true, color: C.text, size: 'sm', ...extra }
-}
-
 function clip(title: string): string {
   return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title
 }
 
-function bubble(body: unknown[], footer?: unknown[]) {
-  return {
-    type: 'bubble', size: 'kilo',
-    body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg', contents: body },
-    ...(footer ? { footer: { type: 'box', layout: 'horizontal', spacing: 'sm', paddingAll: 'md', contents: footer } } : {}),
-  }
+/** The card header for a Task's most urgent reason (Figma 6A ใกล้ถึงกำหนด, 6B เลยกำหนด, 6C ยังไม่มีผู้รับ). */
+function reasonTone(reason: ReminderReason): Tone {
+  return reason === 'overdue' ? 'warning' : 'reminder'
 }
 
-function button(label: string, data: string, style: 'primary' | 'secondary') {
-  const action: LinePostbackAction = { type: 'postback', label, data, displayText: label }
-  return { type: 'button', style, color: style === 'primary' ? C.primary : C.primarySoft, height: 'sm', action }
-}
-
-function badge(status: TaskStatus) {
-  const s = STATUS_BADGE[status]
-  return {
-    type: 'box', layout: 'horizontal', flex: 0, backgroundColor: s.bg, cornerRadius: 'xxl',
-    paddingStart: 'md', paddingEnd: 'md', paddingTop: 'xs', paddingBottom: 'xs',
-    contents: [text(`● ${s.label}`, { flex: 0, size: 'xs', color: s.fg, weight: 'bold' })],
-  }
+function dueText(due: Date | null): string {
+  if (!due) return REMINDER_TEXT.noDue
+  const p = bangkokParts(due)
+  return `${p.d}/${p.m} ${hhmm(due)}`
 }
 
 function summaryBubble(items: ReminderItem[], total: number, now: Date) {
@@ -116,36 +95,34 @@ function summaryBubble(items: ReminderItem[], total: number, now: Date) {
     c.noUpdate ? `ไม่มีอัปเดตเกิน 5 วัน ${c.noUpdate} งาน` : null,
   ].filter((x): x is string => x !== null)
   return bubble([
-    text(REMINDER_TEXT.title, { weight: 'bold', size: 'md' }),
-    text(`${p.d}/${p.m} · ${total} งานที่ต้องดู`, { size: 'xs', color: C.muted }),
-    ...lines.map((l) => text(`• ${l}`, { size: 'sm' })),
-    ...(total > items.length ? [text(REMINDER_TEXT.more(total - items.length), { size: 'xs', color: C.muted })] : []),
+    header('reminder', REMINDER_TEXT.title),
+    caption(`${p.d}/${p.m} · ${total} งานที่ต้องดู`),
+    panel(lines.map((l) => text(`• ${l}`))),
+    ...(total > items.length ? [caption(REMINDER_TEXT.more(total - items.length))] : []),
   ])
 }
 
 function taskBubble(item: ReminderItem, names: Map<string, string | null>, now: Date) {
   const { task, reasons } = item
-  const urgent = reasons[0] === 'overdue' || reasons[0] === 'due_today'
-  const owner = task.assigneeLineUserId
-    ? REMINDER_TEXT.owner(names.get(task.assigneeLineUserId) ?? 'สมาชิก')
-    : REMINDER_TEXT.noOwner
+  const top = reasons[0]
+  const owner = task.assigneeLineUserId ? (names.get(task.assigneeLineUserId) ?? 'สมาชิก') : REMINDER_TEXT.noOwner
+  const ownerColor = task.assigneeLineUserId ? COLOR.ink : '#92400E'
+  const dueColor = top === 'overdue' ? COLOR.danger : COLOR.ink
   return bubble(
     [
-      text(clip(task.title), { weight: 'bold', size: 'md' }),
-      badge(task.status),
-      ...reasons.map((r, i) => text(reasonLabel(r, item, now), {
-        size: 'xs', color: i === 0 && urgent ? C.red : C.muted, weight: i === 0 ? 'bold' : 'regular',
-      })),
-      text(owner, { size: 'xs', color: C.muted }),
+      header(reasonTone(top), reasonLabel(top, item, now)),
+      title(clip(task.title)),
+      panel([keyValue(REMINDER_TEXT.owner, owner, ownerColor), keyValue(REMINDER_TEXT.due, dueText(task.dueAt), dueColor)]),
+      ...reasons.slice(1).map((r) => caption(reasonLabel(r, item, now))),
     ],
     // Done and Postpone belong to the Task's owner (the #39 rule). A Task with no owner has
     // nobody who may answer them, so its next step is someone taking it.
     task.assigneeLineUserId === null
-      ? [button(REMINDER_TEXT.take, encodeReminderAction({ kind: 'take', taskId: task.id }), 'primary')]
-      : [
-          button(REMINDER_TEXT.postpone, encodeReminderAction({ kind: 'postpone', taskId: task.id }), 'secondary'),
-          button(REMINDER_TEXT.done, encodeReminderAction({ kind: 'done', taskId: task.id }), 'primary'),
-        ],
+      ? [button('primary', postback(REMINDER_TEXT.take, encodeReminderAction({ kind: 'take', taskId: task.id })))]
+      : [buttonRow(
+          button('secondary', postback(REMINDER_TEXT.postpone, encodeReminderAction({ kind: 'postpone', taskId: task.id }))),
+          button('primary', postback(REMINDER_TEXT.done, encodeReminderAction({ kind: 'done', taskId: task.id }))),
+        )],
   )
 }
 

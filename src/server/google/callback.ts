@@ -76,12 +76,12 @@ async function decide(deps: Deps, params: URLSearchParams, defer: Defer, deadlin
 }
 
 const COPY: Record<CallbackOutcome, { h1: string; p: string }> = {
-  ok: { h1: 'เชื่อม Google Drive สำเร็จ', p: 'กลับไปที่แชท LINE กับน้องจดดีได้เลย' },
-  cancelled: { h1: 'ยังไม่ได้เชื่อม Google Drive', p: 'คุณยกเลิกการเข้าสู่ระบบ Google ลองใหม่ได้จากแชทกับน้องจดดี' },
-  expired: { h1: 'ลิงก์หมดอายุ', p: 'กรุณาเริ่มเชื่อม Google Drive ใหม่จากแชทกับน้องจดดี' },
+  ok: { h1: 'เชื่อม Google Drive สำเร็จ', p: 'กลับไปที่แชต LINE กับน้องจดดีได้เลย' },
+  cancelled: { h1: 'ยังไม่ได้เชื่อม Google Drive', p: 'คุณยกเลิกการเข้าสู่ระบบ Google ลองใหม่ได้จากแชตกับน้องจดดี' },
+  expired: { h1: 'ลิงก์หมดอายุ', p: 'กรุณาเริ่มเชื่อม Google Drive ใหม่จากแชตกับน้องจดดี' },
   missing_scope: { h1: 'ยังไม่ได้รับสิทธิ์ Google Drive', p: 'กรุณาลองใหม่และติ๊กอนุญาตให้น้องจดดีเข้าถึงไฟล์ใน Google Drive' },
   no_refresh_token: { h1: 'เชื่อม Google Drive ไม่สำเร็จ', p: 'Google ไม่ได้ส่งสิทธิ์ใช้งานต่อเนื่องมา กรุณาลองใหม่อีกครั้ง' },
-  failed: { h1: 'เชื่อม Google Drive ไม่สำเร็จ', p: 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้งจากแชทกับน้องจดดี' },
+  failed: { h1: 'เชื่อม Google Drive ไม่สำเร็จ', p: 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้งจากแชตกับน้องจดดี' },
 }
 
 /** The LIFF link the callback page sends the user back to. On a phone a
@@ -97,17 +97,34 @@ export function googleReturnUrl(liffId: string, outcome: CallbackOutcome): strin
 export function renderCallbackPage(outcome: CallbackOutcome, liffId: string): Response {
   const { h1, p } = COPY[outcome]
   const href = googleReturnUrl(liffId, outcome).replace(/&/g, '&amp;')
+  const ok = outcome === 'ok'
+  // Figma UI v4 #11 ผลลัพธ์: brand app bar, a status circle, the copy and one primary button.
+  const icon = ok
+    ? '<path d="M20 6L9 17l-5-5"/>'
+    : '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>'
   const html =
     '<!doctype html><html lang="th"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-    '<title>NongJoDII</title>' +
-    '<style>body{font-family:sans-serif;padding:24px;text-align:center}' +
-    'a.back{display:block;margin:32px auto 0;max-width:320px;padding:16px;border-radius:12px;' +
-    'background:#06C755;color:#fff;font-size:20px;font-weight:bold;text-decoration:none}</style>' +
-    `</head><body><h1>${h1}</h1><p>${p}</p>` +
-    `<a class="back" href="${href}">กลับไปที่ LINE</a></body></html>`
+    '<title>น้องจดดี</title>' +
+    '<link rel="preconnect" href="https://fonts.googleapis.com">' +
+    '<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600&display=swap" rel="stylesheet">' +
+    '<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column;' +
+    "font-family:'IBM Plex Sans Thai',sans-serif;background:#F4F6F9;color:#12294D}" +
+    'header{background:#12294D;color:#fff;font-weight:600;font-size:16px;padding:16px}' +
+    'main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}' +
+    '.badge{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center}' +
+    '.ok{background:#DDF3E8;color:#2E9E6B}.bad{background:#FEF3C7;color:#D97706}' +
+    'h1{font-size:20px;font-weight:600;margin:16px 0 8px}p{margin:0;font-size:14px;color:#545454;max-width:320px}' +
+    'footer{background:#fff;border-top:1px solid #D5E2F3;padding:12px 16px 24px}' +
+    'a.back{display:block;padding:14px;border-radius:12px;background:#1F5FB0;color:#fff;font-size:16px;' +
+    'font-weight:600;text-align:center;text-decoration:none}</style>' +
+    '</head><body><header>เชื่อม Google Drive</header><main>' +
+    `<div class="badge ${ok ? 'ok' : 'bad'}"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" ` +
+    `stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></div>` +
+    `<h1>${h1}</h1><p>${p}</p></main>` +
+    `<footer><a class="back" href="${href}">กลับไปที่ LINE</a></footer></body></html>`
   return new Response(html, {
-    status: outcome === 'ok' ? 200 : 400,
+    status: ok ? 200 : 400,
     headers: { 'Content-Type': 'text/html; charset=utf-8' },
   })
 }

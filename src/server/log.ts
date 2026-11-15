@@ -45,9 +45,9 @@ export function logError(event: string, fields: Fields, err: unknown): void {
   console.error(JSON.stringify({ event, ...fields, error }))
 }
 
-/** Google refused the "anyone with the link" share for a policy reason (400
- *  invalidSharingRequest, or a 403 that is not a usage limit): a Google Workspace policy
- *  blocks link sharing, so retrying cannot help until an admin changes it (#4). */
+/** Google refused the "anyone with the link" share with an explicit sharing-policy reason
+ *  (google/client.ts SHARE_POLICY_REASONS): a Google Workspace policy blocks link sharing,
+ *  so retrying cannot help until an admin changes it (#4). */
 export class DriveShareRefused extends AdapterError {
   name = 'DriveShareRefused'
 

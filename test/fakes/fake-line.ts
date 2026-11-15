@@ -45,8 +45,17 @@ export class FakeLine implements LinePort {
   /** `${lineGroupId}:${lineUserId}` keys whose getGroupMemberProfile rejects, as on a LINE 5xx. */
   failProfileFor = new Set<string>()
 
+  /** Makes reply reject as LINE does for an expired or used token (a 4xx). */
+  rejectReply = false
+  /** How long these calls take on `clock` (#4 time budget); 0 = instant. */
+  replyMs = 0
+  pushMs = 0
+  quotaMs = 0
+
   async reply(replyToken: string, messages: LineMessage[]): Promise<void> {
     this.replies.push({ replyToken, messages })
+    if (this.replyMs > 0) this.clock?.advance(this.replyMs)
+    if (this.rejectReply) throw new AdapterError('line reply 400')
     if (this.failReply) throw new AdapterError('line reply 500')
   }
 
@@ -60,6 +69,7 @@ export class FakeLine implements LinePort {
 
   async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult> {
     this.pushes.push({ to, messages, retryKey: opts?.retryKey })
+    if (this.pushMs > 0) this.clock?.advance(this.pushMs)
     if (this.rejectPush) throw new LinePushRejected(400)
     if (this.failPush) throw new AdapterError('line push 500')
     const key = opts?.retryKey
@@ -96,6 +106,7 @@ export class FakeLine implements LinePort {
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
+    if (this.quotaMs > 0) this.clock?.advance(this.quotaMs)
     if (this.failQuota) throw new AdapterError('line quota 500')
     return { ...this.quota }
   }

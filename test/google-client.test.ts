@@ -243,18 +243,22 @@ describe('GoogleHttpClient.uploadFile (#4)', () => {
 describe('GoogleHttpClient link share (#4 follow-up)', () => {
   const reason = (r: string, domain = 'global') => ({ error: { errors: [{ domain, reason: r, message: 'secret detail' }] } })
 
-  it('a policy refusal is DriveShareRefused: 400 invalidSharingRequest, or a 403 that is not a usage limit', async () => {
-    for (const [status, body] of [[400, reason('invalidSharingRequest')], [403, reason('forbidden')], [403, {}]] as const) {
+  it('only an explicit sharing-policy reason is DriveShareRefused', async () => {
+    for (const [status, body] of [
+      [400, reason('invalidSharingRequest')], [403, reason('shareOutNotPermitted')], [403, reason('domainPolicy')],
+      [403, reason('publishOutNotPermitted')],
+    ] as const) {
       const err = await stubFetch(status, body).client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
       expect(err).toBeInstanceOf(DriveShareRefused)
       expect((err as Error).message).toBe(`google drive share ${status}`)
     }
   })
 
-  it('a 403 rate limit, a 400 of another kind, or a 5xx is a plain AdapterError (retrying can help)', async () => {
+  it('a rate limit, an empty or bare 403, another 400 or a 5xx is unknown: a plain AdapterError', async () => {
     for (const [status, body] of [
       [403, reason('rateLimitExceeded', 'usageLimits')], [403, reason('sharingRateLimitExceeded')],
-      [403, reason('userRateLimitExceeded', 'usageLimits')], [400, reason('badRequest')], [500, {}],
+      [403, reason('userRateLimitExceeded', 'usageLimits')], [403, {}], [403, reason('forbidden')],
+      [400, reason('badRequest')], [500, {}],
     ] as const) {
       const err = await stubFetch(status, body).client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
       expect(err).toBeInstanceOf(AdapterError)

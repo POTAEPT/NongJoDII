@@ -379,12 +379,16 @@ export class SupabaseStore implements StorePort {
     check('countImageSet', error)
     const keys = ((data ?? []) as { line_message_id: string }[]).map((r) => `file:${r.line_message_id}`)
     if (keys.length === 0) return { messages: 0, saved: 0, failed: 0 }
-    const { data: settled, error: settledError } = await this.db
-      .from('webhook_events')
-      .select('webhook_event_id, event_type')
-      .in('webhook_event_id', keys)
-    check('countImageSet', settledError)
-    const rows = (settled ?? []) as { event_type: string }[]
+    const rows: { event_type: string }[] = []
+    // IN_CHUNK keys per request, so the URL stays short.
+    for (const part of chunks(keys)) {
+      const { data: settled, error: settledError } = await this.db
+        .from('webhook_events')
+        .select('webhook_event_id, event_type')
+        .in('webhook_event_id', part)
+      check('countImageSet', settledError)
+      rows.push(...((settled ?? []) as { event_type: string }[]))
+    }
     return {
       messages: keys.length,
       saved: rows.filter((r) => r.event_type === 'file_saved').length,

@@ -3,7 +3,7 @@ import { AdapterError, DriveShareRefused, GoogleTokenRevoked, log, logError } fr
 import type { Deps, DriveContext, DriveGroup } from '../ports'
 import type { TickJob } from '../tick/run-tick'
 import { LOST_ACCESS_CALLS, markAccessLost } from './lost-access'
-import { notifyShareRefused, SHARE_REFUSED_CALLS } from './share-refused'
+import { notifyShareRefused, refusedToday, rememberRefusal, SHARE_REFUSED_CALLS } from './share-refused'
 
 // #13: the Owner's Drive layout, by ID only:
 //   NongJoDII/                      google_accounts.drive_root_folder_id (one per account)
@@ -321,9 +321,10 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunM
     }
   }
 
-  /** The Owner card for a refused share, best effort: with no time left for it, a later run
-   *  meets the refusal again and posts it then. */
+  /** A refused share: remembered for today, and the Owner card, best effort: with no time
+   *  left for it, a later run meets the refusal again and posts it then. */
   async function shareRefused(folderId: string): Promise<void> {
+    await rememberRefusal(deps, ctx, folderId)
     try {
       checkTime(deps, deadline, SHARE_REFUSED_CALLS)
       await notifyShareRefused(deps, ctx, folderId)
@@ -372,6 +373,9 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunM
     async ensureShared(folder: Folder): Promise<boolean | null> {
       if (folder.shared !== undefined) return folder.shared
       try {
+        // Refused earlier today: no Google calls until tomorrow (the policy rarely changes
+        // within a day, and each check would cost two calls on every save).
+        if (await refusedToday(deps, folder.id)) return (folder.shared = false)
         checkTime(deps, deadline, 1)
         if (await google.folderShared(token, folder.id)) return (folder.shared = true)
         checkTime(deps, deadline, 1)

@@ -142,16 +142,13 @@ export class GoogleHttpClient implements GooglePort {
       body: JSON.stringify({ role: 'reader', type: 'anyone' }),
     })
     if (res.ok) return
-    // #4 follow-up: a sharing policy refusal is told apart from a rate limit by the error
-    // reason (Drive's "Resolve errors" guide): 400 invalidSharingRequest ("ACL change not
-    // allowed") or a 403 that is not a usage limit. Rate limits are 403 too, and retrying
-    // later helps them, so they stay a plain AdapterError. Only the reason is read, never
-    // logged with the body.
+    // #4 follow-up: only an explicit sharing-policy reason is a refusal (Drive's "Resolve
+    // errors" guide and error reasons): 400 invalidSharingRequest ("ACL change not allowed"),
+    // and the domain and sharing policy reasons below. Everything else (rate limits, which
+    // are 403 too, an empty body, a bare "forbidden", a 5xx) is unknown: retrying may help,
+    // and no Owner card is sent. Only the reason is read; the body is never logged.
     const reasons = await errorReasons(res)
-    const usageLimit = reasons.some((r) => r.domain === 'usageLimits' || /LimitExceeded$/i.test(r.reason))
-    if (!usageLimit && ((res.status === 400 && reasons.some((r) => r.reason === 'invalidSharingRequest')) || res.status === 403)) {
-      throw new DriveShareRefused(res.status)
-    }
+    if (reasons.some((r) => SHARE_POLICY_REASONS.has(r))) throw new DriveShareRefused(res.status)
     throw new AdapterError(`google drive share ${res.status}`)
   }
 
@@ -230,13 +227,20 @@ function decodeJwtPayload(token: string): { sub?: unknown; email?: unknown } | n
   }
 }
 
-/** The `reason` and `domain` of each entry in a Google API error body (error.errors[]). */
-async function errorReasons(res: Response): Promise<{ reason: string; domain: string }[]> {
+/** Drive error reasons that mean a sharing policy forbids the "anyone with the link"
+ *  permission: the Workspace admin's settings, not a passing condition. */
+const SHARE_POLICY_REASONS = new Set([
+  'invalidSharingRequest', 'domainPolicy', 'shareOutNotPermitted', 'shareInNotPermitted',
+  'publishOutNotPermitted', 'teamDriveDomainUsersOnlyRestriction', 'cannotShareTeamDriveWithNonGoogleAccounts',
+])
+
+/** The `reason` of each entry in a Google API error body (error.errors[]). */
+async function errorReasons(res: Response): Promise<string[]> {
   const body = (await res.json().catch(() => null)) as { error?: { errors?: unknown } } | null
   const errors = body?.error?.errors
   if (!Array.isArray(errors)) return []
   return errors.map((e) => {
-    const x = e as { reason?: unknown; domain?: unknown } | null
-    return { reason: typeof x?.reason === 'string' ? x.reason : '', domain: typeof x?.domain === 'string' ? x.domain : '' }
+    const r = (e as { reason?: unknown } | null)?.reason
+    return typeof r === 'string' ? r : ''
   })
 }

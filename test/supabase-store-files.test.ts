@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { describe, expect, it } from 'vitest'
 import { AdapterError } from '@/server/log'
-import { SupabaseStore } from '@/server/store/supabase-store'
+import { IN_CHUNK, SupabaseStore } from '@/server/store/supabase-store'
 
 // SupabaseStore's #4 methods against a stand-in for the PostgREST builder: every chained
 // call is recorded, and each request (one from() chain) answers the next queued answer.
@@ -78,6 +78,18 @@ describe('SupabaseStore files (#4)', () => {
     expect(requests[0].calls).toContainEqual(['eq', 'image_set_id', 'set-1'])
     expect(requests[1].table).toBe('webhook_events')
     expect(requests[1].calls).toContainEqual(['in', 'webhook_event_id', ['file:m1', 'file:m2', 'file:m3']])
+  })
+
+  it('countImageSet asks the ledger IN_CHUNK keys at a time', async () => {
+    const ids = Array.from({ length: IN_CHUNK + 50 }, (_, i) => ({ line_message_id: `m${i}` }))
+    const { store, requests } = standIn([
+      { data: ids, error: null },
+      { data: [{ webhook_event_id: 'file:m0', event_type: 'file_saved' }], error: null },
+      { data: [{ webhook_event_id: `file:m${IN_CHUNK}`, event_type: 'file_save_failed' }], error: null },
+    ])
+    expect(await store.countImageSet('g1', 'set-big')).toEqual({ messages: IN_CHUNK + 50, saved: 1, failed: 1 })
+    const ins = requests.slice(1).map((r) => (r.calls.find((c) => c[0] === 'in')![2] as string[]).length)
+    expect(ins).toEqual([IN_CHUNK, 50])
   })
 
   it('countImageSet of an empty set reads no ledger', async () => {

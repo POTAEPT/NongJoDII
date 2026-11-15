@@ -136,7 +136,11 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     for (const lineUserId of lineUserIds) {
       await store.upsertLineUser({ lineUserId, displayName: null }) // group_members.line_user_id FK
       await store.markMemberLeft({ groupId: group.id, lineUserId, at: eventTimestamp })
-      const tasks = await store.releaseTasksOf({ groupId: group.id, lineUserId })
+      // A leave older than a rejoin already applied changed nothing: the person is a current
+      // Member, so the release finds them live and keeps their Tasks. It checks and releases
+      // in one database step, so a newer join cannot slip between the two; and it does not
+      // trust `updated`, so a redelivery after the write but before the release still releases.
+      const tasks = await store.releaseTasksIfLeft({ groupId: group.id, lineUserId })
       if (tasks.length > 0) released.push({ lineUserId, tasks })
     }
     const { inserted } = await store.recordWebhookEvent({

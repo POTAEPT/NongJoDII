@@ -224,6 +224,21 @@ describe('a member leaves the group (#29)', () => {
     expect(JSON.stringify(t.line.replies.at(-1)?.messages)).toContain(ANSWER_TEXT.left)
   })
 
+  it('a take whose Task a concurrent leave already released answers that the presser left', async () => {
+    const t = setup()
+    const open = t.store.seedTask({ groupId: t.group.id, createdByLineUserId: OWNER, title: 'จองห้อง', status: 'not_assigned' })
+    const realRelease = t.store.releaseTasksIfLeft.bind(t.store)
+    // The leave runs in full (mark left, release) just after the take's write and before its recheck.
+    vi.spyOn(t.store, 'releaseTasksIfLeft').mockImplementationOnce(async (p) => {
+      await t.store.markMemberLeft({ groupId: t.group.id, lineUserId: TON, at: new Date(TEST_NOW.getTime() + 1) })
+      await realRelease(p)
+      return realRelease(p)
+    })
+    await t.send(ev.groupPostback({ userId: TON, data: encodeReminderAction({ kind: 'take', taskId: open.id }) }))
+    expect(t.task(open.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+    expect(JSON.stringify(t.line.replies.at(-1)?.messages)).toContain(ANSWER_TEXT.left)
+  })
+
   it('makes no AI call', async () => {
     const t = setup()
     await t.send(ev.memberLeft({ userIds: [BIW] }))
@@ -287,6 +302,53 @@ describe('a member joins the group (#29)', () => {
     expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
     expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: BIW, status: 'in_process' })
     expect(t.line.pushes).toHaveLength(1) // only the first leave's card
+  })
+
+  it('a late join between two leaves does not undo the later leave (T1, T3, then T2)', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 + 2 * 60_000 }))
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: T1 + 60_000 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('left')
+  })
+
+  it('a leave first delivered after a newer rejoin leaves the current Member and their Tasks alone', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: T1 + 60_000 }))
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: BIW, status: 'in_process' })
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('a newer rejoin and assignment that land just before the leave\'s release keep the Task', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    const realRelease = t.store.releaseTasksIfLeft.bind(t.store)
+    // The leave is written; then, before its release runs, a newer join lands and the person
+    // takes a Task again.
+    vi.spyOn(t.store, 'releaseTasksIfLeft').mockImplementationOnce(async (p) => {
+      await t.store.markMemberJoined({ groupId: t.group.id, lineUserId: BIW, at: new Date(T1 + 60_000) })
+      return realRelease(p)
+    })
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: BIW, status: 'in_process' })
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('leave, rejoin and leave in order end with the person left and their Tasks released', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: T1 + 60_000 }))
+    await t.send(ev.groupPostback({ userId: BIW, data: encodeReminderAction({ kind: 'take', taskId: t.slides.id }) }))
+    expect(t.task(t.slides.id).assigneeLineUserId).toBe(BIW)
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 + 2 * 60_000 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('left')
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
   })
 
   it('an older join that arrives after the leave does not undo it', async () => {

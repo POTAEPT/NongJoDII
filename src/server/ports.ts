@@ -331,7 +331,9 @@ export interface StorePort {
   markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
   /** The person's live, not-Done Tasks in the group go back to Not Assigned (assignee null,
    *  status not_assigned); returns those Tasks, in no set order. Done Tasks keep the name. */
-  releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]>
+  // #29: releases the person's open Tasks in the group only while they are not a live Member, in
+  // one database step (release_tasks_if_left); [] for a live Member
+  releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]>
   /** A person joined (or rejoined) the group: adds a live row (source member_join), or clears
    *  left_at when it is earlier than `at`, so an older join arriving after a leave cannot undo it. */
   markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void>

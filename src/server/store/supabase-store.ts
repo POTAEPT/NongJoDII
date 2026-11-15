@@ -921,6 +921,18 @@ export class SupabaseStore implements StorePort {
     check('markMemberJoined', error)
   }
 
+  async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('group_members')
+      .update({ nicknames: t.nicknames, role: t.role })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .is('left_at', null)
+      .select('line_user_id')
+    check('setMemberProfile', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
   async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
     // last_activity_at is left alone: a person leaving is not progress on the Task.
     const { data, error } = await this.db

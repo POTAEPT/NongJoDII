@@ -15,6 +15,9 @@ describe('readLiffParams', () => {
     expect(readLiffParams('?view=setup&id=g1')).toEqual({ view: 'setup', id: 'g1' })
     expect(readLiffParams('?liff.state=%3Fview%3Downer%26id%3Dg1')).toEqual({ view: 'owner', id: 'g1' })
   })
+  it('reads the my-info view (#29)', () => {
+    expect(readLiffParams('?view=me&id=g1')).toEqual({ view: 'me', id: 'g1' })
+  })
   it('gives null for an unknown view', () => {
     expect(readLiffParams('?view=bogus')).toEqual({ view: null, id: null })
   })

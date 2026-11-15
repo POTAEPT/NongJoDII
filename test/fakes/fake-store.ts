@@ -640,11 +640,17 @@ export class FakeStore implements StorePort {
     return c ? { id: c.id, googleAccountId: c.googleAccountId } : null
   }
 
-  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number }> {
+  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number; failed: number }> {
     this.fault('countImageSet')
-    const ids = this.tables.messages.filter((m) => m.groupId === groupId && m.imageSetId === imageSetId).map((m) => m.id)
-    const saved = ids.filter((id) => this.tables.files.some((f) => f.messageId === id)).length
-    return { messages: ids.length, saved }
+    const keys = this.tables.messages
+      .filter((m) => m.groupId === groupId && m.imageSetId === imageSetId)
+      .map((m) => `file:${m.lineMessageId}`)
+    const rows = this.tables.webhook_events.filter((w) => keys.includes(w.webhookEventId))
+    return {
+      messages: keys.length,
+      saved: rows.filter((r) => r.eventType === 'file_saved').length,
+      failed: rows.filter((r) => r.eventType === 'file_save_failed').length,
+    }
   }
 
   async claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }> {

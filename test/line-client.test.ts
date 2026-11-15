@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LineHttpClient } from '@/server/line/client'
-import { AdapterError, LinePushRejected } from '@/server/log'
+import { AdapterError, ContentTooLarge, LinePushRejected } from '@/server/log'
 
 type Call = { url: string; init: RequestInit }
 
@@ -292,7 +292,7 @@ describe('LineHttpClient.getMessageContent (#4)', () => {
 
   it('downloads the bytes from the data host with a Bearer token', async () => {
     const { client, calls } = stubBinary(200, new Uint8Array([1, 2, 3]), 'image/jpeg')
-    const got = await client.getMessageContent('m/1', { timeoutMs: 5_000 })
+    const got = await client.getMessageContent('m/1', { timeoutMs: 5_000, maxBytes: 1_000 })
     expect(calls[0].url).toBe('https://api-data.line.me/v2/bot/message/m%2F1/content')
     expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
     expect(calls[0].init.signal).toBeInstanceOf(AbortSignal)
@@ -302,12 +302,12 @@ describe('LineHttpClient.getMessageContent (#4)', () => {
 
   it('answers null on a 404 (content gone)', async () => {
     const { client } = stubBinary(404, new Uint8Array(), null)
-    expect(await client.getMessageContent('m1', { timeoutMs: 5_000 })).toBeNull()
+    expect(await client.getMessageContent('m1', { timeoutMs: 5_000, maxBytes: 1_000 })).toBeNull()
   })
 
   it('throws "line content 202" while the content is not ready', async () => {
     const { client } = stubBinary(202, new Uint8Array(), null)
-    const err = await client.getMessageContent('m1', { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    const err = await client.getMessageContent('m1', { timeoutMs: 5_000, maxBytes: 1_000 }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(AdapterError)
     expect((err as Error).message).toBe('line content 202')
   })
@@ -318,7 +318,7 @@ describe('LineHttpClient.getMessageContent (#4)', () => {
         init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('t'), { name: 'TimeoutError' })))
       })) as typeof fetch
     const client = new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl })
-    const err = await client.getMessageContent('m1', { timeoutMs: 5 }).catch((e: unknown) => e)
+    const err = await client.getMessageContent('m1', { timeoutMs: 5, maxBytes: 1_000 }).catch((e: unknown) => e)
     expect((err as Error).message).toBe('line timeout')
   })
 })
@@ -336,5 +336,39 @@ describe('LineHttpClient.leaveGroup (#11)', () => {
     await expect(stubFetch(404).client.leaveGroup('C1')).resolves.toBe('not_in_group')
     await expect(stubFetch(400).client.leaveGroup('C1')).rejects.toThrow(new AdapterError('line leave 400'))
     await expect(stubFetch(500).client.leaveGroup('C1')).rejects.toThrow(new AdapterError('line leave 500'))
+  })
+})
+
+describe('LineHttpClient.getMessageContent byte cap (#4)', () => {
+  function stubBody(body: BodyInit | null, headers: Record<string, string>) {
+    const fetchImpl = (async () => new Response(body, { status: 200, headers })) as unknown as typeof fetch
+    return new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl })
+  }
+
+  it('rejects with ContentTooLarge when Content-Length is over the cap, before reading the body', async () => {
+    const client = stubBody(new Uint8Array(10), { 'Content-Length': '2000' })
+    const err = await client.getMessageContent('m1', { timeoutMs: 5_000, maxBytes: 1_000 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ContentTooLarge)
+  })
+
+  it('stops reading once a body without Content-Length passes the cap', async () => {
+    let pulled = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulled++
+        c.enqueue(new Uint8Array(400))
+        if (pulled > 100) c.close()
+      },
+    })
+    const client = stubBody(stream, {})
+    const err = await client.getMessageContent('m1', { timeoutMs: 5_000, maxBytes: 1_000 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ContentTooLarge)
+    expect(pulled).toBeLessThan(10)
+  })
+
+  it('reads a body under the cap whole', async () => {
+    const client = stubBody(new Uint8Array([7, 8, 9]), { 'Content-Length': '3', 'Content-Type': 'image/png' })
+    const got = await client.getMessageContent('m1', { timeoutMs: 5_000, maxBytes: 3 })
+    expect([...got!.data]).toEqual([7, 8, 9])
   })
 })

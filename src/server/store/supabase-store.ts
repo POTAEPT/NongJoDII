@@ -367,18 +367,29 @@ export class SupabaseStore implements StorePort {
     return row ? { id: row.id, googleAccountId: row.google_account_id } : null
   }
 
-  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number }> {
+  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number; failed: number }> {
     // A batch is a handful of photos (LINE sends at most a few dozen at once), so one page.
     const { data, error } = await this.db
       .from('messages')
-      .select('id, files(id)')
+      .select('line_message_id')
       .eq('group_id', groupId)
       .eq('image_set_id', imageSetId)
-      .order('id', { ascending: true })
+      .order('line_message_id', { ascending: true })
       .limit(PAGE_SIZE)
     check('countImageSet', error)
-    const rows = (data ?? []) as unknown as { id: string; files: { id: string }[] | null }[]
-    return { messages: rows.length, saved: rows.filter((r) => (r.files ?? []).length > 0).length }
+    const keys = ((data ?? []) as { line_message_id: string }[]).map((r) => `file:${r.line_message_id}`)
+    if (keys.length === 0) return { messages: 0, saved: 0, failed: 0 }
+    const { data: settled, error: settledError } = await this.db
+      .from('webhook_events')
+      .select('webhook_event_id, event_type')
+      .in('webhook_event_id', keys)
+    check('countImageSet', settledError)
+    const rows = (settled ?? []) as { event_type: string }[]
+    return {
+      messages: keys.length,
+      saved: rows.filter((r) => r.event_type === 'file_saved').length,
+      failed: rows.filter((r) => r.event_type === 'file_save_failed').length,
+    }
   }
 
   async claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }> {

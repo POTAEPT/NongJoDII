@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DRIVE_FILE_SCOPE, GoogleHttpClient } from '@/server/google/client'
-import { AdapterError, GoogleTokenRevoked } from '@/server/log'
+import { AdapterError, DriveShareRefused, GoogleTokenRevoked } from '@/server/log'
 
 type Call = { url: string; init: RequestInit }
 
@@ -237,5 +237,22 @@ describe('GoogleHttpClient.uploadFile (#4)', () => {
     const err = await client.uploadFile('at', file(1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
     expect((err as Error).message).toBe('google drive upload 403')
     expect(calls.some((c) => c.url.includes('/permissions'))).toBe(false)
+  })
+})
+
+describe('GoogleHttpClient link share (#4 follow-up)', () => {
+  it('a 403 on the share is DriveShareRefused (a Workspace policy)', async () => {
+    const { client } = stubFetch(403, { error: { message: 'secret' } })
+    const err = await client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DriveShareRefused)
+  })
+
+  it('folderShared reads permissionIds and looks for anyoneWithLink', async () => {
+    const shared = stubFetch(200, { permissionIds: ['123', 'anyoneWithLink'] })
+    expect(await shared.client.folderShared('at', 'f/1')).toBe(true)
+    expect(shared.calls[0].url).toBe('https://www.googleapis.com/drive/v3/files/f%2F1?fields=permissionIds')
+    expect(await stubFetch(200, { permissionIds: ['123'] }).client.folderShared('at', 'f1')).toBe(false)
+    const err = await stubFetch(404).client.folderShared('at', 'f1').catch((e: unknown) => e)
+    expect((err as Error).message).toBe('google drive permissions 404')
   })
 })

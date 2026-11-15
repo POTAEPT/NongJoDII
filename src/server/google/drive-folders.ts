@@ -1,8 +1,9 @@
 import { open } from '../crypto/secretbox'
-import { AdapterError, GoogleTokenRevoked, log, logError } from '../log'
+import { AdapterError, DriveShareRefused, GoogleTokenRevoked, log, logError } from '../log'
 import type { Deps, DriveContext, DriveGroup } from '../ports'
 import type { TickJob } from '../tick/run-tick'
 import { LOST_ACCESS_CALLS, markAccessLost } from './lost-access'
+import { notifyShareRefused, SHARE_REFUSED_CALLS } from './share-refused'
 
 // #13: the Owner's Drive layout, by ID only:
 //   NongJoDII/                      google_accounts.drive_root_folder_id (one per account)
@@ -73,7 +74,9 @@ export function checkTime(deps: Deps, deadline: Date, calls: number): void {
   if (left < calls * DRIVE_CALL_MAX_MS + STEP_STORE_MS) throw new DriveTimeUp()
 }
 
-type Folder = { id: string; recreated: boolean }
+/** shared: only for a Project folder, and only when this run knows (it made the folder and
+ *  tried to share it, or checked Drive). */
+type Folder = { id: string; recreated: boolean; shared?: boolean }
 
 /** Deferred after Google sign-in (and after an Owner confirm): lays out the folders of
  *  every Project this person owns as its confirmed Owner, by `deadline` (driveDeadline of
@@ -95,9 +98,9 @@ export async function syncDriveForOwner(deps: Deps, lineUserId: string, deadline
  *  Google sign-in, so it never races that request's own after() run (60 s at most), where
  *  the loser would leave an empty folder behind. */
 export const FINISH_AFTER_MS = 2 * 60_000
-/** ...and stops retrying this long after it. A share that keeps failing (for example, a
- *  Google Workspace policy that blocks link sharing) leaves one empty Project folder per
- *  run, so a 15-minute tick leaves about 8. A new sign-in or confirm starts the window
+/** ...and stops retrying this long after it, so a step that keeps failing is not retried
+ *  for ever. (A share that fails no longer stops the run: the Project folder ID is stored
+ *  anyway, and a file save shares it again.) A new sign-in or confirm starts the window
  *  again, and so does a run that stores a new root folder (that write moves updated_at). */
 export const FINISH_WITHIN_MS = 2 * 3600_000
 
@@ -119,6 +122,7 @@ export const driveSetupJob: TickJob = {
  *  only the Project folder, the parent of what it makes, and trusts stored group folder
  *  IDs, so a retry spends its time on the folders still missing. */
 type RunMode = 'request' | 'finish'
+type ShareResult = 'shared' | 'refused' | 'failed'
 
 /** Each Project in turn. A Drive or store failure is logged and the next Project goes on.
  *  Running out of time stops them all, with one log line. */
@@ -170,18 +174,29 @@ async function layOutProject(deps: Deps, projectId: string, deadline: Date, mode
  *  another Google account holds the Project. Throws on a token, Drive or store failure,
  *  and DriveTimeUp when time runs out, so the caller (the Sub group attach flow) must catch. */
 export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: Date): Promise<string | null> {
-  return (await openGroupDrive(deps, groupId, deadline))?.folderId ?? null
+  return (await groupDrive(deps, groupId, deadline, false))?.folderId ?? null
 }
 
 /** What #4's file save needs from one Drive run: the group's folder, the access token the
  *  run refreshed (so the upload needs no second refresh) and the Google account that holds
  *  the Project's active connection. */
-export type GroupDrive = { projectId: string; folderId: string; accessToken: string; googleAccountId: string }
+export type GroupDrive = {
+  projectId: string; folderId: string; accessToken: string; googleAccountId: string
+  /** The Project folder has the "anyone with the link" permission, so a file saved under it
+   *  opens without a Google account. false when sharing failed or a Google Workspace policy
+   *  refused it: the link then opens for the Drive's owner only. */
+  linkShared: boolean
+}
 
-/** ensureGroupFolder, also answering the run's access token and account. Same nulls and
- *  throws. A revoked token takes the #14 path (account marked, one sign-in card) and
- *  answers null. */
+/** ensureGroupFolder, also answering the run's access token and account and whether the
+ *  Project folder is shared. Same nulls and throws. A revoked token takes the #14 path
+ *  (account marked, one sign-in card) and answers null. A stored Project folder without the
+ *  link permission (an earlier share failed or was refused) is shared again here. */
 export async function openGroupDrive(deps: Deps, groupId: string, deadline: Date): Promise<GroupDrive | null> {
+  return groupDrive(deps, groupId, deadline, true)
+}
+
+async function groupDrive(deps: Deps, groupId: string, deadline: Date, checkShare: boolean): Promise<GroupDrive | null> {
   const row = await deps.store.getGroupById(groupId)
   if (!row?.projectId) return null
   const ctx = await deps.store.getDriveContext(row.projectId)
@@ -191,9 +206,11 @@ export async function openGroupDrive(deps: Deps, groupId: string, deadline: Date
   const run = await openRun(deps, ctx, deadline, 'request')
   if (!run) return null
   try {
-    const folderId = await run.group(target, await run.project())
+    const project = await run.project()
+    const folderId = await run.group(target, project)
+    const linkShared = checkShare ? await run.ensureShared(project) : project.shared !== false
     await run.finish()
-    return { projectId: ctx.projectId, folderId, accessToken: run.accessToken, googleAccountId: run.accountId }
+    return { projectId: ctx.projectId, folderId, accessToken: run.accessToken, googleAccountId: run.accountId, linkShared }
   } catch (err) {
     if (err instanceof DriveClaimLost) return lostClaim(ctx.projectId)
     throw err
@@ -285,6 +302,29 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunM
     return root
   }
 
+  /** One share call. Never throws: a refusal (DriveShareRefused, Google's 403) and any other
+   *  failure are answered, so the folder ID is still stored. */
+  async function tryShare(folderId: string): Promise<ShareResult> {
+    try {
+      await google.shareAnyoneReader(token, folderId)
+      return 'shared'
+    } catch (err) {
+      logError('drive_share_failed', { projectId }, err)
+      return err instanceof DriveShareRefused ? 'refused' : 'failed'
+    }
+  }
+
+  /** The Owner card for a refused share, best effort: with no time left for it, a later run
+   *  meets the refusal again and posts it then. */
+  async function shareRefused(folderId: string): Promise<void> {
+    try {
+      checkTime(deps, deadline, SHARE_REFUSED_CALLS)
+      await notifyShareRefused(deps, ctx, folderId)
+    } catch (err) {
+      if (!(err instanceof DriveTimeUp)) logError('drive_share_refused_card_failed', { projectId }, err)
+    }
+  }
+
   let project: Folder | null = null
   return {
     accessToken: token,
@@ -298,18 +338,36 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunM
       if (stored !== null && (await stillThere(stored))) return (project = { id: stored, recreated: false })
       const parent = await rootFolder()
       const name = ctx.mainGroup ? await nameOf(ctx.mainGroup, PROJECT_FALLBACK) : PROJECT_FALLBACK
+      let share = 'failed' as ShareResult
       project = await makeAndStore(
         stored, 2, true,
         async () => {
           const id = await google.createFolder(token, name, parent.id)
-          // Shared before its ID is stored: a stored Project folder is always shared.
-          // Files inside inherit it; nothing is ever shared one by one.
-          await google.shareAnyoneReader(token, id)
+          // Files inside inherit this share; nothing is ever shared one by one. The ID is
+          // stored even when the share fails, so no empty folder is left behind and the next
+          // file save shares it again (ensureShared).
+          share = await tryShare(id)
           return id
         },
         (from, to) => deps.store.setProjectDriveFolder(projectId, from, to),
       )
+      // recreated: our folder is the stored one (another run of this account may have won).
+      if (project.recreated) {
+        project.shared = share === 'shared'
+        if (share === 'refused') await shareRefused(project.id)
+      }
       return project
+    },
+    /** #4: whether the Project folder has the link permission; when it has not, shares it
+     *  now. A refusal (a Google Workspace policy) posts the one Owner card. */
+    async ensureShared(folder: Folder): Promise<boolean> {
+      if (folder.shared !== undefined) return folder.shared
+      checkTime(deps, deadline, 1)
+      if (await google.folderShared(token, folder.id)) return (folder.shared = true)
+      checkTime(deps, deadline, 1)
+      const share = await tryShare(folder.id)
+      if (share === 'refused') await shareRefused(folder.id)
+      return (folder.shared = share === 'shared')
     },
     /** A stored group folder is verified on a request; the finisher trusts it (a sign-in
      *  or ensureGroupFolder verifies it later). */

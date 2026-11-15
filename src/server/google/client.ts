@@ -1,4 +1,4 @@
-import { AdapterError, GoogleTokenRevoked } from '../log'
+import { AdapterError, DriveShareRefused, GoogleTokenRevoked } from '../log'
 import type { DriveFolderState, DriveUpload, GooglePort, GoogleTokenResult } from '../ports'
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
@@ -141,7 +141,21 @@ export class GoogleHttpClient implements GooglePort {
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ role: 'reader', type: 'anyone' }),
     })
+    // 403: a Google Workspace policy blocks link sharing (#4 follow-up).
+    if (res.status === 403) throw new DriveShareRefused()
     if (!res.ok) throw new AdapterError(`google drive share ${res.status}`)
+  }
+
+  /** files.get with permissionIds: Drive names the "anyone with the link" permission
+   *  'anyoneWithLink' (Permission resource, id). */
+  async folderShared(accessToken: string, folderId: string): Promise<boolean> {
+    const res = await this.call(`${DRIVE_FILES}/${encodeURIComponent(folderId)}?fields=permissionIds`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) throw new AdapterError(`google drive permissions ${res.status}`)
+    const json = (await res.json()) as { permissionIds?: unknown }
+    return Array.isArray(json.permissionIds) && json.permissionIds.includes('anyoneWithLink')
   }
 
   /** #4 (developers.google.com/drive/api/guides/manage-uploads). Up to 5 MB one multipart

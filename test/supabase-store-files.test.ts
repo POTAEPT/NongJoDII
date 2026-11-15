@@ -15,7 +15,7 @@ function standIn(answers: Answer[]) {
     const req: Request = { table, calls: [] }
     requests.push(req)
     const q: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'order', 'limit', 'maybeSingle', 'upsert', 'update', 'insert']) {
+    for (const m of ['select', 'eq', 'in', 'order', 'limit', 'maybeSingle', 'upsert', 'update', 'insert']) {
       q[m] = (...args: unknown[]) => {
         req.calls.push([m, ...args])
         return q
@@ -69,12 +69,21 @@ describe('SupabaseStore files (#4)', () => {
     expect(requests[0].calls).toContainEqual(['eq', 'id', 'f1'])
   })
 
-  it('countImageSet counts the set messages and those with a files row', async () => {
-    const { store, requests } = standIn([{
-      data: [{ id: 'm1', files: [{ id: 'f1' }] }, { id: 'm2', files: [] }, { id: 'm3', files: [{ id: 'f3' }] }], error: null,
-    }])
-    expect(await store.countImageSet('g1', 'set-1')).toEqual({ messages: 3, saved: 2 })
+  it('countImageSet counts the set messages and their settled rows in webhook_events', async () => {
+    const { store, requests } = standIn([
+      { data: [{ line_message_id: 'm1' }, { line_message_id: 'm2' }, { line_message_id: 'm3' }], error: null },
+      { data: [{ webhook_event_id: 'file:m1', event_type: 'file_saved' }, { webhook_event_id: 'file:m3', event_type: 'file_save_failed' }], error: null },
+    ])
+    expect(await store.countImageSet('g1', 'set-1')).toEqual({ messages: 3, saved: 1, failed: 1 })
     expect(requests[0].calls).toContainEqual(['eq', 'image_set_id', 'set-1'])
+    expect(requests[1].table).toBe('webhook_events')
+    expect(requests[1].calls).toContainEqual(['in', 'webhook_event_id', ['file:m1', 'file:m2', 'file:m3']])
+  })
+
+  it('countImageSet of an empty set reads no ledger', async () => {
+    const { store, requests } = standIn([{ data: [], error: null }])
+    expect(await store.countImageSet('g1', 'set-x')).toEqual({ messages: 0, saved: 0, failed: 0 })
+    expect(requests).toHaveLength(1)
   })
 
   it('claimImageSetCard claims only when a row came back', async () => {

@@ -148,6 +148,12 @@ export class FakeGoogle implements GooglePort {
     return { id, webViewLink }
   }
 
+  /** Folders checked with folderShared, in order. */
+  async folderShared(accessToken: string, folderId: string): Promise<boolean> {
+    await this.drive(`perms:${folderId}`, accessToken)
+    return this.shares.some((x) => x.fileId === folderId)
+  }
+
   // ---- test helpers ----
   /** Folders, live or trashed, with this name and parent (undefined = any parent). */
   foldersNamed(name: string, parentId?: string | null): FakeFolder[] {

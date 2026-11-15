@@ -228,10 +228,16 @@ function decodeJwtPayload(token: string): { sub?: unknown; email?: unknown } | n
 }
 
 /** Drive error reasons that mean a sharing policy forbids the "anyone with the link"
- *  permission: the Workspace admin's settings, not a passing condition. */
+ *  permission: the Workspace admin's settings, not a passing condition. Matched by reason
+ *  whatever the status: Drive answers some of them with 400 and some with 403. The list is
+ *  partly drawn from community reports, not only Google's docs: invalidSharingRequest and
+ *  domainPolicy are in the "Resolve errors" guide; shareOutNotPermittedForContent (a 400,
+ *  rclone forum) and publishOutNotPermitted (a 400 when a Workspace blocks public sharing,
+ *  gogcli issue 675) come from reports of real answers. */
 const SHARE_POLICY_REASONS = new Set([
-  'invalidSharingRequest', 'domainPolicy', 'shareOutNotPermitted', 'shareInNotPermitted',
-  'publishOutNotPermitted', 'teamDriveDomainUsersOnlyRestriction', 'cannotShareTeamDriveWithNonGoogleAccounts',
+  'invalidSharingRequest', 'domainPolicy', 'shareOutNotPermitted', 'shareOutNotPermittedForContent',
+  'shareInNotPermitted', 'publishOutNotPermitted', 'teamDriveDomainUsersOnlyRestriction',
+  'cannotShareTeamDriveWithNonGoogleAccounts',
 ])
 
 /** The `reason` of each entry in a Google API error body (error.errors[]). */

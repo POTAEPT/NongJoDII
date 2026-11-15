@@ -246,7 +246,8 @@ describe('GoogleHttpClient link share (#4 follow-up)', () => {
   it('only an explicit sharing-policy reason is DriveShareRefused', async () => {
     for (const [status, body] of [
       [400, reason('invalidSharingRequest')], [403, reason('shareOutNotPermitted')], [403, reason('domainPolicy')],
-      [403, reason('publishOutNotPermitted')],
+      [403, reason('publishOutNotPermitted')], [400, reason('publishOutNotPermitted')],
+      [400, reason('shareOutNotPermittedForContent')], [403, reason('shareOutNotPermittedForContent')],
     ] as const) {
       const err = await stubFetch(status, body).client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
       expect(err).toBeInstanceOf(DriveShareRefused)

@@ -23,6 +23,11 @@ export interface LinePort {
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
   getMessageQuota(): Promise<{ limit: number | null; used: number }>
+  /** The bot leaves the group (POST /v2/bot/group/{id}/leave, #11). 'left': LINE answered
+   *  200. 'not_in_group': LINE answered 404, so the bot is not in the group (it was removed,
+   *  or an earlier leave went through and its answer was lost). Rejects on anything else
+   *  (another 4xx, a 5xx, a timeout): the bot may still be in the group. */
+  leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'>
 }
 
 // ---- OpenRouter ----
@@ -460,6 +465,30 @@ export interface StorePort {
    *  (owner_confirmed_at) and that account's updated_at lies in [from, to]. updated_at
    *  moves on every sign-in, and also when the root folder ID is stored. */
   listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]>
+  // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
+  // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
+  /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One
+   *  UPDATE by line_group_id: left_at = at and delete_after = at + 7 days, only where
+   *  left_at is null (an existing mark never moves) and joined_at <= at (a leave older
+   *  than the latest re-invite changes nothing). Answers the delete_after the group holds
+   *  afterwards; null when no group has this ID or the bot is in it after a newer join. */
+  markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }>
+  /** groups.delete_after of a group the bot left; null while the bot is in it or no such group. */
+  getGroupDeleteAfter(groupId: string): Promise<Date | null>
+  /** The bot joined the group at `at` (a join event). Separate idempotent UPDATEs: first,
+   *  with no confirmed Owner and an owner_left_at older than `at`, owner_left_at = at (the
+   *  7-day Owner count starts again, #30); then joined_at = at where it is older; then
+   *  left_at and delete_after are cleared where left_at <= at (a re-invite inside the 7
+   *  days). The Owner reset runs first, so a redelivery after a half-failure redoes all. */
+  markBotJoined(j: { groupId: string; at: Date }): Promise<void>
+  /** IDs of the groups whose delete_after <= now, oldest delete date first, at most `limit`. */
+  listPurgeDueGroups(now: Date, limit: number): Promise<string[]>
+  /** One DELETE: the group row where id = groupId and delete_after <= now. Its messages,
+   *  Summaries, Tasks, file records, Members and insights go with it (on delete cascade);
+   *  usage keeps its rows with group_id null; push counts and webhook event IDs have no
+   *  link and stay. A group re-invited since it was listed is no longer due and stays.
+   *  Never touches Drive. purged: this call deleted the row. */
+  purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }>
 }
 
 // ---- Composition ----

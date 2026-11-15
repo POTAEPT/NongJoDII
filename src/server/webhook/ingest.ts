@@ -96,13 +96,31 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (source.type === 'group' && event.type === 'join') {
     // The group row first (idempotent), the ledger claim last, as for a postback: a
     // redelivered join answers once.
-    const group = await store.ensureGroup(source.groupId)
+    let group = await store.ensureGroup(source.groupId)
+    // #11 re-invite. Data already past its delete date goes now, whatever the purge's
+    // timing, and the group starts fresh; inside the 7 days the mark is cleared (and,
+    // with no confirmed Owner, the 7-day Owner count starts again). Both idempotent.
+    if ((await store.purgeGroup(group.id, eventTimestamp)).purged) group = await store.ensureGroup(source.groupId)
+    await store.markBotJoined({ groupId: group.id, at: eventTimestamp })
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'join', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
     })
     if (!inserted) return null
     return { kind: 'group_join', groupId: group.id, lineGroupId: source.groupId, replyToken: event.replyToken ?? null }
+  }
+
+  if (source.type === 'group' && event.type === 'leave') {
+    // #11: LINE removed the bot from the group. Mark first, the ledger row last, as for
+    // unsend: a failed write answers 500 and LINE's redelivery retries it. The mark is set
+    // only where none is (a leave the bot made itself already set it, and the date never
+    // moves) and only when the leave is newer than the latest join, so a stale leave cannot
+    // mark a re-invited group. By line_group_id: a group never stored gets no row.
+    await store.markBotLeft({ lineGroupId: source.groupId, at: eventTimestamp })
+    await store.recordWebhookEvent({
+      webhookEventId: event.webhookEventId, eventType: 'leave', lineGroupId: source.groupId, eventTimestamp, isRedelivery,
+    })
+    return null
   }
 
   if (event.type === 'unsend' && typeof event.unsend?.messageId === 'string') {
@@ -181,8 +199,8 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
     return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
   }
-  // Every other event (leave, room...) is only recorded; handling belongs to #2 and #11.
-  // Unsend (#24), memberLeft and memberJoined (#29) are handled above.
+  // Every other event (room...) is only recorded. Join and leave (#52, #11), unsend (#24),
+  // memberLeft and memberJoined (#29) are handled above.
   return null
 }
 

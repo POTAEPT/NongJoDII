@@ -135,6 +135,13 @@ function iso(d: Date | null): string | null {
   return d === null ? null : d.toISOString()
 }
 
+/** PostgREST filter: the row's last membership event is older than `iso`. A row from before
+ *  membership_event_at existed falls back to left_at (its last applied leave), and a live
+ *  row with neither has seen no event. */
+function membershipOlderThan(iso: string): string {
+  return `membership_event_at.lt."${iso}",and(membership_event_at.is.null,or(left_at.is.null,left_at.lt."${iso}"))`
+}
+
 export class SupabaseStore implements StorePort {
   constructor(private readonly db: SupabaseClient) {}
 
@@ -881,43 +888,49 @@ export class SupabaseStore implements StorePort {
 
   // ---- #29 member leaves ----
   async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
     // A person with no row yet gets a left row, so a message of theirs that arrives after
     // the leave (LINE does not guarantee order) cannot add them back: touchGroupMember only
     // inserts when no row exists. source 'message': seen through a group event.
     const { data: added, error: addError } = await this.db
       .from('group_members')
       .upsert(
-        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'message', left_at: t.at.toISOString() },
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'message', left_at: at, membership_event_at: at },
         { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
       )
       .select('line_user_id')
     check('markMemberLeft', addError)
     if ((added?.length ?? 0) > 0) return { updated: true }
+    // Only a leave newer than the last leave or join applied to the row. An older one (a late
+    // first delivery after a rejoin) leaves a current Member alone.
     const { data, error } = await this.db
       .from('group_members')
-      .update({ left_at: t.at.toISOString() })
+      .update({ left_at: at, membership_event_at: at })
       .eq('group_id', t.groupId)
       .eq('line_user_id', t.lineUserId)
-      .is('left_at', null)
+      .or(membershipOlderThan(at))
       .select('line_user_id')
     check('markMemberLeft', error)
     return { updated: (data?.length ?? 0) > 0 }
   }
 
   async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    const at = t.at.toISOString()
     const { error: addError } = await this.db
       .from('group_members')
       .upsert(
-        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'member_join' },
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'member_join', membership_event_at: at },
         { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
       )
     check('markMemberJoined', addError)
+    // Only a join newer than the last leave or join applied: a late join never undoes a
+    // later leave.
     const { error } = await this.db
       .from('group_members')
-      .update({ left_at: null })
+      .update({ left_at: null, membership_event_at: at })
       .eq('group_id', t.groupId)
       .eq('line_user_id', t.lineUserId)
-      .lt('left_at', t.at.toISOString())
+      .or(membershipOlderThan(at))
     check('markMemberJoined', error)
   }
 

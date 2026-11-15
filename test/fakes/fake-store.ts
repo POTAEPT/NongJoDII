@@ -50,6 +50,14 @@ export type LineUserRecord = { lineUserId: string; displayName: string | null }
 export type GroupMemberRecord = {
   groupId: string; lineUserId: string; nicknames: string[]; role: string | null
   source: 'message' | 'liff' | 'setup_form' | 'member_join'; leftAt: Date | null
+  /** Time of the latest memberLeft or memberJoined event applied; absent or null when none. */
+  membershipEventAt?: Date | null
+}
+
+/** Same rule as SupabaseStore's membershipOlderThan. */
+function membershipOlderThan(row: GroupMemberRecord, at: Date): boolean {
+  const last = row.membershipEventAt ?? row.leftAt
+  return last === null || last < at
 }
 export type MessageRecord = NewMessage & { id: string }
 export type SummaryRecord = NewSummary & { id: string }
@@ -1070,11 +1078,14 @@ export class FakeStore implements StorePort {
       // Same as SupabaseStore: no row yet -> a left row, so a late message cannot add them back.
       fk(this.hasGroup(t.groupId), 'group_members.group_id')
       fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
-      this.tables.group_members.push({ groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'message', leftAt: t.at })
+      this.tables.group_members.push({
+        groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'message', leftAt: t.at, membershipEventAt: t.at,
+      })
       return { updated: true }
     }
-    if (row.leftAt !== null) return { updated: false }
+    if (!membershipOlderThan(row, t.at)) return { updated: false }
     row.leftAt = t.at
+    row.membershipEventAt = t.at
     return { updated: true }
   }
 
@@ -1084,10 +1095,14 @@ export class FakeStore implements StorePort {
     if (!row) {
       fk(this.hasGroup(t.groupId), 'group_members.group_id')
       fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
-      this.tables.group_members.push({ groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'member_join', leftAt: null })
+      this.tables.group_members.push({
+        groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'member_join', leftAt: null, membershipEventAt: t.at,
+      })
       return
     }
-    if (row.leftAt !== null && row.leftAt < t.at) row.leftAt = null
+    if (!membershipOlderThan(row, t.at)) return
+    row.leftAt = null
+    row.membershipEventAt = t.at
   }
 
   async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {

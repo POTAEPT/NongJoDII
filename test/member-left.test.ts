@@ -289,6 +289,37 @@ describe('a member joins the group (#29)', () => {
     expect(t.line.pushes).toHaveLength(1) // only the first leave's card
   })
 
+  it('a late join between two leaves does not undo the later leave (T1, T3, then T2)', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 + 2 * 60_000 }))
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: T1 + 60_000 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('left')
+  })
+
+  it('a leave first delivered after a newer rejoin leaves the current Member and their Tasks alone', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: T1 + 60_000 }))
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: BIW, status: 'in_process' })
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('leave, rejoin and leave in order end with the person left and their Tasks released', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: T1 + 60_000 }))
+    await t.send(ev.groupPostback({ userId: BIW, data: encodeReminderAction({ kind: 'take', taskId: t.slides.id }) }))
+    expect(t.task(t.slides.id).assigneeLineUserId).toBe(BIW)
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 + 2 * 60_000 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('left')
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+  })
+
   it('an older join that arrives after the leave does not undo it', async () => {
     const t = setup()
     const leftAt = TEST_NOW.getTime()

@@ -75,10 +75,16 @@ describe('returnStep (what the view keeps after each look at the status)', () =>
 
 describe('retryStep (what the retry button does)', () => {
   it('reads the status again when the status was never read: a failed or refused status request', () => {
-    expect(retryStep(false)).toBe('status')
+    expect(retryStep({ statusKnown: false, lastFailure: 'status', signInOpened: false })).toBe('status')
+    expect(retryStep({ statusKnown: false, lastFailure: 'start', signInOpened: false })).toBe('status')
   })
   it('starts the sign-in again once the status is known: only a failed start retries the start', () => {
-    expect(retryStep(true)).toBe('start')
+    expect(retryStep({ statusKnown: true, lastFailure: 'start', signInOpened: false })).toBe('start')
+    expect(retryStep({ statusKnown: true, lastFailure: 'start', signInOpened: true })).toBe('start')
+  })
+  it('after a sign-in opened, a failed status look retries the look, never a new sign-in', () => {
+    // The first status read succeeded, so the status is known; the look on return failed.
+    expect(retryStep({ statusKnown: true, lastFailure: 'status', signInOpened: true })).toBe('recheck')
   })
 })
 

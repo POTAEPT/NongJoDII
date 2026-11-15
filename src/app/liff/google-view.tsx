@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchGoogleStatus as fetchStatus, phaseOnOpen, retryStep, returnStep, returnVisit } from './google-status'
+import { fetchGoogleStatus as fetchStatus, type GoogleFailure, phaseOnOpen, retryStep, returnStep, returnVisit } from './google-status'
 import type { LiffViewProps } from './liff-sdk'
 
 type Phase =
@@ -33,6 +33,11 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   const changing = useRef(false)
   /** The status request has answered with the person's state (not failed or refused). */
   const statusKnown = useRef(false)
+  /** What failed last, so the retry repeats that step and not another (see retryStep). */
+  const lastFailure = useRef<GoogleFailure>('start')
+  /** A sign-in opened in the external browser during this visit. */
+  const signInOpened = useRef(false)
+  const recheckInFlight = useRef(false)
 
   // Callers set 'starting' first. `change` is the "change Google account" action (#14):
   // the server seals it into the sign-in, and only such a sign-in moves a Project.
@@ -47,6 +52,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
         body: JSON.stringify(change ? { idToken, change: true } : { idToken }),
       })
       if (res.status === 401) return setPhase('unauthorized')
+      lastFailure.current = 'start'
       // Any other non-200 (e.g. a bare 500 when LINE verify fails upstream) is a retryable failure.
       if (res.status !== 200) return setPhase('failed')
       const { url } = (await res.json()) as { url?: unknown }
@@ -55,11 +61,13 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
         // Google refuses OAuth inside LINE's in-app webview (403 disallowed_useragent),
         // so sign-in runs in the external browser; its callback page links back here.
         liff.openWindow({ url, external: true })
+        signInOpened.current = true
         setPhase('opened')
       } else {
         window.location.href = url
       }
     } catch {
+      lastFailure.current = 'start'
       setPhase('failed')
     }
   }, [liff, idToken])
@@ -71,6 +79,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   const init = useCallback(async () => {
     const status = await fetchStatus(idToken)
     statusKnown.current = status.status !== 'failed' && status.status !== 'unauthorized'
+    if (status.status === 'failed') lastFailure.current = 'status'
     knownSignedInAt.current = status.signedInAt
     setCanChange(status.canChange)
     const next = phaseOnOpen(status, returning)
@@ -90,9 +99,34 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
     void start(change)
   }
 
-  // The retry button: read the status again if it was never read, else start sign-in again.
+  // One look at the status after a sign-in opened: on return to LINE, or from the retry.
+  const recheck = useCallback(async () => {
+    if (recheckInFlight.current || document.visibilityState !== 'visible') return
+    recheckInFlight.current = true
+    try {
+      const status = await fetchStatus(idToken)
+      const step = returnStep(status, knownSignedInAt.current)
+      knownSignedInAt.current = step.knownSignedInAt
+      if (!step.phase) return
+      if (step.phase === 'failed') lastFailure.current = 'status'
+      if (step.phase === 'connected') {
+        setCanChange(status.canChange)
+        setJustSignedIn(true)
+      }
+      setPhase(step.phase)
+    } finally {
+      recheckInFlight.current = false
+    }
+  }, [idToken])
+
+  // The retry button repeats what failed (see retryStep).
   const retry = () => {
-    if (retryStep(statusKnown.current) === 'start') return signIn(changing.current)
+    const step = retryStep({ statusKnown: statusKnown.current, lastFailure: lastFailure.current, signInOpened: signInOpened.current })
+    if (step === 'start') return signIn(changing.current)
+    if (step === 'recheck') {
+      setPhase('opened')
+      return void recheck()
+    }
     setPhase('checking')
     void init()
   }
@@ -101,24 +135,6 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   // LINE (visibility or focus). No timer polling.
   useEffect(() => {
     if (phase !== 'opened') return
-    let inFlight = false
-    const recheck = async () => {
-      if (inFlight || document.visibilityState !== 'visible') return
-      inFlight = true
-      try {
-        const status = await fetchStatus(idToken)
-        const step = returnStep(status, knownSignedInAt.current)
-        knownSignedInAt.current = step.knownSignedInAt
-        if (!step.phase) return
-        if (step.phase === 'connected') {
-          setCanChange(status.canChange)
-          setJustSignedIn(true)
-        }
-        setPhase(step.phase)
-      } finally {
-        inFlight = false
-      }
-    }
     const onEvent = () => void recheck()
     document.addEventListener('visibilitychange', onEvent)
     window.addEventListener('focus', onEvent)
@@ -126,7 +142,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
       document.removeEventListener('visibilitychange', onEvent)
       window.removeEventListener('focus', onEvent)
     }
-  }, [phase, idToken])
+  }, [phase, recheck])
 
   if (phase === 'starting') return <p className="p-4 text-base">กำลังเตรียมเชื่อม Google Drive...</p>
   if (phase === 'checking') return <p className="p-4 text-base">กำลังตรวจสอบการเชื่อม Google Drive...</p>

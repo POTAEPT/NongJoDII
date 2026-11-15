@@ -54,12 +54,18 @@ export function phaseOnReturn(result: GoogleStatusResult, knownSignedInAt: strin
   }
 }
 
-/** What the retry button does. A failed or refused status request leaves the page not
- *  knowing whether there is an account at all, so the retry reads the status again
- *  ('status'); it must not start a new sign-in for someone who may be connected. Once the
- *  status is known, only starting the sign-in can have failed: the retry starts it again. */
-export function retryStep(statusKnown: boolean): 'status' | 'start' {
-  return statusKnown ? 'start' : 'status'
+/** What failed last on the page: a status request, or the start of a sign-in. */
+export type GoogleFailure = 'status' | 'start'
+
+/** What the retry button does. A failed status request leaves the page not knowing where the
+ *  person stands, so the retry reads the status again; it must never start a new sign-in for
+ *  someone who may already be connected. Before any sign-in opened that is the first look
+ *  ('status'); after one opened it is the look on return ('recheck'), which compares with
+ *  the sign-in time known before, so a sign-in that finished meanwhile shows as done. Only a
+ *  failed start, with the status known, retries the start. */
+export function retryStep(p: { statusKnown: boolean; lastFailure: GoogleFailure; signInOpened: boolean }): 'status' | 'recheck' | 'start' {
+  if (p.lastFailure === 'status') return p.signInOpened ? 'recheck' : 'status'
+  return p.statusKnown ? 'start' : 'status'
 }
 
 /** One look at the status while sign-in is open: the phase to show (null = stay in

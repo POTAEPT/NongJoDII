@@ -211,7 +211,7 @@ describe('daily member check (#32)', () => {
     expect(t.line.profileCalls).toHaveLength(calls)
   })
 
-  it('marks nobody in a group the bot is no longer in', async () => {
+  it('marks nobody in a group the bot is no longer in, and marks the bot as left there (#11)', async () => {
     const t = setup()
     t.line.groupNames.clear() // LINE answers 404 for the group itself
     for (const u of [OWNER, TON, BIW]) t.line.profiles.delete(`${LINE_GROUP}:${u}`)
@@ -219,6 +219,79 @@ describe('daily member check (#32)', () => {
     expect(t.line.profileCalls).toEqual([])
     expect(t.member(BIW).leftAt).toBeNull()
     expect(t.line.pushes).toEqual([])
+    // Same mark as botLeaveGroup's not_in_group: left_at now, deletion 7 days later.
+    expect(await t.store.getGroupDeleteAfter(t.group.id)).toEqual(new Date(SLOT.getTime() + 7 * DAY))
+    // Idempotent: a later run does not move the date (the group is no longer listed).
+    await t.tick(new Date(SLOT.getTime() + DAY))
+    expect(await t.store.getGroupDeleteAfter(t.group.id)).toEqual(new Date(SLOT.getTime() + 7 * DAY))
+  })
+
+  it('a bot removed during the check marks the bot as left too', async () => {
+    const t = setup()
+    t.biwLeaves()
+    vi.spyOn(t.line, 'getGroupSummary').mockResolvedValueOnce({ groupName: 'ทีมโปสเตอร์' }).mockResolvedValue(null)
+    await t.tick(SLOT)
+    expect(t.member(BIW).leftAt).toBeNull()
+    expect(await t.store.getGroupDeleteAfter(t.group.id)).toEqual(new Date(SLOT.getTime() + 7 * DAY))
+  })
+
+  it('a failed group lookup (LINE 5xx) asks nobody and leaves the day open for the next tick', async () => {
+    const t = setup()
+    t.biwLeaves()
+    t.line.failGroupSummary = true
+    await t.tick(SLOT)
+    expect(t.line.profileCalls).toEqual([])
+    expect(t.store.tables.group_schedules.find((s) => s.groupId === t.group.id)?.memberCheckClaimedAt ?? null).toBeNull()
+    t.line.failGroupSummary = false
+    await t.tick(new Date(SLOT.getTime() + 15 * MIN))
+    expect(t.checked(BIW)).toBe(1)
+    expect(t.member(BIW).leftAt).not.toBeNull()
+  })
+
+  it('the repair releases a Task whose assignee has no membership row, and keeps a live Member\'s', async () => {
+    const t = setup()
+    const ghost = t.store.seedTask({
+      groupId: t.group.id, createdByLineUserId: OWNER, title: 'งานคนหาย', status: 'in_process', assigneeLineUserId: 'Ughost',
+    })
+    await t.tick(SLOT)
+    expect(t.task(ghost.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: BIW, status: 'in_process' })
+    expect(t.line.delivered).toHaveLength(1)
+    expect(JSON.stringify(t.line.delivered[0].messages)).toContain('งานคนหาย')
+  })
+
+  it('a repair card has its own retry key, so it is not dropped as a repeat of that day\'s leave card', async () => {
+    const t = setup()
+    t.biwLeaves()
+    // The leave card goes out, then the day's finish write fails: the claim expires and a
+    // later tick the same day runs the group again.
+    t.store.failNext('finishMemberCheck')
+    await t.tick(SLOT)
+    expect(t.leaveCards()).toHaveLength(1)
+    // A Task still landed on Biw (a race with his leave).
+    const late = t.store.seedTask({
+      groupId: t.group.id, createdByLineUserId: OWNER, title: 'งานตกค้าง', status: 'in_process', assigneeLineUserId: BIW,
+    })
+    await t.tick(new Date(SLOT.getTime() + 15 * MIN))
+    expect(t.task(late.id)).toMatchObject({ assigneeLineUserId: null })
+    expect(t.line.delivered.filter((p) => JSON.stringify(p.messages).includes('งานตกค้าง'))).toHaveLength(1)
+  })
+
+  it('keeps time for both cards before marking a confirmed Owner as left', async () => {
+    const t = setup()
+    t.store.seedTask({ groupId: t.group.id, createdByLineUserId: OWNER, title: 'งานเจ้าของ', status: 'in_process', assigneeLineUserId: OWNER })
+    t.line.profiles.delete(`${LINE_GROUP}:${OWNER}`) // the Owner is asked first
+    t.line.profileMs = 20_000
+    await t.tick(SLOT)
+    // 35 s left after the Owner's profile call: enough for the group recheck and one card,
+    // not for the owner_needed card too. So nothing is marked yet.
+    expect(t.member(OWNER).leftAt).toBeNull()
+    expect(t.store.tables.groups.find((g) => g.id === t.group.id)!.ownerConfirmedAt).not.toBeNull()
+    expect(t.line.pushes).toEqual([])
+    t.line.profileMs = 0
+    await t.tick(new Date(SLOT.getTime() + 15 * MIN))
+    expect(t.member(OWNER).leftAt).not.toBeNull()
+    expect(t.line.delivered).toHaveLength(2) // owner_needed + member-left
   })
 
   it('checks groups that are not set up too, as the leave webhook handles them', async () => {

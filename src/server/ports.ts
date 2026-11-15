@@ -23,6 +23,11 @@ export interface LinePort {
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
   getMessageQuota(): Promise<{ limit: number | null; used: number }>
+  /** The bot leaves the group (POST /v2/bot/group/{id}/leave, #11). 'left': LINE answered
+   *  200. 'not_in_group': LINE answered 404, so the bot is not in the group (it was removed,
+   *  or an earlier leave went through and its answer was lost). Rejects on anything else
+   *  (another 4xx, a 5xx, a timeout): the bot may still be in the group. */
+  leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'>
 }
 
 // ---- OpenRouter ----
@@ -33,13 +38,24 @@ export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: num
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }
 
-// ---- Google (OAuth now; Drive methods arrive with #13) ----
+// ---- Google (OAuth #12, Drive folders #13) ----
 export type GoogleTokenResult = {
   refreshToken: string | null; scopes: string[]; subject: string | null; email: string | null
 }
+/** What Drive says about a stored folder ID: 'trashed' counts as deleted (#13). */
+export type DriveFolderState = 'ok' | 'trashed' | 'missing'
 export interface GooglePort {
   buildAuthUrl(state: string): string
   exchangeCode(code: string): Promise<GoogleTokenResult>
+  /** A short-lived access token from the stored refresh token. Rejects with
+   *  GoogleTokenRevoked when Google answers invalid_grant (revoked or expired grant). */
+  accessToken(refreshToken: string): Promise<string>
+  /** Creates a folder under parentId (null = the Drive's root); returns its ID. */
+  createFolder(accessToken: string, name: string, parentId: string | null): Promise<string>
+  /** 'missing' when Drive answers 404. */
+  getFolder(accessToken: string, folderId: string): Promise<DriveFolderState>
+  /** "Anyone with the link can view" (permissions.create role reader, type anyone). */
+  shareAnyoneReader(accessToken: string, fileId: string): Promise<void>
 }
 
 // ---- Supabase ----
@@ -48,6 +64,9 @@ export type GroupRow = {
   nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
   featureSummarize: boolean; featureDraftTasks: boolean; workDescription: string | null
   featureTrackRemind: boolean   // setup form: progress tracking, reminders, gap flags (#7, #8)
+  /** #30: when the confirmed Owner left this group; null otherwise. While set, file saving,
+   *  Summaries and the weekly insight pause (owner_confirmed_at is null too). */
+  ownerLeftAt: Date | null
 }
 export type NewWebhookEvent = {
   webhookEventId: string; eventType: string; lineGroupId: string | null
@@ -67,6 +86,13 @@ export type StoredMessage = {
   id: string; senderLineUserId: string | null; senderDisplayName: string | null; text: string; sentAt: Date
   mentions: MessageMention[] | null
 }
+/** #33: what a quote-reply's quotedMessageId leads to in this group. 'no_message': the bot
+ *  has no stored copy (never stored, another group's, or unsent and deleted by #24).
+ *  'no_file': a stored message with no files row. 'file': the newest saved file for it. */
+export type QuotedFileLookup =
+  | { kind: 'no_message' }
+  | { kind: 'no_file' }
+  | { kind: 'file'; fileName: string; driveLink: string }
 export type Member = { lineUserId: string; displayName: string | null; nicknames: string[]; role: string | null }
 export type Membership = 'live' | 'left' | 'none'
 export type NewSummary = {
@@ -95,6 +121,19 @@ export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
   dueAt: Date | null; lastEditedByLineUserId: string; lastActivityAt: Date
 }
+// #17 Dashboard read. Names are LINE names (line_users.display_name), never nicknames.
+/** One of the requester's group_members rows, for a group that is in a Project and still
+ *  has the bot. `left` = left_at is set. isPm = group_members.is_pm. */
+export type DashboardMembership = {
+  groupId: string; projectId: string; projectOwnerLineUserId: string; isPm: boolean; left: boolean
+}
+export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
+export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
+/** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
+export type DashboardTaskRow = {
+  id: string; groupId: string; title: string; status: TaskStatus
+  assigneeLineUserId: string | null; assigneeName: string | null; dueAt: Date | null
+}
 export type AiPurpose = 'summary' | 'progress_decision'
 export type NewAiUsage = {
   ownerLineUserId: string; projectId: string | null; groupId: string | null; purpose: AiPurpose
@@ -104,7 +143,10 @@ export type NewAiUsage = {
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 /** What a push is for; stored in push_log.purpose (free text in the schema). */
-export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done'
+export type PushPurpose =
+  | 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
+  | 'owner_takeover' | 'subgroup_detached'   // #31
+  | 'owner_needed'                           // #30
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -116,6 +158,9 @@ export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleB
 /** A set-up group (attached to a Project, bot still in it) with reminders on, and its
  *  daily slot: Bangkok time 'HH:MM:SS' and the Bangkok date it was last sent. */
 export type DailyReminderGroup = { groupId: string; lineGroupId: string; time: string; lastSentOn: string | null }
+/** #32: a group the bot is still in, for the daily member check,
+ *  with the Bangkok date its check last completed. */
+export type MemberCheckGroup = { groupId: string; lineGroupId: string; lastCheckedOn: string | null }
 /** A live Task as the daily reminder reads it (#44). */
 export type ReminderTask = {
   id: string; title: string; status: TaskStatus
@@ -130,6 +175,11 @@ export type WeeklySummaryGroup = {
 /** Live (not soft-deleted) Tasks of one group by status. "Awaiting an owner" = Not Assigned. */
 export type TaskCounts = { done: number; inProcess: number; awaitingOwner: number }
 export type UnownedTask = { id: string; title: string; dueAt: Date | null }
+/** #22: a group's latest saved weekly insight, for the Dashboard. postedAt null: never posted
+ *  in the group (skipped near the LINE quota, failed, or no Tasks to post). */
+export type LatestWeeklyInsight = {
+  groupId: string; weekStart: string; counts: TaskCounts; postedAt: Date | null
+}
 export type NewWeeklyInsight = {
   groupId: string; weekStart: string   // Monday, 'YYYY-MM-DD' Bangkok
   counts: TaskCounts; createdAt: Date
@@ -167,8 +217,15 @@ export type GroupSetup = {
   nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
   /** When the current nominee was named; a resend that keeps the nominee keeps it. */
   ownerNominatedAt: Date | null
+  /** #30: when the confirmed Owner left; set while the group needs a new Owner. */
+  ownerLeftAt: Date | null
 }
 export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
+/** #28 Settings: the setup form's values, written by the group's confirmed Owner. */
+export type GroupSettingsWrite = {
+  groupId: string; ownerLineUserId: string; workDescription: string | null; features: GroupFeatures
+  dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]
+}
 export type GroupSetupWrite = {
   groupId: string; byLineUserId: string; workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
@@ -177,15 +234,63 @@ export type GroupSetupWrite = {
 /** 'closed': the group has a confirmed Owner or already belongs to a Project. */
 export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'
 export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nominee' | 'not_member' | 'closed'
+/** #30, a live Member presses the owner_needed card. claimed: they are now the main group's
+ *  nominee. already_claimed: they already were. taken: another live Member holds the
+ *  nomination. not_pending: no Owner change is pending. not_main_group: the Owner left a Sub
+ *  group, whose Owner must stay the Project's owner (check_same_owner). */
+export type OwnerClaimOutcome = 'claimed' | 'already_claimed' | 'taken' | 'not_pending' | 'not_main_group'
+/** #30, rpc complete_owner_change (migration 20261115130000). */
+export type CompleteOwnerChangeOutcome = 'changed' | 'already_owner' | 'not_pending' | 'not_nominee' | 'not_member' | 'needs_drive'
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
+  /** When this sign-in finished: stored as google_accounts.connected_at (#14). */
+  signedInAt: Date
 }
+
+/** A group that gets a Drive folder: attached, Owner confirmed, bot still in it. */
+export type DriveGroup = { groupId: string; lineGroupId: string; name: string | null; folderId: string | null }
+/** What #13 reads to lay out a Project's folders. `account` is the Owner's latest Google
+ *  account (the last one to sign in); `activeAccountId` the account of the Project's active
+ *  Drive connection (null = none yet). */
+export type DriveContext = {
+  projectId: string; ownerLineUserId: string; projectFolderId: string | null
+  mainGroup: DriveGroup | null; subGroups: DriveGroup[]
+  account: {
+    id: string; tokenStatus: 'valid' | 'revoked' | 'expired'
+    refreshTokenCiphertext: string | null; rootFolderId: string | null
+  } | null
+  activeAccountId: string | null
+}
+
+// #31 Project Owner change: the Sub group take-over question.
+/** A Sub group whose take-over question is unanswered (groups.takeover_asked_at set). */
+export type TakeoverSubGroup = { groupId: string; lineGroupId: string; name: string | null; askedAt: Date }
+/** A Project as the take-over question reads it. mainGroup null: no main group row. */
+export type OwnerChangeState = {
+  projectId: string; ownerLineUserId: string
+  mainGroup: {
+    groupId: string; lineGroupId: string; name: string | null
+    nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
+  } | null
+  /** Waiting Sub groups, by id. */
+  waiting: TakeoverSubGroup[]
+}
+/** A Sub group the daily rule detached from its Project. */
+export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: string | null }
+/** 'not_nominee': the main group does not name this person (change_project_owner raised). */
+export type OwnerChangeOutcome = 'changed' | 'not_nominee'
+/** 'changed': a chosen Sub group stopped waiting (expired and detached) while the answer
+ *  was saved; nothing was written. */
+export type TakeoverAnswerOutcome = 'saved' | 'changed'
 
 export interface StorePort {
   // #1 webhook
   // Store-once methods: ON CONFLICT DO NOTHING RETURNING; empty result = duplicate = inserted false.
   recordWebhookEvent(e: NewWebhookEvent): Promise<{ inserted: boolean }>           // conflict target webhook_event_id
+  /** Read only: is this event already in the ledger? (#29: a redelivered member event that
+   *  already ran must not run its writes again.) */
+  hasWebhookEvent(webhookEventId: string): Promise<boolean>
   upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> // null name: insert-if-absent, never overwrites; name set: update
   findLineUser(lineUserId: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   ensureGroup(lineGroupId: string): Promise<GroupRow>                                // insert-if-absent (line_group_id), return row
@@ -193,6 +298,17 @@ export interface StorePort {
   touchGroupMember(groupId: string, lineUserId: string, source: 'message' | 'liff'): Promise<void> // insert-if-absent (group_id, line_user_id)
   getMembership(groupId: string, lineUserId: string): Promise<Membership>
   insertMessage(m: NewMessage): Promise<{ inserted: boolean; id: string | null }>   // conflict target webhook_event_id -> inserted false, id null
+  // #24 unsend
+  /** Deletes the stored message with this LINE message id. deleted false when no row had it
+   *  (never stored, or already deleted), so a repeat is harmless. Rows that point at it
+   *  (task_prompts.trigger_message_id, files.message_id) are kept by ON DELETE SET NULL. */
+  // #24: keeps a tombstone of the LINE message ID and deletes the stored copy; a later insert of
+  // that message ID stores nothing (insertMessage answers inserted false). deleted: a copy was there
+  unsendMessage(lineMessageId: string): Promise<{ deleted: boolean }>
+  // #33 file request by quote-reply
+  /** The stored message with this LINE message id in this group (never another group's),
+   *  then the newest files row whose message_id points at it. */
+  findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup>
   // #15 Summary
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null
@@ -252,7 +368,8 @@ export interface StorePort {
   sumOwnerMonthUsage(ownerLineUserId: string, monthStartBkk: string): Promise<{ tokens: number; costMicroUsd: number }> // monthStartBkk 'YYYY-MM-01'; integer micro-dollars
   claimFairUseNotice(n: { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }): Promise<{ inserted: boolean }> // ON CONFLICT (PK) DO NOTHING
   // #20 weekly insight
-  /** groups where project_id is not null, left_at is null, feature_weekly_summary and
+  /** groups where project_id is not null, left_at is null, owner_left_at is null (#30: the
+   *  weekly insight pauses while the group has no Owner), feature_weekly_summary and
    *  weekly_summary_weekday = `weekday` (ISO 1..7). Every page, ordered by id. */
   listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]>
   /** One statement: sets weekly_summary_last_sent_on = todayBkk where it is null or before
@@ -281,6 +398,22 @@ export interface StorePort {
   finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void>
   /** Clears the claim made `at` without completing the day, so the next tick retries. */
   releaseDailyReminder(groupId: string, at: Date): Promise<void>
+  // #32 daily member check: the same claim, finish and release as the daily reminder.
+  /** groups where left_at is null (set up or not, as the memberLeft webhook). Every page, by id. */
+  listMemberCheckGroups(): Promise<MemberCheckGroup[]>
+  /** One statement: sets member_check_claimed_at = at where member_check_on is null or before
+   *  todayBkk and no claim younger than `staleBefore` holds the group. */
+  claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }>
+  /** Marks the day checked (member_check_on = todayBkk) and clears the claim, only while the
+   *  claim made `at` still holds the group. */
+  finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void>
+  /** Clears the claim made `at` without completing the day, so the next tick goes on. */
+  releaseMemberCheck(groupId: string, at: Date): Promise<void>
+  /** The group's live Members not yet checked on todayBkk (group_members.member_checked_on
+   *  null or earlier), by line_user_id, so a tick that ran short resumes where it stopped. */
+  listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]>
+  /** Sets member_checked_on = todayBkk on the person's membership row. */
+  markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void>
   /** The group's live Tasks that are not Done, oldest first. */
   listReminderTasks(groupId: string): Promise<ReminderTask[]>
   // #45 answers to reminder cards. Each is one UPDATE whose WHERE holds the precondition,
@@ -291,6 +424,20 @@ export interface StorePort {
   postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }>
   /** "ฉันรับเอง": assignee = by and In Process; only a live Task not Done that has no assignee. */
   takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  // #29 member leaves. One UPDATE each, conditions in WHERE, so a repeat changes nothing.
+  /** Sets left_at on a live membership row, or adds a left row when there is none (so a late
+   *  message cannot add the person back); updated false = already left. */
+  markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
+  /** The person's live, not-Done Tasks in the group go back to Not Assigned (assignee null,
+   *  status not_assigned); returns those Tasks, in no set order. Done Tasks keep the name. */
+  // #29: releases the person's open Tasks in the group only while they are not a live Member, in
+  // one database step (release_tasks_if_left); [] for a live Member
+  releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]>
+  /** A person joined (or rejoined) the group: adds a live row (source member_join), or clears
+   *  left_at when it is earlier than `at`, so an older join arriving after a leave cannot undo it. */
+  markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void>
+  // #29: a live Member's own nicknames and role (the "my info" screen); updated false when they are not live
+  setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>
@@ -313,6 +460,11 @@ export interface StorePort {
   // #52 onboarding
   setGroupName(groupId: string, name: string): Promise<void>
   getGroupSetup(groupId: string): Promise<GroupSetup | null>
+  /** #28: saves Settings while `ownerLineUserId` is still the group's confirmed Owner (saved
+   *  false otherwise, and nothing is written). Group values first, then the listed live
+   *  Members' nicknames and role (the caller lists only changed ones); not one transaction,
+   *  and repeating it is harmless. */
+  saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }>
   /** One transaction (rpc setup_group): locks the group; a 'closed' group or an Owner who
    *  is not a live Member saves nothing. Otherwise writes the settings and the nominee,
    *  updates nicknames and role of the listed live Members only (never their source), and,
@@ -323,9 +475,132 @@ export interface StorePort {
    *  confirms; this creates the Project (owner = the nominee) with the group as its main
    *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
   confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }>
+  // #30 the Owner leaves
+  /** The leaver was the group's confirmed Owner: one UPDATE sets owner_left_at = at where the
+   *  nominee is `lineUserId` and owner_confirmed_at is set (groups_owner_rules then clears
+   *  owner_confirmed_at). updated false = they were not the confirmed Owner (any more). */
+  markOwnerLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
+  /** Inserts the group's owner_needed card (task_prompts). promptId null when the group already
+   *  has an open one (unique index task_prompts_one_open_owner_needed). */
+  openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }>
+  /** The presser becomes the nominee of a main group whose Owner left, unless another live
+   *  Member already holds the nomination. Compare-and-set on the nominee read first, so of two
+   *  presses at once one wins. The caller has checked that `lineUserId` is a live Member. */
+  claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }>
+  /** One transaction (rpc complete_owner_change): when `lineUserId` is the pending nominee, a
+   *  live Member and has a valid latest Google account, runs change_project_owner (new Project
+   *  owner, main group confirmed, owner_left_at cleared, folder IDs cleared, the active Drive
+   *  connection retired, the Sub group take-over question started) and answers the open
+   *  owner_needed card. Repeating it changes nothing. */
+  completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: CompleteOwnerChangeOutcome }>
+  /** IDs of the main groups (bot still in) whose Owner left and that name `lineUserId` as the
+   *  nominee, not yet confirmed. Ordered by id. */
+  listPendingOwnerChanges(lineUserId: string): Promise<string[]>
+  // #17 Dashboard read. The id lists are groups the caller already decided the requester may see.
+  /** The requester's rows (live and left) in groups that belong to a Project and still have the bot. */
+  listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]>
+  /** Groups of these Projects that still have the bot: main group first, then by join time, then id. */
+  listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]>
+  /** Live Members (left_at is null) of these groups, by LINE name. */
+  listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]>
+  /** Live Tasks of these groups, oldest first. */
+  listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]>
+  listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> // #22: one per group that has any
   // #12 Google
-  upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
-  findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>
+  /** Conflict on google_subject: update, token_status 'valid'. Every sign-in sets
+   *  connected_at = signedInAt, so a person's latest account is the one that signed in
+   *  last, whatever else wrote to the rows since (#14). Answers the row's ID. */
+  upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }>
+  /** The person's latest account: connected_at DESC. signedInAt is that connected_at. */
+  findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null>
+  /** #14: one UPDATE that sets token_status 'revoked' and clears the refresh token, only
+   *  while the row is still 'valid' and still holds `refreshTokenCiphertext` (the token
+   *  Google refused). revoked: this call changed the row. So one caller per revocation gets
+   *  true, and a sign-in that stored a new token in between is left alone. */
+  markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }>
+  // #13 Drive folders
+  /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still
+   *  in it). Every page, by group id. */
+  listConfirmedOwnerProjects(lineUserId: string): Promise<string[]>
+  /** null when the Project does not exist. Groups: confirmed Owner and left_at null only,
+   *  every page, by id. */
+  getDriveContext(projectId: string): Promise<DriveContext | null>
+  // Folder ID setters are compare-and-set: they write `to` only while the column still
+  // holds `from` (null = empty), so two runs at once keep one ID. Each returns the ID the
+  // column holds afterwards (the other run's, when it got in first).
+  setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
+  setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
+  setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }>
+  /** The lock that binds a Project's folders to one Google account: the Project's active
+   *  drive_connections row (unique index drive_connections_one_active). Inserts it for
+   *  `googleAccountId` unless one exists, then answers the account that holds it (on a
+   *  23505 it reads the holder again). created: this call inserted the row. Never updates
+   *  or deletes a row. */
+  claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }>
+  /** #14, daily access check: IDs of the Projects that have an active drive_connections
+   *  row, every page, by connection id. */
+  listDriveConnectedProjects(): Promise<string[]>
+  /** #14, change of account: when the Project's active drive_connections row belongs to
+   *  another Google account than `keepGoogleAccountId`, clears the folder IDs
+   *  (projects.drive_project_folder_id, and groups.drive_folder_id of every group of the
+   *  Project), then marks that row 'replaced' with status_changed_at = `at`, the same way
+   *  change_project_owner retires a connection. The row is never deleted or re-pointed, so
+   *  it stays as history for the files saved through it. No active row, or one of
+   *  `keepGoogleAccountId`: writes nothing. retired: this call retired the row.
+   *  Separate statements, cleared first and retired last: a call that stopped part-way
+   *  leaves the row active, so the same call again finishes it. The clears match only the
+   *  folder IDs read before the active row was read, and the row is retired only if it is
+   *  still that active row after the clears, so a call that overlaps a finished change
+   *  cannot erase the folder IDs the new account stored. */
+  retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }>
+  /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
+   *  listed when its main group has a confirmed Owner and the bot, a folder ID is still
+   *  empty (the Project folder, or a group that getDriveContext lists: confirmed Owner, bot
+   *  still in it), the Owner's latest Google account (connected_at) is valid and no other
+   *  account holds the active drive_connections row, and the later of the Owner confirm
+   *  (owner_confirmed_at) and that account's updated_at lies in [from, to]. updated_at
+   *  moves on every sign-in, and also when the root folder ID is stored. */
+  listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]>
+  // #31 Project Owner change
+  /** rpc change_project_owner (one transaction): the main group must name `newOwner` as its
+   *  nominee. Makes them the Project's owner, confirms the main group, clears the Project's
+   *  and main group's folder IDs, retires the active Drive connection ('replaced') and puts
+   *  every Sub group on the take-over question (takeover_asked_at = now(), Owner confirm
+   *  cleared). Repeating it restarts the question, so the caller guards repeats. */
+  changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }>
+  /** null when the Project does not exist. */
+  getOwnerChange(projectId: string): Promise<OwnerChangeState | null>
+  /** rpc answer_subgroup_takeover: the listed waiting Sub groups name the Project's owner and
+   *  are confirmed (folder ID cleared); every other waiting Sub group of the Project detaches
+   *  (project_id and takeover_asked_at null; it keeps its old nominee and folder). */
+  answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }>
+  /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
+   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. */
+  detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]>
+  // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
+  // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
+  /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One
+   *  UPDATE by line_group_id: left_at = at and delete_after = at + 7 days, only where
+   *  left_at is null (an existing mark never moves) and joined_at <= at (a leave older
+   *  than the latest re-invite changes nothing). Answers the delete_after the group holds
+   *  afterwards; null when no group has this ID or the bot is in it after a newer join. */
+  markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }>
+  /** groups.delete_after of a group the bot left; null while the bot is in it or no such group. */
+  getGroupDeleteAfter(groupId: string): Promise<Date | null>
+  /** The bot joined the group at `at` (a join event). Separate idempotent UPDATEs: first,
+   *  with no confirmed Owner and an owner_left_at older than `at`, owner_left_at = at (the
+   *  7-day Owner count starts again, #30); then joined_at = at where it is older; then
+   *  left_at and delete_after are cleared where left_at <= at (a re-invite inside the 7
+   *  days). The Owner reset runs first, so a redelivery after a half-failure redoes all. */
+  markBotJoined(j: { groupId: string; at: Date }): Promise<void>
+  /** IDs of the groups whose delete_after <= now, oldest delete date first, at most `limit`. */
+  listPurgeDueGroups(now: Date, limit: number): Promise<string[]>
+  /** One DELETE: the group row where id = groupId and delete_after <= now. Its messages,
+   *  Summaries, Tasks, file records, Members and insights go with it (on delete cascade);
+   *  usage keeps its rows with group_id null; push counts and webhook event IDs have no
+   *  link and stay. A group re-invited since it was listed is no longer due and stays.
+   *  Never touches Drive. purged: this call deleted the row. */
+  purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }>
 }
 
 // ---- Composition ----

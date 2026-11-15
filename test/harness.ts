@@ -27,6 +27,16 @@ export function makeTestDeps(opts?: { now?: Date }): {
   const google = new FakeGoogle()
   const store = new FakeStore()
   let current = new Date((opts?.now ?? TEST_NOW).getTime())
+  // The clock stands still unless a test moves it, or sets google.callMs (or
+  // line.groupSummaryMs) so those calls take time.
+  google.clock = {
+    now: () => new Date(current.getTime()),
+    advance: (ms) => {
+      current = new Date(current.getTime() + ms)
+    },
+  }
+  line.clock = google.clock
+  store.clock = () => new Date(current.getTime())
   const deferred: Array<() => Promise<void>> = []
   const deps: Deps = {
     line, llm, google, store,
@@ -89,12 +99,16 @@ function next(prefix: string): string {
 }
 
 export const ev: {
-  groupText(p: { text: string; groupId?: string; userId?: string | null; eventId?: string; messageId?: string; timestamp?: number; replyToken?: string; redelivery?: boolean; mentionees?: LineMention[] }): LineEvent
+  groupText(p: { text: string; groupId?: string; userId?: string | null; eventId?: string; messageId?: string; timestamp?: number; replyToken?: string; redelivery?: boolean; mentionees?: LineMention[]; quotedMessageId?: string }): LineEvent
   groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number } }): LineEvent
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
   groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string; pickedDate?: string }): LineEvent
-  join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean }): LineEvent
+  join(p: { groupId?: string; eventId?: string; replyToken?: string; redelivery?: boolean; timestamp?: number }): LineEvent
+  leave(p: { groupId?: string; eventId?: string; redelivery?: boolean; timestamp?: number }): LineEvent
+  unsend(p: { messageId: string; groupId?: string; userId?: string; eventId?: string; redelivery?: boolean }): LineEvent
+  memberLeft(p: { userIds: string[]; groupId?: string; eventId?: string; redelivery?: boolean; timestamp?: number }): LineEvent
+  memberJoined(p: { userIds: string[]; groupId?: string; eventId?: string; timestamp?: number }): LineEvent
 } = {
   groupText(p) {
     const userId = p.userId === undefined ? DEFAULT_USER : p.userId
@@ -108,9 +122,12 @@ export const ev: {
       replyToken: p.replyToken ?? next('rt'),
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },
-      message: p.mentionees
-        ? { id: p.messageId ?? next('msg'), type: 'text', text: p.text, mention: { mentionees: p.mentionees } }
-        : { id: p.messageId ?? next('msg'), type: 'text', text: p.text },
+      // quotedMessageId: LINE sets it only when the text quotes a past message (#33).
+      message: {
+        id: p.messageId ?? next('msg'), type: 'text', text: p.text,
+        ...(p.mentionees ? { mention: { mentionees: p.mentionees } } : {}),
+        ...(p.quotedMessageId ? { quotedMessageId: p.quotedMessageId } : {}),
+      },
     }
   },
   groupImage(p) {
@@ -160,11 +177,58 @@ export const ev: {
     return {
       type: 'join',
       mode: 'active',
-      timestamp: TEST_NOW.getTime(),
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
       source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
       replyToken: p.replyToken ?? next('rt'),
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },
+    }
+  },
+  leave(p) {
+    // The bot was removed from the group (#11). LINE sends no replyToken and no userId.
+    return {
+      type: 'leave',
+      mode: 'active',
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: p.redelivery ?? false },
+    }
+  },
+  unsend(p) {
+    // LINE's unsend event carries no replyToken; unsend.messageId is the unsent message's id (#24).
+    return {
+      type: 'unsend',
+      mode: 'active',
+      timestamp: TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP, userId: p.userId ?? DEFAULT_USER },
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: p.redelivery ?? false },
+      unsend: { messageId: p.messageId },
+    }
+  },
+  memberJoined(p) {
+    return {
+      type: 'memberJoined',
+      mode: 'active',
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
+      replyToken: next('rt'),
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: false },
+      joined: { members: p.userIds.map((userId) => ({ type: 'user', userId })) },
+    }
+  },
+  memberLeft(p) {
+    // LINE sends memberLeft without a replyToken: anything the bot says about it is a push.
+    return {
+      type: 'memberLeft',
+      mode: 'active',
+      timestamp: p.timestamp ?? TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP },
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: p.redelivery ?? false },
+      left: { members: p.userIds.map((userId) => ({ type: 'user', userId })) },
     }
   },
   follow(p) {

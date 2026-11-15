@@ -63,9 +63,9 @@ async function setup() {
   })
   const submit = async (p: Record<string, unknown> = {}) => {
     await load(String(p.idToken ?? 'tok-me')) // the page loads first; this adds Me as a Member
-    return submitSetup(h.deps, form(p))
+    return submitSetup(h.deps, form(p), h.defer)
   }
-  const confirm = (idToken: string) => confirmOwner(h.deps, { idToken, groupId: group.id })
+  const confirm = (idToken: string) => confirmOwner(h.deps, { idToken, groupId: group.id }, h.defer)
   const resend = (idToken = 'tok-me') => resendSetupCard(h.deps, { idToken, groupId: group.id })
   const row = () => h.store.tables.groups.find((g) => g.id === group.id)!
   const member = (id: string) => h.store.tables.group_members.find((m) => m.groupId === group.id && m.lineUserId === id)
@@ -105,8 +105,8 @@ describe('#2a join', () => {
     const { messages } = t.line.replies[0]
     expect(messages[0].type).toBe('flex')
     const json = flexJson(messages)
-    for (const s of ['สวัสดี น้องจดดีมาแล้วนะ 👋', 'ใช้เวลาประมาณ 1 นาที 4 ข้อ:', 'กลุ่มนี้ทำเรื่องอะไร', 'ใครทำหน้าที่อะไร',
-      'อยากให้ NongJoDII ช่วยอะไร', 'ให้เตือนตอนไหน', 'ตั้งค่ากลุ่ม', 'แตะแล้วเปิดแบบฟอร์มในแอป LINE']) {
+    for (const s of ['สวัสดี น้องจดดีมาแล้วนะ', 'ใช้เวลาประมาณ 1 นาที · 4 ข้อ', 'กลุ่มนี้ทำเรื่องอะไร', 'ใครทำหน้าที่อะไร',
+      'อยากให้น้องจดดีช่วยอะไร', 'ให้เตือนตอนไหน', 'ตั้งค่ากลุ่ม', 'แตะแล้วเปิดแบบฟอร์มในแอป LINE']) {
       expect(json).toContain(s)
     }
     expect(uris(messages)).toEqual([liffUrl(TEST_LIFF_ID, 'setup', t.group.id)])
@@ -206,7 +206,7 @@ describe('setup send, self as Owner', () => {
     // #2e, pushed within the budget, with no Owner confirm button.
     expect(t.line.delivered).toHaveLength(1)
     const json = flexJson(t.line.delivered[0].messages)
-    for (const s of ['ตั้งค่าเสร็จแล้ว ✓', 'NongJoDII รู้จักกลุ่มและทีมแล้ว', 'จากนี้น้องจดดีจะอ่านแชตและร่างงานให้กดยืนยันนะ', 'เปลี่ยนการตั้งค่าได้ทุกเมื่อ']) {
+    for (const s of ['ตั้งค่าเสร็จแล้ว', 'น้องจดดีรู้จักกลุ่มและทีมแล้ว', 'จากนี้น้องจดดีจะอ่านแชตและร่างงานให้กดยืนยันนะ', 'เปลี่ยนการตั้งค่าได้ทุกเมื่อ']) {
       expect(json).toContain(s)
     }
     expect(json).not.toContain('ยืนยันเจ้าของบอท')
@@ -332,7 +332,7 @@ describe('setup send, another Owner', () => {
     t.line.failPush = false
     t.setNow(new Date(TEST_NOW.getTime() + MIN))
     // Pim then sends a changed form naming Me (pending: only naming yourself confirms).
-    await submitSetup(t.deps, t.form({ idToken: 'tok-pim', workDescription: 'งานใหม่', ownerLineUserId: 'Ume' }))
+    await submitSetup(t.deps, t.form({ idToken: 'tok-pim', workDescription: 'งานใหม่', ownerLineUserId: 'Ume' }), t.defer)
     const saved = structuredClone(t.row())
     expect(saved.nominatedOwnerLineUserId).toBe('Ume')
     // Me presses resend on the old page: Pim's changes and nominee stay.
@@ -519,7 +519,7 @@ describe('setup send, another Owner', () => {
 describe('setup send refusals', () => {
   it('a non-Member cannot send the form (403) and nothing is saved', async () => {
     const t = await setup()
-    const res = await submitSetup(t.deps, t.form({ idToken: 'tok-out' }))
+    const res = await submitSetup(t.deps, t.form({ idToken: 'tok-out' }), t.defer)
     expect(res.status).toBe(403)
     expect(t.row().nominatedOwnerLineUserId).toBeNull()
     expect(t.row().workDescription).toBeNull()
@@ -528,7 +528,7 @@ describe('setup send refusals', () => {
 
   it('a bad token cannot send (401)', async () => {
     const t = await setup()
-    expect((await submitSetup(t.deps, t.form({ idToken: 'tok-bogus' }))).status).toBe(401)
+    expect((await submitSetup(t.deps, t.form({ idToken: 'tok-bogus' }), t.defer)).status).toBe(401)
   })
 
   it('invalid input is refused with the field name (400) and nothing is saved', async () => {
@@ -575,7 +575,7 @@ describe('a listed person who is no longer a Member', () => {
         { lineUserId: 'Upim', nicknames: ['พิม'], role: 'ออกแบบ' },
         { lineUserId: 'Uout', nicknames: ['เอาท์'], role: 'แขก' },
       ],
-    }))
+    }), t.defer)
     expect(res.body).toEqual({ state: 'confirmed', posted: 'pushed' })
     expect(t.member('Ume')).toMatchObject({ nicknames: ['มี่'], role: 'PM' })
     expect(t.member('Upim')).toMatchObject({ nicknames: [], role: null, leftAt: TEST_NOW })
@@ -663,7 +663,7 @@ describe('second way to the setup card: the no-Owner Summary reply', () => {
     const [text, card] = messages
     expect(text.type === 'text' && text.text).toContain('กรุณาตั้งค่ากลุ่มให้เสร็จก่อน')
     expect(card.type).toBe('flex')
-    expect(flexJson([card])).toContain('สวัสดี น้องจดดีมาแล้วนะ 👋')
+    expect(flexJson([card])).toContain('สวัสดี น้องจดดีมาแล้วนะ')
     expect(uris([card])).toEqual([liffUrl(TEST_LIFF_ID, 'setup', groupId)])
   }
 

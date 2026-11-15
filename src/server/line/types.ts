@@ -20,6 +20,12 @@ export type LineEvent = {
   /** event.type 'postback'. `params` carries a datetime picker's choice ('YYYY-MM-DD' in `date`
    *  for mode 'date'); other buttons have none. */
   postback?: { data: string; params?: { date?: string; time?: string; datetime?: string } }
+  /** event.type 'unsend': the id of the message the user unsent (#24). */
+  unsend?: { messageId: string }
+  /** event.type 'memberLeft' (#29): who left the group. No replyToken on this event. */
+  left?: { members: { type: string; userId?: string }[] }
+  /** event.type 'memberJoined' (#29): who joined the group. */
+  joined?: { members: { type: string; userId?: string }[] }
 }
 export type LineWebhookBody = { destination: string; events: LineEvent[] }
 

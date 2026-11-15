@@ -311,6 +311,18 @@ describe('submitReview', () => {
     expect(await loadReview(t.deps, { lineUserId: 'Upim', summaryId: t.summaryId }))
       .toEqual({ status: 401, body: { error: 'unauthorized' } })
   })
+
+  it('17. an assignee who leaves between the check and the confirm is not kept on the Task (#29)', async () => {
+    const t = await setup()
+    const realConfirm = t.store.confirmCandidate.bind(t.store)
+    vi.spyOn(t.store, 'confirmCandidate').mockImplementationOnce(async (task, at) => {
+      await t.send(ev.memberLeft({ userIds: ['Ubank'] }))
+      return realConfirm(task, at)
+    })
+    const res = await t.submit([t.confirm(t.c1, { assigneeLineUserId: 'Ubank' })])
+    expect(results(res.body)).toMatchObject([{ outcome: 'created' }])
+    expect(t.store.tables.tasks[0]).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+  })
 })
 
 function createdIds(body: unknown): string[] {
@@ -367,7 +379,9 @@ describe('Tasks created feedback', () => {
     expect(res).toEqual({ status: 200, body: { posted: true } satisfies NotifyResult })
     expect(t.line.pushes).toHaveLength(1)
     expect(t.line.pushes[0].to).toBe(t.group.lineGroupId)
-    expect(t.line.pushes[0].messages[0]).toMatchObject({ type: 'text', text: expect.stringContaining('1. ทำสไลด์') })
+    expect(t.line.pushes[0].messages[0]).toMatchObject({ type: 'flex', altText: expect.stringContaining('1. ทำสไลด์') })
+    // Figma #4: the card links each created Task's LIFF page.
+    expect(JSON.stringify(t.line.pushes[0].messages[0])).toContain(`view=task&id=${ids[0]}`)
     const live = (await t.store.listLiveMembers(t.group.id)).length
     expect(t.store.tables.push_log).toEqual([
       { id: expect.any(String), purpose: 'task_created', lineTargetId: t.group.lineGroupId, messageCount: live, sentAt: expect.any(Date) },

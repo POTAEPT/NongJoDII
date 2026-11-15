@@ -70,6 +70,7 @@ export async function loadSetup(deps: Deps, body: unknown): Promise<ApiResult> {
     },
     members,
     nominee: nomineeId ? { lineUserId: nomineeId, displayName: await lineNameOf(deps, nomineeId, live) } : null,
+    ownerNeeded: group.ownerLeftAt !== null,
   }
   return { status: 200, body: view }
 }

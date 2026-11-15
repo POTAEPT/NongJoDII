@@ -34,6 +34,8 @@ export type SetupLoad = {
   /** Live Members by LINE name; the requester is always one of them. */
   members: SetupMember[]
   nominee: { lineUserId: string; displayName: string } | null
+  /** #30: the Owner left this group; a live Member can take the role over. */
+  ownerNeeded: boolean
 }
 
 export type SetupSubmitBody = {
@@ -55,4 +57,6 @@ export type SetupSubmitResult = { state: 'confirmed' | 'pending_owner'; posted: 
  *  is the nominee the group holds now, which may differ from the page's form. */
 export type SetupResendResult = { state: 'pending_owner'; posted: GroupPushResult; ownerName: string }
 
-export type OwnerConfirmResult = { state: 'confirmed'; alreadyConfirmed: boolean }
+/** needs_drive (#30): the presser is now the nominee of a group whose Owner left; the role
+ *  takes effect once they connect their Google Drive. */
+export type OwnerConfirmResult = { state: 'confirmed'; alreadyConfirmed: boolean } | { state: 'needs_drive' }

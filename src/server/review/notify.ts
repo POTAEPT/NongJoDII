@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { log, logError } from '../log'
 import type { ApiResult, Deps, TaskRow } from '../ports'
-import { buildTaskFeedback } from './feedback'
+import { buildTaskFeedbackCard } from './feedback'
 import { badRequest, field, openSummary } from './load'
 import type { NotifyResult } from './types'
 
@@ -130,7 +130,7 @@ export async function notifyReview(deps: Deps, body: unknown): Promise<ApiResult
       }
       pending.shift()
       try {
-        await deps.line.push(summary.lineGroupId, [{ type: 'text', text: feedbackText(rows, names) }], { retryKey: batch.token })
+        await deps.line.push(summary.lineGroupId, [feedbackCard(rows, names, deps.config.liffId)], { retryKey: batch.token })
       } catch (err) {
         // The push may still have reached LINE (a timeout). Releasing keeps the token,
         // so the retry sends the same retry key and LINE answers 409 instead of sending twice.
@@ -186,11 +186,11 @@ function batchesOf(claimed: { taskId: string; token: string }[], requested: stri
   return [...batches.filter((b) => b.token !== fresh), ...batches.filter((b) => b.token === fresh)]
 }
 
-function feedbackText(tasks: TaskRow[], names: Map<string, string | null>): string {
-  return buildTaskFeedback(tasks.map((t) => ({
-    title: t.title, assigned: t.assigneeLineUserId !== null,
+function feedbackCard(tasks: TaskRow[], names: Map<string, string | null>, liffId: string) {
+  return buildTaskFeedbackCard(tasks.map((t) => ({
+    taskId: t.id, title: t.title, assigned: t.assigneeLineUserId !== null,
     assigneeName: t.assigneeLineUserId ? (names.get(t.assigneeLineUserId) ?? null) : null, dueAt: t.dueAt,
-  })))
+  })), liffId)
 }
 
 function ok(result: NotifyResult): ApiResult {

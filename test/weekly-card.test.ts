@@ -36,7 +36,7 @@ function actions(node: unknown): Array<{ type: string; label: string; uri?: stri
   if (Array.isArray(node)) return node.flatMap(actions)
   if (!node || typeof node !== 'object') return []
   const o = node as Record<string, unknown>
-  const own = o.type === 'button' ? [o.action as { type: string; label: string; uri?: string }] : []
+  const own = (o.type === 'button' || o.type === 'box') && o.action ? [o.action as { type: string; label: string; uri?: string }] : []
   return [...own, ...Object.values(o).filter((v) => v !== o.action).flatMap(actions)]
 }
 
@@ -52,32 +52,33 @@ describe('weekly insight card (#21)', () => {
     const all = texts(msg.contents)
     expect(all).toContain(WEEKLY_CARD_TEXT.title)
     expect(all).toContain('ทีมงานอีเวนต์ · 16–22 พ.ย.')
-    // Tile value followed by its label, in the order done, in progress, awaiting an owner.
-    const tiles = all.slice(all.indexOf('ทีมงานอีเวนต์ · 16–22 พ.ย.') + 1, all.indexOf('ทีมงานอีเวนต์ · 16–22 พ.ย.') + 7)
-    expect(tiles).toEqual(['2', 'เสร็จ', '1', 'กำลังทำ', '3', 'ยังไม่มีผู้รับ'])
+    // Figma Stat Tile: dot, label, then the count, in the order awaiting an owner, in progress, done.
+    const start = all.indexOf('ทีมงานอีเวนต์ · 16–22 พ.ย.') + 1
+    expect(all.slice(start, start + 9)).toEqual(['●', 'ยังไม่มีผู้รับ', '3', '●', 'กำลังทำ', '1', '●', 'เสร็จ', '2'])
   })
 
   it('lists the unowned Tasks with their due dates', () => {
     const all = texts(card().contents)
     expect(all).toContain(WEEKLY_CARD_TEXT.unownedHeader)
-    expect(all).toContain('• Budget')
-    expect(all).toContain('• Venue · ส่ง 20 พ.ย.')
-    expect(all).toContain('• Catering')
+    expect(all).toContain('Budget')
+    expect(all).toContain('Venue')
+    expect(all).toContain('ส่ง 20 พ.ย.')
+    expect(all).toContain('Catering')
     expect(all.some((t) => t.startsWith('และอีก'))).toBe(false)
   })
 
   it(`names at most ${CARD_UNOWNED_SHOWN} and counts the rest from the total, not the list`, () => {
     const unowned = Array.from({ length: 10 }, (_, i) => ({ id: `t${i}`, title: `Task ${i + 1}`, dueAt: null }))
     const all = texts(card({ counts: { done: 0, inProcess: 0, awaitingOwner: 13 }, unowned }).contents)
-    expect(all.filter((t) => t.startsWith('• '))).toEqual(['• Task 1', '• Task 2', '• Task 3', '• Task 4', '• Task 5'])
+    expect(all.filter((t) => t.startsWith('Task '))).toEqual(['Task 1', 'Task 2', 'Task 3', 'Task 4', 'Task 5'])
     expect(all).toContain(WEEKLY_CARD_TEXT.more(8))
   })
 
   it('shortens a long Task title', () => {
     const long = 'ก'.repeat(60)
     const all = texts(card({ counts: { done: 0, inProcess: 0, awaitingOwner: 1 }, unowned: [{ id: 't', title: long, dueAt: null }] }).contents)
-    const line = all.find((t) => t.startsWith('• ')) as string
-    expect(line).toBe(`• ${'ก'.repeat(39)}…`)
+    const line = all.find((t) => t.startsWith('กก')) as string
+    expect(line).toBe(`${'ก'.repeat(39)}…`)
   })
 
   it('says every Task has an owner when none is waiting', () => {
@@ -104,7 +105,7 @@ describe('weekly insight card (#21)', () => {
   })
 
   it('puts the counts in the notification text', () => {
-    expect(card().altText).toBe(`${WEEKLY_CARD_TEXT.title}: เสร็จ 2 · กำลังทำ 1 · ยังไม่มีผู้รับ 3`)
+    expect(card().altText).toBe(`${WEEKLY_CARD_TEXT.title}: ยังไม่มีผู้รับ 3 · กำลังทำ 1 · เสร็จ 2`)
   })
 })
 

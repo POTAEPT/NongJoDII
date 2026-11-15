@@ -1,6 +1,7 @@
 import type { LineMessage } from '@/server/line/types'
 import type { LinePort, LinePushResult } from '@/server/ports'
 import { AdapterError, LinePushRejected } from '@/server/log'
+import type { FakeClock } from './fake-google'
 
 export class FakeLine implements LinePort {
   /** Every reply call, recorded before `failReply` is applied. */
@@ -23,6 +24,9 @@ export class FakeLine implements LinePort {
   groupNames = new Map<string, string>()
   failGroupSummary = false
   groupSummaryCalls: string[] = []
+  /** How long getGroupSummary takes on `clock` (#13 time limit); 0 (the default) = instant. */
+  groupSummaryMs = 0
+  clock: FakeClock | null = null
   /** Makes reply reject, as the real adapter does on a LINE 5xx. */
   failReply = false
   /** Makes push reject as the real adapter does on a LINE 5xx: the outcome is unknown to
@@ -36,6 +40,10 @@ export class FakeLine implements LinePort {
   /** When above 0, getGroupMemberProfile answers only after this many ms, then rejects
    *  as the real adapter does when its timeout cuts a slow LINE call. */
   slowProfileMs = 0
+  /** How long getGroupMemberProfile takes on `clock` (#32 time limit); 0 (the default) = instant. */
+  profileMs = 0
+  /** `${lineGroupId}:${lineUserId}` keys whose getGroupMemberProfile rejects, as on a LINE 5xx. */
+  failProfileFor = new Set<string>()
 
   async reply(replyToken: string, messages: LineMessage[]): Promise<void> {
     this.replies.push({ replyToken, messages })
@@ -68,7 +76,8 @@ export class FakeLine implements LinePort {
       await new Promise((resolve) => setTimeout(resolve, this.slowProfileMs))
       throw new AdapterError('line timeout')
     }
-    if (this.failProfile) throw new AdapterError('line profile 500')
+    if (this.profileMs > 0) this.clock?.advance(this.profileMs)
+    if (this.failProfile || this.failProfileFor.has(`${lineGroupId}:${lineUserId}`)) throw new AdapterError('line profile 500')
     const displayName = this.profiles.get(`${lineGroupId}:${lineUserId}`)
     return displayName === undefined ? null : { displayName }
   }
@@ -80,6 +89,7 @@ export class FakeLine implements LinePort {
 
   async getGroupSummary(lineGroupId: string): Promise<{ groupName: string } | null> {
     this.groupSummaryCalls.push(lineGroupId)
+    if (this.groupSummaryMs > 0) this.clock?.advance(this.groupSummaryMs)
     if (this.failGroupSummary) throw new AdapterError('line group summary 500')
     const groupName = this.groupNames.get(lineGroupId)
     return groupName === undefined ? null : { groupName }
@@ -88,6 +98,19 @@ export class FakeLine implements LinePort {
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
     if (this.failQuota) throw new AdapterError('line quota 500')
     return { ...this.quota }
+  }
+
+  /** Every leaveGroup call (#11), recorded before failLeave / leaveNotInGroup apply. */
+  leaveCalls: string[] = []
+  /** Makes leaveGroup reject, as the real adapter does on a LINE 5xx or a timeout. */
+  failLeave = false
+  /** Makes leaveGroup answer 'not_in_group' (LINE 404). */
+  leaveNotInGroup = false
+
+  async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
+    this.leaveCalls.push(lineGroupId)
+    if (this.failLeave) throw new AdapterError('line leave 500')
+    return this.leaveNotInGroup ? 'not_in_group' : 'left'
   }
 
   async verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null> {

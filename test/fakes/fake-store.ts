@@ -5,9 +5,13 @@ import type {
   AnnounceClaim,
   CandidateRow,
   CandidateState,
+  DashboardGroupRow,
+  DashboardMemberRow,
+  DashboardMembership,
+  DashboardTaskRow,
   GroupRow,
   GroupSetup,
-  GroupSetupWrite,
+  GroupSettingsWrite, LatestWeeklyInsight, GroupSetupWrite,
   Member,
   Membership,
   NewAiUsage,
@@ -18,12 +22,22 @@ import type {
   NewTask,
   NewProgressPrompt,
   NewWebhookEvent,
+  OwnerChangeOutcome,
+  OwnerClaimOutcome,
   OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
   DailyReminderGroup,
+  MemberCheckGroup,
+  DriveContext,
+  DriveGroup,
+  DetachedSubGroup,
+  CompleteOwnerChangeOutcome,
+  OwnerChangeState,
+  TakeoverAnswerOutcome,
   ReminderTask,
   MessageRef,
+  QuotedFileLookup,
   ProgressPromptRow,
   SetupOutcome,
   StorePort,
@@ -48,6 +62,17 @@ export type LineUserRecord = { lineUserId: string; displayName: string | null }
 export type GroupMemberRecord = {
   groupId: string; lineUserId: string; nicknames: string[]; role: string | null
   source: 'message' | 'liff' | 'setup_form' | 'member_join'; leftAt: Date | null
+  isPm?: boolean // group_members.is_pm; absent = false
+  /** Time of the latest memberLeft or memberJoined event applied; absent or null when none. */
+  membershipEventAt?: Date | null
+  /** group_members.member_checked_on (#32): Bangkok date of the last daily check; absent = null. */
+  memberCheckedOn?: string | null
+}
+
+/** Same rule as SupabaseStore's membershipOlderThan. */
+function membershipOlderThan(row: GroupMemberRecord, at: Date): boolean {
+  const last = row.membershipEventAt ?? row.leftAt
+  return last === null || last < at
 }
 export type MessageRecord = NewMessage & { id: string }
 export type SummaryRecord = NewSummary & { id: string }
@@ -66,6 +91,17 @@ export type FairUseNoticeRecord = { ownerLineUserId: string; groupId: string; mo
 export type GoogleAccountRecord = {
   id: string; lineUserId: string; googleSubject: string; email: string | null; grantedScopes: string[]
   refreshTokenCiphertext: string | null; tokenStatus: 'valid' | 'revoked' | 'expired'
+  driveRootFolderId?: string | null   // absent = null (#13)
+  updatedAt: Date                     // set on every write, like the table's trigger
+  signedInAt?: Date                   // google_accounts.connected_at: the last sign-in (#14)
+}
+/** public.files (#4 writes it; #33 reads it). Seeded with seedFile until #4 lands. */
+export type FileRecord = {
+  id: string; groupId: string; messageId: string | null; fileName: string; driveLink: string; savedAt: Date
+}
+export type DriveConnectionRecord = {
+  id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
+  statusChangedAt?: Date | null   // absent = null; set when the row is retired (#14)
 }
 
 /** The groups columns the weekly insight reads (left_at, feature_weekly_summary and the
@@ -77,14 +113,29 @@ export type GroupScheduleRecord = {
   dailyReminderTime: string; dailyReminderLastSentOn: string | null
   /** groups.daily_reminder_claimed_at: the live attempt's claim, or null. */
   dailyReminderClaimedAt?: Date | null
+  /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
+  memberCheckOn?: string | null
+  memberCheckClaimedAt?: Date | null
+  /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = long ago) and
+   *  groups.owner_left_at. Absent = null. */
+  deleteAfter?: Date | null
+  joinedAt?: Date | null
+  ownerLeftAt?: Date | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 /** The other groups columns setup writes (#52). No row = schema defaults. */
 export type GroupSetupRecord = {
   groupId: string; isMain: boolean; featureSaveFiles: boolean
   ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
+  driveFolderId?: string | null   // groups.drive_folder_id; absent = null (#13)
+  takeoverAskedAt?: Date | null   // groups.takeover_asked_at; absent = null (#31, set by change_project_owner)
 }
-export type ProjectRecord = { id: string; ownerLineUserId: string }
+/** task_prompts rows of kind owner_needed (#30). */
+export type OwnerPromptRecord = {
+  id: string; groupId: string; subjectLineUserId: string; askedAt: Date
+  answer: 'owner_confirmed' | null; answeredByLineUserId: string | null; answeredAt: Date | null
+}
+export type ProjectRecord = { id: string; ownerLineUserId: string; driveProjectFolderId?: string | null }
 
 export type FakeTables = {
   line_users: LineUserRecord[]
@@ -104,6 +155,9 @@ export type FakeTables = {
   weekly_insights: WeeklyInsightRecord[]
   group_setups: GroupSetupRecord[]
   projects: ProjectRecord[]
+  drive_connections: DriveConnectionRecord[]
+  owner_prompts: OwnerPromptRecord[]
+  files: FileRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -135,12 +189,32 @@ export class FakeStore implements StorePort {
     weekly_insights: [],
     group_setups: [],
     projects: [],
+    drive_connections: [],
+    owner_prompts: [],
+    files: [],
   }
 
+  /** The database's now(), for columns it stamps itself (google_accounts.updated_at).
+   *  makeTestDeps sets it to the harness clock. */
+  clock: () => Date = () => new Date(SEED_NOW.getTime())
+
+  /** Test aid (#13): every claim and every Project or group folder ID write, in call
+   *  order, whether or not the compare-and-set matched. */
+  driveWrites: (
+    | { op: 'claim'; projectId: string; accountId: string; holder: string }
+    | { op: 'project'; projectId: string; to: string }
+    | { op: 'group'; groupId: string; to: string }
+  )[] = []
+
+  /** unsent_messages: LINE message IDs whose sender unsent them (#24). */
+  unsentLineMessageIds = new Set<string>()
+  /** group_members writes made by saveGroupSettings: one database request each in SupabaseStore. */
+  settingsMemberWrites = 0
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
-  // Write order of google_accounts rows, so the newest connection wins on lookup.
-  private googleWrites = new Map<string, number>()
-  private googleWriteSeq = 0
+  // Sign-in order of google_accounts rows (ORDER BY connected_at DESC), kept as a sequence
+  // because tests sign several accounts in at the same clock time.
+  private googleSignIns = new Map<string, number>()
+  private googleSignInSeq = 0
 
   /** Fault injection: skips `after` calls of `method` (default 0), then the next one rejects. */
   failNext(method: keyof StorePort, err?: Error, opts?: { after?: number }): void {
@@ -185,6 +259,11 @@ export class FakeStore implements StorePort {
     return { inserted: true }
   }
 
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    this.fault('hasWebhookEvent')
+    return this.tables.webhook_events.some((w) => w.webhookEventId === webhookEventId)
+  }
+
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
     this.fault('upsertLineUser')
     const existing = this.tables.line_users.find((row) => row.lineUserId === u.lineUserId)
@@ -209,6 +288,7 @@ export class FakeStore implements StorePort {
         id: randomUUID(), lineGroupId, projectId: null, name: null,
         nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
         featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
+        ownerLeftAt: null,
       }
       this.tables.groups.push(row)
     }
@@ -240,6 +320,8 @@ export class FakeStore implements StorePort {
     this.fault('insertMessage')
     // Conflict target first: a redelivery is a no-op, whatever else it carries.
     if (this.tables.messages.some((row) => row.webhookEventId === m.webhookEventId)) return { inserted: false, id: null }
+    // messages_skip_unsent: the sender unsent this message, so a late delivery stores nothing.
+    if (this.unsentLineMessageIds.has(m.lineMessageId)) return { inserted: false, id: null }
     unique(this.tables.messages.some((row) => row.lineMessageId === m.lineMessageId), 'messages.line_message_id')
     fk(this.hasGroup(m.groupId), 'messages.group_id')
     fk(this.tables.webhook_events.some((w) => w.webhookEventId === m.webhookEventId), 'messages.webhook_event_id')
@@ -481,6 +563,32 @@ export class FakeStore implements StorePort {
       .map((t) => this.toTaskRow(t))
   }
 
+  // ---- #24 unsend ----
+  async unsendMessage(lineMessageId: string): Promise<{ deleted: boolean }> {
+    this.fault('unsendMessage')
+    // unsent_messages tombstone, as rpc unsend_message
+    this.unsentLineMessageIds.add(lineMessageId)
+    const i = this.tables.messages.findIndex((row) => row.lineMessageId === lineMessageId)
+    if (i === -1) return { deleted: false }
+    const [gone] = this.tables.messages.splice(i, 1)
+    // task_prompts.trigger_message_id is ON DELETE SET NULL.
+    for (const p of this.tables.task_prompts) if (p.triggerMessageId === gone.id) p.triggerMessageId = null
+    // files.message_id is ON DELETE SET NULL too: the saved file stays.
+    for (const f of this.tables.files) if (f.messageId === gone.id) f.messageId = null
+    return { deleted: true }
+  }
+
+  // ---- #33 file request ----
+  async findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup> {
+    this.fault('findQuotedFile')
+    const m = this.tables.messages.find((row) => row.groupId === groupId && row.lineMessageId === lineMessageId)
+    if (!m) return { kind: 'no_message' }
+    const newest = this.tables.files
+      .filter((f) => f.messageId === m.id)
+      .sort((a, b) => b.savedAt.getTime() - a.savedAt.getTime() || (a.id < b.id ? 1 : -1))[0]
+    return newest ? { kind: 'file', fileName: newest.fileName, driveLink: newest.driveLink } : { kind: 'no_file' }
+  }
+
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
     this.fault('getMessageRef')
     const m = this.tables.messages.find((row) => row.id === messageId)
@@ -600,27 +708,282 @@ export class FakeStore implements StorePort {
     return { inserted: true }
   }
 
+  // ---- #17 Dashboard read ----
+  async listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]> {
+    this.fault('listDashboardMemberships')
+    return this.tables.group_members
+      .filter((m) => m.lineUserId === lineUserId)
+      .flatMap((m) => {
+        const g = this.tables.groups.find((row) => row.id === m.groupId)
+        const project = g?.projectId ? this.tables.projects.find((p) => p.id === g.projectId) : undefined
+        const botLeft = this.tables.group_schedules.find((r) => r.groupId === m.groupId)?.leftAt ?? null
+        // groups inner join: only groups in a Project (with its row) that still have the bot
+        if (!g || !g.projectId || !project || botLeft !== null) return []
+        return [{
+          groupId: m.groupId, projectId: g.projectId, projectOwnerLineUserId: project.ownerLineUserId,
+          isPm: m.isPm === true, left: m.leftAt !== null,
+        }]
+      })
+  }
+
+  async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {
+    this.fault('listProjectGroups')
+    const isMain = (id: string) => this.tables.group_setups.find((r) => r.groupId === id)?.isMain === true
+    const rows = this.tables.groups
+      .map((g, order) => ({ g, order }))
+      .filter(({ g }) => g.projectId !== null && projectIds.includes(g.projectId))
+      .filter(({ g }) => (this.tables.group_schedules.find((r) => r.groupId === g.id)?.leftAt ?? null) === null)
+    // main group first, then insertion order (the fake's join order)
+    rows.sort((a, b) => Number(isMain(b.g.id)) - Number(isMain(a.g.id)) || a.order - b.order)
+    return rows.map(({ g }) => ({ groupId: g.id, projectId: g.projectId as string, name: g.name }))
+  }
+
+  async listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]> {
+    this.fault('listDashboardMembers')
+    return this.tables.group_members
+      .filter((m) => groupIds.includes(m.groupId) && m.leftAt === null)
+      .map((m) => ({
+        groupId: m.groupId, lineUserId: m.lineUserId,
+        displayName: this.tables.line_users.find((u) => u.lineUserId === m.lineUserId)?.displayName ?? null,
+      }))
+  }
+
+  async listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]> {
+    this.fault('listDashboardTasks')
+    return this.tables.tasks
+      .filter((t) => groupIds.includes(t.groupId) && t.deletedAt === null)
+      .map((t) => ({
+        id: t.id, groupId: t.groupId, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
+        assigneeName: this.tables.line_users.find((u) => u.lineUserId === t.assigneeLineUserId)?.displayName ?? null,
+        dueAt: t.dueAt,
+      }))
+  }
+
   // ---- #12 Google ----
-  async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
+  async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     this.fault('upsertGoogleAccount')
     fk(this.hasLineUser(a.lineUserId), 'google_accounts.line_user_id')
     let row = this.tables.google_accounts.find((g) => g.googleSubject === a.googleSubject)
     if (row) {
-      Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid' })
+      Object.assign(row, { ...a, grantedScopes: [...a.grantedScopes], tokenStatus: 'valid', signedInAt: new Date(a.signedInAt.getTime()) })
     } else {
-      row = { ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid' }
+      row = {
+        ...a, grantedScopes: [...a.grantedScopes], id: randomUUID(), tokenStatus: 'valid', updatedAt: this.clock(),
+        signedInAt: new Date(a.signedInAt.getTime()),
+      }
       this.tables.google_accounts.push(row)
     }
-    this.googleWrites.set(row.id, ++this.googleWriteSeq)
+    this.touchGoogleAccount(row)
+    this.googleSignIns.set(row.id, ++this.googleSignInSeq) // connected_at = this sign-in
+    return { id: row.id }
   }
 
-  /** A user with several Google accounts gets the most recently written one. */
-  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
-    this.fault('findGoogleAccountByLineUser')
-    const rows = this.tables.google_accounts
+  /** What the google_accounts_updated_at trigger does on every write (the column default on
+   *  insert): updated_at = now(). It never changes which account signed in last. */
+  private touchGoogleAccount(row: GoogleAccountRecord): void {
+    row.updatedAt = this.clock()
+  }
+
+  /** The person's latest Google account: the last one to sign in (ORDER BY connected_at DESC). */
+  private latestGoogleAccount(lineUserId: string | null): GoogleAccountRecord | undefined {
+    return this.tables.google_accounts
       .filter((g) => g.lineUserId === lineUserId)
-      .sort((a, b) => (this.googleWrites.get(b.id) ?? 0) - (this.googleWrites.get(a.id) ?? 0))
-    return rows[0] ? { id: rows[0].id, tokenStatus: rows[0].tokenStatus } : null
+      .sort((a, b) => (this.googleSignIns.get(b.id) ?? 0) - (this.googleSignIns.get(a.id) ?? 0))[0]
+  }
+
+  /** A user with several Google accounts gets the one that signed in last. */
+  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null> {
+    this.fault('findGoogleAccountByLineUser')
+    const row = this.latestGoogleAccount(lineUserId)
+    return row ? { id: row.id, tokenStatus: row.tokenStatus, signedInAt: new Date((row.signedInAt ?? row.updatedAt).getTime()) } : null
+  }
+
+  /** The conditional UPDATE: only a 'valid' row that still holds this token changes. */
+  async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
+    this.fault('markGoogleAccountRevoked')
+    const row = this.tables.google_accounts.find((a) => a.id === googleAccountId)
+    if (!row || row.tokenStatus !== 'valid' || row.refreshTokenCiphertext !== refreshTokenCiphertext) return { revoked: false }
+    row.tokenStatus = 'revoked'
+    row.refreshTokenCiphertext = null
+    this.touchGoogleAccount(row)
+    return { revoked: true }
+  }
+
+  // ---- #13 Drive folders ----
+  private isLeft(groupId: string): boolean {
+    return this.tables.group_schedules.find((s) => s.groupId === groupId)?.leftAt != null
+  }
+  private isMainGroup(groupId: string): boolean {
+    return this.tables.group_setups.find((r) => r.groupId === groupId)?.isMain === true
+  }
+
+  /** Ordered by group id, as SupabaseStore pages it. */
+  async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
+    this.fault('listConfirmedOwnerProjects')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.nominatedOwnerLineUserId === lineUserId &&
+        g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((g) => g.projectId as string)
+  }
+
+  async getDriveContext(projectId: string): Promise<DriveContext | null> {
+    this.fault('getDriveContext')
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) return null
+    const groups = this.tables.groups
+      .filter((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
+    const toDrive = (g: GroupRow): DriveGroup => ({
+      groupId: g.id, lineGroupId: g.lineGroupId, name: g.name,
+      folderId: this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId ?? null,
+    })
+    const main = groups.find((g) => this.isMainGroup(g.id))
+    const account = this.latestGoogleAccount(project.ownerLineUserId)
+    const active = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    return {
+      projectId, ownerLineUserId: project.ownerLineUserId, projectFolderId: project.driveProjectFolderId ?? null,
+      mainGroup: main ? toDrive(main) : null,
+      subGroups: groups.filter((g) => !this.isMainGroup(g.id)).map(toDrive),
+      account: account
+        ? {
+            id: account.id, tokenStatus: account.tokenStatus,
+            refreshTokenCiphertext: account.refreshTokenCiphertext, rootFolderId: account.driveRootFolderId ?? null,
+          }
+        : null,
+      activeAccountId: active?.googleAccountId ?? null,
+    }
+  }
+
+  async setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setDriveRootFolder')
+    const row = this.tables.google_accounts.find((a) => a.id === googleAccountId)
+    if (!row) return { folderId: null }
+    if ((row.driveRootFolderId ?? null) === from) {
+      row.driveRootFolderId = to
+      this.touchGoogleAccount(row) // an UPDATE: the trigger moves updated_at
+    }
+    return { folderId: row.driveRootFolderId ?? null }
+  }
+
+  async setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setProjectDriveFolder')
+    this.driveWrites.push({ op: 'project', projectId, to })
+    const row = this.tables.projects.find((p) => p.id === projectId)
+    if (!row) return { folderId: null }
+    if ((row.driveProjectFolderId ?? null) === from) row.driveProjectFolderId = to
+    return { folderId: row.driveProjectFolderId ?? null }
+  }
+
+  async setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    this.fault('setGroupDriveFolder')
+    this.driveWrites.push({ op: 'group', groupId, to })
+    if (!this.hasGroup(groupId)) return { folderId: null }
+    const row = this.setupOf(groupId)
+    if ((row.driveFolderId ?? null) === from) row.driveFolderId = to
+    return { folderId: row.driveFolderId ?? null }
+  }
+
+  /** One active row per Project, as the unique index drive_connections_one_active: a
+   *  second claim answers the account that already holds it. */
+  async claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }> {
+    this.fault('claimDriveConnection')
+    fk(this.tables.projects.some((p) => p.id === projectId), 'drive_connections.project_id')
+    fk(this.tables.google_accounts.some((a) => a.id === googleAccountId), 'drive_connections.google_account_id')
+    const held = this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    const result = held
+      ? { created: false, accountId: held.googleAccountId }
+      : { created: true, accountId: googleAccountId }
+    if (!held) this.tables.drive_connections.push({ id: randomUUID(), projectId, googleAccountId, status: 'active' })
+    this.driveWrites.push({ op: 'claim', projectId, accountId: googleAccountId, holder: result.accountId })
+    return result
+  }
+
+  /** Ordered by connection id, as SupabaseStore pages it. */
+  async listDriveConnectedProjects(): Promise<string[]> {
+    this.fault('listDriveConnectedProjects')
+    return this.tables.drive_connections
+      .filter((c) => c.status === 'active')
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((c) => c.projectId)
+  }
+
+  /** Test aid (#14): the next retireDriveConnection throws after its clears and before it
+   *  retires the row, as when the real store's last statements fail. */
+  failRetireAfterClear = false
+  private retireHold: { parked(): void; gate: Promise<void> } | null = null
+
+  /** Test aid (#14) for two overlapping changes: the next retireDriveConnection waits after
+   *  its reads, before its first write, until `release()`. `reached` resolves once it waits. */
+  holdRetire(): { reached: Promise<void>; release(): void } {
+    let release = () => {}
+    let parked = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const reached = new Promise<void>((resolve) => { parked = resolve })
+    this.retireHold = { parked, gate }
+    return { reached, release }
+  }
+
+  /** The same steps in the same order as SupabaseStore: read the folder IDs, read the
+   *  active row, clear only the IDs read, read the active row again, retire it. */
+  async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
+    this.fault('retireDriveConnection')
+    const activeRow = () => this.tables.drive_connections.find((c) => c.projectId === projectId && c.status === 'active')
+    const setups = () => this.tables.groups
+      .filter((g) => g.projectId === projectId)
+      .map((g) => this.tables.group_setups.find((r) => r.groupId === g.id))
+      .filter((r): r is GroupSetupRecord => r !== undefined)
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    const projectFolderId = project?.driveProjectFolderId ?? null
+    const groupFolderIds = setups().map((r) => r.driveFolderId ?? null).filter((id): id is string => id !== null)
+    const active = activeRow()
+    if (!active || active.googleAccountId === keepGoogleAccountId) return { retired: false }
+    const hold = this.retireHold
+    if (hold) {
+      this.retireHold = null
+      hold.parked()
+      await hold.gate
+    }
+    // Compare-and-set clears: only the IDs read above.
+    if (project && projectFolderId !== null && project.driveProjectFolderId === projectFolderId) project.driveProjectFolderId = null
+    for (const r of setups()) {
+      if (r.driveFolderId != null && groupFolderIds.includes(r.driveFolderId)) r.driveFolderId = null
+    }
+    if (this.failRetireAfterClear) {
+      this.failRetireAfterClear = false
+      throw new Error('FakeStore: injected failure in retireDriveConnection after the clears')
+    }
+    const again = activeRow()
+    if (!again || again.id !== active.id) return { retired: false }
+    again.status = 'replaced'
+    again.statusChangedAt = new Date(at.getTime())
+    return { retired: true }
+  }
+
+  /** Same rule as SupabaseStore, read straight from the tables. */
+  async listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]> {
+    this.fault('listUnfinishedDriveProjects')
+    return this.tables.groups
+      .filter((g) => g.projectId !== null && this.isMainGroup(g.id) && g.ownerConfirmedAt !== null && !this.isLeft(g.id))
+      .filter((g) => {
+        const account = this.latestGoogleAccount(g.nominatedOwnerLineUserId)
+        if (account?.tokenStatus !== 'valid' || g.ownerConfirmedAt === null) return false
+        const last = Math.max(g.ownerConfirmedAt.getTime(), account.updatedAt.getTime())
+        if (last < from.getTime() || last > to.getTime()) return false
+        const held = this.tables.drive_connections.find((c) => c.projectId === g.projectId && c.status === 'active')
+        if (held && held.googleAccountId !== account.id) return false
+        return this.missesAFolder(g.projectId as string)
+      })
+      .map((g) => g.projectId as string)
+      .sort()
+  }
+
+  /** The Project folder ID, or the folder ID of a group getDriveContext lists (confirmed
+   *  Owner, bot still in it), is still empty. */
+  private missesAFolder(projectId: string): boolean {
+    if (!this.tables.projects.find((p) => p.id === projectId)?.driveProjectFolderId) return true
+    return this.tables.groups.some((g) => g.projectId === projectId && g.ownerConfirmedAt !== null && !this.isLeft(g.id) &&
+      !this.tables.group_setups.find((r) => r.groupId === g.id)?.driveFolderId)
   }
 
   // ---- #20 weekly insight ----
@@ -646,7 +1009,7 @@ export class FakeStore implements StorePort {
   async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     this.fault('listWeeklySummaryGroups')
     return this.tables.groups
-      .filter((g) => g.projectId !== null)
+      .filter((g) => g.projectId !== null && g.ownerLeftAt === null)
       .map((g) => ({ g, s: this.scheduleOf(g.id) }))
       .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary && s.weeklySummaryWeekday === weekday)
       .sort((a, b) => a.g.id.localeCompare(b.g.id))
@@ -688,6 +1051,17 @@ export class FakeStore implements StorePort {
       .filter((t) => t.status === 'not_assigned')
       .slice(0, limit)
       .map((t) => ({ id: t.id, title: t.title, dueAt: t.dueAt }))
+  }
+
+  async listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> {
+    this.fault('listLatestWeeklyInsights')
+    const latest = new Map<string, WeeklyInsightRecord>()
+    for (const w of this.tables.weekly_insights) {
+      if (!groupIds.includes(w.groupId)) continue
+      const seen = latest.get(w.groupId)
+      if (!seen || w.weekStart > seen.weekStart) latest.set(w.groupId, w)
+    }
+    return [...latest.values()].map((w) => ({ groupId: w.groupId, weekStart: w.weekStart, counts: { ...w.counts }, postedAt: w.postedAt }))
   }
 
   async saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }> {
@@ -747,6 +1121,56 @@ export class FakeStore implements StorePort {
     this.fault('releaseDailyReminder')
     const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
     if (s && s.dailyReminderClaimedAt?.getTime() === at.getTime()) s.dailyReminderClaimedAt = null
+  }
+
+  // ---- #32 daily member check ----
+  async listMemberCheckGroups(): Promise<MemberCheckGroup[]> {
+    this.fault('listMemberCheckGroups')
+    return this.tables.groups
+      .map((g) => ({ g, s: this.scheduleOf(g.id) }))
+      .filter(({ s }) => s.leftAt === null)
+      .sort((a, b) => a.g.id.localeCompare(b.g.id))
+      .map(({ g, s }) => ({ groupId: g.id, lineGroupId: g.lineGroupId, lastCheckedOn: s.memberCheckOn ?? null }))
+  }
+
+  async claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    this.fault('claimMemberCheck')
+    if (!this.hasGroup(groupId)) return { claimed: false }
+    const s = this.scheduleOf(groupId)
+    if (s.memberCheckOn != null && s.memberCheckOn >= todayBkk) return { claimed: false }
+    const held = s.memberCheckClaimedAt ?? null
+    if (held !== null && held.getTime() >= staleBefore.getTime()) return { claimed: false }
+    s.memberCheckClaimedAt = new Date(at)
+    return { claimed: true }
+  }
+
+  async finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    this.fault('finishMemberCheck')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.memberCheckClaimedAt?.getTime() === at.getTime()) {
+      s.memberCheckOn = todayBkk
+      s.memberCheckClaimedAt = null
+    }
+  }
+
+  async releaseMemberCheck(groupId: string, at: Date): Promise<void> {
+    this.fault('releaseMemberCheck')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.memberCheckClaimedAt?.getTime() === at.getTime()) s.memberCheckClaimedAt = null
+  }
+
+  async listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]> {
+    this.fault('listMembersToCheck')
+    return this.tables.group_members
+      .filter((m) => m.groupId === groupId && m.leftAt === null && (m.memberCheckedOn == null || m.memberCheckedOn < todayBkk))
+      .map((m) => m.lineUserId)
+      .sort()
+  }
+
+  async markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void> {
+    this.fault('markMemberChecked')
+    const row = this.tables.group_members.find((m) => m.groupId === groupId && m.lineUserId === lineUserId)
+    if (row) row.memberCheckedOn = todayBkk
   }
 
   /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */
@@ -826,7 +1250,7 @@ export class FakeStore implements StorePort {
       weeklySummaryWeekday: s.weeklySummaryWeekday,
       weeklySummaryTime: s.weeklySummaryTime.slice(0, 5),
       nominatedOwnerLineUserId: g.nominatedOwnerLineUserId, ownerConfirmedAt: g.ownerConfirmedAt,
-      ownerNominatedAt: x.ownerNominatedAt,
+      ownerNominatedAt: x.ownerNominatedAt, ownerLeftAt: g.ownerLeftAt,
     }
   }
 
@@ -876,6 +1300,28 @@ export class FakeStore implements StorePort {
     return { outcome: 'pending' }
   }
 
+  async saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }> {
+    this.fault('saveGroupSettings')
+    const g = this.groupOf(w.groupId)
+    if (g.nominatedOwnerLineUserId !== w.ownerLineUserId || g.ownerConfirmedAt === null) return { saved: false }
+    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
+    Object.assign(g, {
+      workDescription: w.workDescription, featureSummarize: w.features.summarize,
+      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
+    })
+    Object.assign(this.scheduleOf(w.groupId), {
+      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
+      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
+    })
+    this.setupOf(w.groupId).featureSaveFiles = w.features.saveFiles
+    for (const m of w.members) {
+      this.settingsMemberWrites++
+      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
+      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
+    }
+    return { saved: true }
+  }
+
   async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {
     this.fault('confirmGroupOwner')
     return this.confirmOwner(groupId, lineUserId, at)
@@ -897,6 +1343,302 @@ export class FakeStore implements StorePort {
     return { outcome: 'confirmed' }
   }
 
+  // ---- #30 the Owner leaves ----
+  /** groups_owner_rules: setting owner_left_at clears owner_confirmed_at. */
+  async markOwnerLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markOwnerLeft')
+    const g = this.tables.groups.find((row) => row.id === t.groupId)
+    if (!g || g.nominatedOwnerLineUserId !== t.lineUserId || g.ownerConfirmedAt === null) return { updated: false }
+    g.ownerLeftAt = new Date(t.at.getTime())
+    g.ownerConfirmedAt = null
+    return { updated: true }
+  }
+
+  /** The unique index task_prompts_one_open_owner_needed: one open card per group. */
+  async openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }> {
+    this.fault('openOwnerNeededPrompt')
+    fk(this.hasGroup(p.groupId), 'task_prompts.group_id')
+    fk(this.hasLineUser(p.subjectLineUserId), 'task_prompts.subject_line_user_id')
+    if (this.tables.owner_prompts.some((r) => r.groupId === p.groupId && r.answer === null)) return { promptId: null }
+    const row: OwnerPromptRecord = {
+      id: randomUUID(), groupId: p.groupId, subjectLineUserId: p.subjectLineUserId, askedAt: new Date(p.askedAt.getTime()),
+      answer: null, answeredByLineUserId: null, answeredAt: null,
+    }
+    this.tables.owner_prompts.push(row)
+    return { promptId: row.id }
+  }
+
+  /** Same rules as SupabaseStore.claimOwnerChange. */
+  async claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }> {
+    this.fault('claimOwnerChange')
+    const g = this.tables.groups.find((row) => row.id === groupId)
+    if (!g || g.projectId === null || g.ownerLeftAt === null || g.ownerConfirmedAt !== null || this.isLeft(groupId)) {
+      return { outcome: 'not_pending' }
+    }
+    if (!this.isMainGroup(groupId)) return { outcome: 'not_main_group' }
+    const nominee = g.nominatedOwnerLineUserId
+    if (nominee === lineUserId) return { outcome: 'already_claimed' }
+    if (nominee !== null && this.isLiveMember(groupId, nominee)) return { outcome: 'taken' }
+    fk(this.hasLineUser(lineUserId), 'groups.nominated_owner_line_user_id')
+    g.nominatedOwnerLineUserId = lineUserId
+    Object.assign(this.setupOf(groupId), { ownerNominatedByLineUserId: lineUserId, ownerNominatedAt: new Date(at.getTime()) })
+    return { outcome: 'claimed' }
+  }
+
+  /** Same rules and writes as complete_owner_change, change_project_owner included. The
+   *  database stamps owner_confirmed_at and status_changed_at with now(): the fake clock. */
+  async completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: CompleteOwnerChangeOutcome }> {
+    this.fault('completeOwnerChange')
+    const g = this.groupOf(groupId)
+    if (g.ownerConfirmedAt !== null && g.nominatedOwnerLineUserId === lineUserId) return { outcome: 'already_owner' }
+    if (g.projectId === null || !this.isMainGroup(groupId) || g.ownerLeftAt === null || g.ownerConfirmedAt !== null ||
+      this.isLeft(groupId)) return { outcome: 'not_pending' }
+    if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }
+    if (!this.isLiveMember(groupId, lineUserId)) return { outcome: 'not_member' }
+    if (this.latestGoogleAccount(lineUserId)?.tokenStatus !== 'valid') return { outcome: 'needs_drive' }
+    const now = this.clock()
+    const projectId = g.projectId
+    // change_project_owner
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (project) Object.assign(project, { ownerLineUserId: lineUserId, driveProjectFolderId: null })
+    g.ownerConfirmedAt = now
+    g.ownerLeftAt = null // groups_owner_rules: confirming clears owner_left_at
+    this.setupOf(groupId).driveFolderId = null
+    for (const sub of this.tables.groups.filter((r) => r.projectId === projectId && !this.isMainGroup(r.id))) {
+      sub.ownerConfirmedAt = null
+      this.setupOf(sub.id).takeoverAskedAt = now
+    }
+    for (const c of this.tables.drive_connections.filter((r) => r.projectId === projectId && r.status === 'active')) {
+      c.status = 'replaced'
+      c.statusChangedAt = now
+    }
+    for (const r of this.tables.owner_prompts.filter((p) => p.groupId === groupId && p.answer === null)) {
+      Object.assign(r, { answer: 'owner_confirmed', answeredByLineUserId: lineUserId, answeredAt: new Date(at.getTime()) })
+    }
+    return { outcome: 'changed' }
+  }
+
+  async listPendingOwnerChanges(lineUserId: string): Promise<string[]> {
+    this.fault('listPendingOwnerChanges')
+    return this.tables.groups
+      .filter((g) => g.nominatedOwnerLineUserId === lineUserId && this.isMainGroup(g.id) && g.ownerLeftAt !== null &&
+        g.ownerConfirmedAt === null && !this.isLeft(g.id))
+      .map((g) => g.id)
+      .sort()
+  }
+
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markMemberLeft')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      // Same as SupabaseStore: no row yet -> a left row, so a late message cannot add them back.
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({
+        groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'message', leftAt: t.at, membershipEventAt: t.at,
+      })
+      return { updated: true }
+    }
+    if (!membershipOlderThan(row, t.at)) return { updated: false }
+    row.leftAt = t.at
+    row.membershipEventAt = t.at
+    return { updated: true }
+  }
+
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    this.fault('markMemberJoined')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({
+        groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'member_join', leftAt: null, membershipEventAt: t.at,
+      })
+      return
+    }
+    if (!membershipOlderThan(row, t.at)) return
+    row.leftAt = null
+    row.membershipEventAt = t.at
+  }
+
+  async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {
+    this.fault('setMemberProfile')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId && m.leftAt === null)
+    if (!row) return { updated: false }
+    row.nicknames = [...t.nicknames]
+    row.role = t.role
+    return { updated: true }
+  }
+
+  async releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    this.fault('releaseTasksIfLeft')
+    // Same as release_tasks_if_left: a live Member keeps their Tasks.
+    const member = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (member && member.leftAt === null) return []
+    const rows = this.tables.tasks.filter((x) =>
+      x.groupId === t.groupId && x.assigneeLineUserId === t.lineUserId && x.deletedAt === null && x.status !== 'done')
+    for (const x of rows) Object.assign(x, { assigneeLineUserId: null, status: 'not_assigned' })
+    return rows.map((x) => this.toTaskRow(x))
+  }
+
+  // ---- #31 Project Owner change ----
+  /** Same steps as change_project_owner, as one step: every check before any write. The
+   *  database's now() is this.clock(). */
+  async changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }> {
+    this.fault('changeProjectOwner')
+    const main = this.tables.groups.find((g) =>
+      g.projectId === projectId && this.isMainGroup(g.id) && g.nominatedOwnerLineUserId === newOwnerLineUserId)
+    if (!main) return { outcome: 'not_nominee' }
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) throw new Error('FakeStore: main group without its Project')
+    fk(this.hasLineUser(newOwnerLineUserId), 'projects.owner_line_user_id')
+    const now = this.clock()
+    project.ownerLineUserId = newOwnerLineUserId
+    project.driveProjectFolderId = null
+    main.ownerConfirmedAt = now
+    this.setupOf(main.id).driveFolderId = null
+    for (const g of this.tables.groups) {
+      if (g.projectId !== projectId || this.isMainGroup(g.id)) continue
+      this.setupOf(g.id).takeoverAskedAt = now
+      g.ownerConfirmedAt = null
+    }
+    for (const c of this.tables.drive_connections) {
+      if (c.projectId === projectId && c.status === 'active') Object.assign(c, { status: 'replaced', statusChangedAt: now })
+    }
+    return { outcome: 'changed' }
+  }
+
+  private takeoverAskedAt(groupId: string): Date | null {
+    return this.tables.group_setups.find((r) => r.groupId === groupId)?.takeoverAskedAt ?? null
+  }
+
+  async getOwnerChange(projectId: string): Promise<OwnerChangeState | null> {
+    this.fault('getOwnerChange')
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) return null
+    const groups = this.tables.groups.filter((g) => g.projectId === projectId).sort((a, b) => a.id.localeCompare(b.id))
+    const main = groups.find((g) => this.isMainGroup(g.id))
+    return {
+      projectId, ownerLineUserId: project.ownerLineUserId,
+      mainGroup: main
+        ? {
+            groupId: main.id, lineGroupId: main.lineGroupId, name: main.name,
+            nominatedOwnerLineUserId: main.nominatedOwnerLineUserId, ownerConfirmedAt: main.ownerConfirmedAt,
+          }
+        : null,
+      waiting: groups
+        .filter((g) => !this.isMainGroup(g.id) && this.takeoverAskedAt(g.id) !== null)
+        .map((g) => ({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, askedAt: this.takeoverAskedAt(g.id) as Date })),
+    }
+  }
+
+  /** Same rules as answer_subgroup_takeover (20261112143751). A chosen group that is not a
+   *  waiting Sub group of the Project raises check_violation there: 'changed' here, as
+   *  SupabaseStore maps it, with nothing written. */
+  async answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }> {
+    this.fault('answerSubgroupTakeover')
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) throw new Error(`check violation: unknown Project ${projectId}`)
+    const takeover = [...new Set(takeoverGroupIds)]
+    const waitingHere = (g: GroupRow) => g.projectId === projectId && this.takeoverAskedAt(g.id) !== null
+    if (takeover.some((id) => { const g = this.tables.groups.find((x) => x.id === id); return !g || !waitingHere(g) })) {
+      return { outcome: 'changed' }
+    }
+    const now = this.clock()
+    const owner = project.ownerLineUserId
+    for (const g of this.tables.groups) {
+      if (!waitingHere(g)) continue
+      const x = this.setupOf(g.id)
+      x.takeoverAskedAt = null
+      if (!takeover.includes(g.id)) {
+        g.projectId = null // detach: keeps its old nominee and folder
+        continue
+      }
+      g.nominatedOwnerLineUserId = owner
+      Object.assign(x, { ownerNominatedByLineUserId: owner, ownerNominatedAt: now, driveFolderId: null })
+      g.ownerConfirmedAt = now
+    }
+    return { outcome: 'saved' }
+  }
+
+  async detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]> {
+    this.fault('detachExpiredTakeovers')
+    const out: DetachedSubGroup[] = []
+    for (const g of this.tables.groups) {
+      const asked = this.takeoverAskedAt(g.id)
+      if (asked === null || asked >= askedBefore) continue
+      this.setupOf(g.id).takeoverAskedAt = null
+      g.projectId = null
+      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
+    }
+    return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  // ---- #11 removal and recovery ----
+  async markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }> {
+    this.fault('markBotLeft')
+    const g = this.tables.groups.find((row) => row.lineGroupId === m.lineGroupId)
+    if (!g) return { deleteAfter: null }
+    const s = this.scheduleOf(g.id)
+    const joinedAt = s.joinedAt ?? null
+    if (s.leftAt === null && (joinedAt === null || joinedAt <= m.at)) {
+      s.leftAt = new Date(m.at.getTime())
+      s.deleteAfter = new Date(m.at.getTime() + 7 * 86_400_000)
+    }
+    return { deleteAfter: s.deleteAfter ? new Date(s.deleteAfter.getTime()) : null }
+  }
+
+  async getGroupDeleteAfter(groupId: string): Promise<Date | null> {
+    this.fault('getGroupDeleteAfter')
+    const d = this.tables.group_schedules.find((r) => r.groupId === groupId)?.deleteAfter ?? null
+    return d ? new Date(d.getTime()) : null
+  }
+
+  async markBotJoined(j: { groupId: string; at: Date }): Promise<void> {
+    this.fault('markBotJoined')
+    const g = this.tables.groups.find((row) => row.id === j.groupId)
+    if (!g) return
+    const s = this.scheduleOf(g.id)
+    if (g.ownerConfirmedAt === null && s.ownerLeftAt != null && s.ownerLeftAt < j.at) s.ownerLeftAt = new Date(j.at.getTime())
+    if (s.joinedAt == null || s.joinedAt < j.at) s.joinedAt = new Date(j.at.getTime())
+    if (s.leftAt !== null && s.leftAt <= j.at) {
+      s.leftAt = null
+      s.deleteAfter = null
+    }
+  }
+
+  async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
+    this.fault('listPurgeDueGroups')
+    return this.tables.group_schedules
+      .filter((s) => s.deleteAfter != null && s.deleteAfter <= now)
+      .sort((a, b) => (a.deleteAfter as Date).getTime() - (b.deleteAfter as Date).getTime())
+      .slice(0, limit)
+      .map((s) => s.groupId)
+  }
+
+  /** Mirrors the schema's cascade: group-keyed rows go, ai_usage keeps its rows with
+   *  groupId null, push_log and webhook_events have no group link and stay. */
+  async purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }> {
+    this.fault('purgeGroup')
+    const s = this.tables.group_schedules.find((r) => r.groupId === groupId)
+    if (!s || s.deleteAfter == null || s.deleteAfter > now) return { purged: false }
+    const t = this.tables
+    const summaryIds = new Set(t.summaries.filter((x) => x.groupId === groupId).map((x) => x.id))
+    t.groups = t.groups.filter((g) => g.id !== groupId)
+    t.group_members = t.group_members.filter((x) => x.groupId !== groupId)
+    t.messages = t.messages.filter((x) => x.groupId !== groupId)
+    t.summaries = t.summaries.filter((x) => x.groupId !== groupId)
+    t.task_candidates = t.task_candidates.filter((x) => !summaryIds.has(x.summaryId))
+    t.tasks = t.tasks.filter((x) => x.groupId !== groupId)
+    t.task_prompts = t.task_prompts.filter((x) => x.groupId !== groupId)
+    t.fair_use_notices = t.fair_use_notices.filter((x) => x.groupId !== groupId)
+    t.group_schedules = t.group_schedules.filter((x) => x.groupId !== groupId)
+    t.weekly_insights = t.weekly_insights.filter((x) => x.groupId !== groupId)
+    t.group_setups = t.group_setups.filter((x) => x.groupId !== groupId)
+    for (const u of t.ai_usage) if (u.groupId === groupId) u.groupId = null
+    return { purged: true }
+  }
+
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
   /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
   seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {
@@ -908,6 +1650,7 @@ export class FakeStore implements StorePort {
       id: randomUUID(), lineGroupId: 'Cgroup1', projectId: null, name: null,
       nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
       featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
+      ownerLeftAt: null,
       ...partial,
     }
     unique(this.tables.groups.some((g) => g.id === row.id), 'groups.id')
@@ -919,7 +1662,7 @@ export class FakeStore implements StorePort {
 
   seedMember(p: {
     groupId: string; lineUserId: string; displayName: string
-    nicknames?: string[]; role?: string; leftAt?: Date
+    nicknames?: string[]; role?: string; leftAt?: Date; isPm?: boolean
   }): void {
     fk(this.hasGroup(p.groupId), 'group_members.group_id')
     const user = this.tables.line_users.find((u) => u.lineUserId === p.lineUserId)
@@ -927,11 +1670,31 @@ export class FakeStore implements StorePort {
     else this.tables.line_users.push({ lineUserId: p.lineUserId, displayName: p.displayName })
     const record: GroupMemberRecord = {
       groupId: p.groupId, lineUserId: p.lineUserId, nicknames: [...(p.nicknames ?? [])],
-      role: p.role ?? null, source: 'setup_form', leftAt: p.leftAt ?? null,
+      role: p.role ?? null, source: 'setup_form', leftAt: p.leftAt ?? null, isPm: p.isPm === true,
     }
     const i = this.tables.group_members.findIndex((m) => m.groupId === p.groupId && m.lineUserId === p.lineUserId)
     if (i === -1) this.tables.group_members.push(record)
     else this.tables.group_members[i] = record
+  }
+
+  /** A files row as #4 will write it (#33 reads it). messageId is messages.id or null. */
+  seedFile(p: { groupId: string; messageId: string | null; fileName: string; driveLink: string; savedAt?: Date }): FileRecord {
+    fk(this.hasGroup(p.groupId), 'files.group_id')
+    fk(p.messageId === null || this.tables.messages.some((m) => m.id === p.messageId), 'files.message_id')
+    const row: FileRecord = {
+      id: randomUUID(), groupId: p.groupId, messageId: p.messageId, fileName: p.fileName, driveLink: p.driveLink,
+      savedAt: p.savedAt ?? SEED_NOW,
+    }
+    this.tables.files.push(row)
+    return { ...row }
+  }
+
+  /** A Project row owned by `ownerLineUserId` (creates the line_users row); attach groups with seedGroup({ projectId }). */
+  seedProject(ownerLineUserId: string): ProjectRecord {
+    this.ensureLineUserRow(ownerLineUserId)
+    const project: ProjectRecord = { id: randomUUID(), ownerLineUserId }
+    this.tables.projects.push(project)
+    return { ...project }
   }
 
   seedAiUsage(partial: Partial<NewAiUsage> = {}): void {

@@ -42,7 +42,7 @@ function actions(node: unknown): Array<{ type: string; label: string; data: stri
   if (Array.isArray(node)) return node.flatMap(actions)
   if (!node || typeof node !== 'object') return []
   const o = node as Record<string, unknown>
-  const own = o.type === 'button' ? [o.action as { type: string; label: string; data: string }] : []
+  const own = (o.type === 'button' || o.type === 'box') && o.action ? [o.action as { type: string; label: string; data: string }] : []
   return [...own, ...Object.values(o).filter((v) => v !== o.action).flatMap(actions)]
 }
 
@@ -55,23 +55,30 @@ describe('daily reminder carousel (#44)', () => {
     expect(type).toBe('carousel')
     expect(bubbles).toHaveLength(4)
     expect(texts(bubbles[0])).toEqual([
-      REMINDER_TEXT.title, '16/11 · 3 งานที่ต้องดู',
+      '⏰', REMINDER_TEXT.title, '16/11 · 3 งานที่ต้องดู',
       '• เลยกำหนด 1 งาน', '• ครบกำหนดวันนี้-พรุ่งนี้ 1 งาน', '• ยังไม่มีผู้รับ 1 งาน',
     ])
-    expect(texts(bubbles[1])[0]).toBe('ส่งรายงาน')
-    expect(texts(bubbles[2])[0]).toBe('ทำสไลด์')
-    expect(texts(bubbles[3])[0]).toBe('จองห้อง')
+    // Each Task bubble: the header glyph and reason, then the title.
+    expect(texts(bubbles[1])[2]).toBe('ส่งรายงาน')
+    expect(texts(bubbles[2])[2]).toBe('ทำสไลด์')
+    expect(texts(bubbles[3])[2]).toBe('จองห้อง')
   })
 
-  it('shows the status, every reason and the owner by LINE name', () => {
+  it('shows the most urgent reason as the header, the owner by LINE name, the due date and the other reasons', () => {
     const t = task({ title: 'ส่งรายงาน', dueAt: bkk('2026-11-14T17:00:00'), lastActivityAt: bkk('2026-11-08T09:00:00') })
     const { bubbles } = carousel([t])
-    expect(texts(bubbles[1])).toEqual(['ส่งรายงาน', '● กำลังทำ', 'เลยกำหนด 2 วัน', 'ไม่มีอัปเดต 8 วัน', 'คนทำ: บิว'])
+    expect(texts(bubbles[1])).toEqual([
+      '!', 'เลยกำหนด 2 วัน', 'ส่งรายงาน', REMINDER_TEXT.owner, 'บิว', REMINDER_TEXT.due, '14/11 17:00', 'ไม่มีอัปเดต 8 วัน',
+      REMINDER_TEXT.postpone, REMINDER_TEXT.done,
+    ])
   })
 
   it('says a Task has no owner yet', () => {
     const { bubbles } = carousel([task({ title: 'จองห้อง', status: 'not_assigned', assigneeLineUserId: null })])
-    expect(texts(bubbles[1])).toEqual(['จองห้อง', '● ยังไม่มีผู้รับ', 'ยังไม่มีผู้รับ', REMINDER_TEXT.noOwner])
+    expect(texts(bubbles[1])).toEqual([
+      '⏰', 'ยังไม่มีผู้รับ', 'จองห้อง', REMINDER_TEXT.owner, REMINDER_TEXT.noOwner, REMINDER_TEXT.due, REMINDER_TEXT.noDue,
+      REMINDER_TEXT.take,
+    ])
   })
 
   it('gives each Task a Postpone and a Done button that #45 can read back', () => {

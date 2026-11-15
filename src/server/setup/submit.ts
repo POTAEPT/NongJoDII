@@ -1,6 +1,7 @@
+import { driveDeadline, syncDriveForOwner } from '../google/drive-folders'
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import { log, logError } from '../log'
-import type { ApiResult, Deps, GroupSetup, Member, SetupMemberWrite, SetupOutcome } from '../ports'
+import type { ApiResult, Defer, Deps, GroupSetup, Member, SetupMemberWrite, SetupOutcome } from '../ports'
 import { badRequest, field } from '../review/load'
 import { setupDoneCard } from './card'
 import { lineNameOf, openSetupGroup } from './load'
@@ -15,17 +16,20 @@ import type { SetupFeatures, SetupResendResult, SetupSubmitResult } from './type
  *  matches the reminder post's 2%. Agent choice. */
 export const SETUP_PUSH_RESERVE = 0.02
 
-type Parsed = {
+/** The setup form's values without the Owner: what Settings (#28) edits too. */
+export type GroupValues = {
   workDescription: string | null; features: SetupFeatures; dailyReminderTime: string
-  weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]; ownerLineUserId: string
+  weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]
 }
+type Parsed = GroupValues & { ownerLineUserId: string }
 
 function isBool(v: unknown): v is boolean {
   return typeof v === 'boolean'
 }
 
-/** Shape and size checks; the field name of the first bad value, or the clean values. */
-function parse(body: unknown): { ok: true; value: Parsed } | { ok: false; field: string } {
+/** Shape and size checks of the values the setup form and Settings share; the field name of
+ *  the first bad value, or the clean values. */
+export function parseGroupValues(body: unknown): { ok: true; value: GroupValues } | { ok: false; field: string } {
   const wd = field(body, 'workDescription')
   if (typeof wd !== 'string' || wd.trim().length > WORK_DESCRIPTION_MAX) return { ok: false, field: 'workDescription' }
 
@@ -61,9 +65,6 @@ function parse(body: unknown): { ok: true; value: Parsed } | { ok: false; field:
     members.push({ lineUserId: m.lineUserId, nicknames, role: role === '' ? null : role })
   }
 
-  const owner = field(body, 'ownerLineUserId')
-  if (typeof owner !== 'string' || owner === '') return { ok: false, field: 'ownerLineUserId' }
-
   return {
     ok: true,
     value: {
@@ -73,9 +74,18 @@ function parse(body: unknown): { ok: true; value: Parsed } | { ok: false; field:
         trackRemind: features.trackRemind as boolean, weeklySummary: features.weeklySummary as boolean,
       },
       dailyReminderTime: daily, weeklySummaryWeekday: weekday, weeklySummaryTime: weekly,
-      members, ownerLineUserId: owner,
+      members,
     },
   }
+}
+
+/** The setup form: the shared values plus the Owner it names. */
+function parse(body: unknown): { ok: true; value: Parsed } | { ok: false; field: string } {
+  const values = parseGroupValues(body)
+  if (!values.ok) return values
+  const owner = field(body, 'ownerLineUserId')
+  if (typeof owner !== 'string' || owner === '') return { ok: false, field: 'ownerLineUserId' }
+  return { ok: true, value: { ...values.value, ownerLineUserId: owner } }
 }
 
 const closed: ApiResult = { status: 409, body: { error: 'setup_closed' } }
@@ -83,8 +93,12 @@ const closed: ApiResult = { status: 409, body: { error: 'setup_closed' } }
 /** POST /api/setup/submit. Saves the setup form and nominates the Owner; naming yourself
  *  confirms you at once and creates the Project (your LIFF login is the LINE login).
  *  Refused (409) once the group has a confirmed Owner or belongs to a Project: later
- *  edits belong to Settings (#28). Then pushes the #2e card to the group. */
-export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult> {
+ *  edits belong to Settings (#28). Then pushes the #2e card to the group. A self-confirmed
+ *  Owner already signed in to Google gets the Drive folders (#13) after the response. */
+export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Promise<ApiResult> {
+  // The route's 60 s cover this handler, its LINE calls and its after() work: the Drive
+  // work is timed from here.
+  const deadline = driveDeadline(deps.now())
   const gate = await openSetupGroup(deps, body)
   if (!gate.ok) return gate.result
   const { group, requester } = gate
@@ -116,6 +130,7 @@ export async function submitSetup(deps: Deps, body: unknown): Promise<ApiResult>
   if (outcome === 'owner_not_member') return badRequest('ownerLineUserId')
   const confirmed = outcome === 'confirmed'
   log('setup_saved', { groupId: group.groupId, ownerConfirmed: confirmed })
+  if (confirmed) defer(() => syncDriveForOwner(deps, requester, deadline))
   const nominatedAt = await storedNominationTime(deps, group.groupId, v.ownerLineUserId, at)
 
   // Every send pushes the #2e card, under a LINE retry key made from the nominee, the

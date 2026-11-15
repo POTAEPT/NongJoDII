@@ -173,7 +173,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
           <>
             <Tabs tab={tab} onChange={(t) => { setTab(t); setMemberId(null) }} />
             {group!.tasks.length === 0 && group!.members.length === 0 ? (
-              <Notice tone="doc" title="ยังไม่มีงานในกลุ่มนี้" text="เมื่อน้องจดดีสรุปแชตและทีมยืนยัน งานจะแสดงที่นี่" />
+              <EmptyGroup insight={group!.insight} showInsight={tab === 'overview'} />
             ) : tab === 'overview' ? (
               memberId ? (
                 <MemberDetail group={group!} memberId={memberId} now={now} onBack={() => setMemberId(null)} onOpen={openTask} />
@@ -247,6 +247,17 @@ function Tabs({ tab, onChange }: { tab: DashboardTab; onChange: (t: DashboardTab
         </button>
       ))}
     </div>
+  )
+}
+
+/** A group with no Tasks and no known Members (a PM can still see it after its last known
+ *  Member left). Its saved weekly insight still shows on the overview (#22). */
+export function EmptyGroup({ insight, showInsight }: { insight: DashboardInsight | null; showInsight: boolean }) {
+  return (
+    <>
+      {showInsight && insight && <InsightCard insight={insight} />}
+      <Notice tone="doc" title="ยังไม่มีงานในกลุ่มนี้" text="เมื่อน้องจดดีสรุปแชตและทีมยืนยัน งานจะแสดงที่นี่" />
+    </>
   )
 }
 

@@ -6,8 +6,8 @@ import type { Deps } from '../ports'
 // content, only quotedMessageId, so the bot finds the file through its stored copy of the
 // quoted message and that message's files row (written by #4). Always a reply, never a
 // push. Bots cannot send LINE file messages, so the answer is the Drive link; it opens
-// without a Google account because the Project folder is shared "anyone with the link"
-// (#13).
+// without a Google account when the Project folder is shared "anyone with the link" (#13),
+// and for the Drive's owner only when a Google Workspace policy refused that share.
 
 export const FILE_REQUEST_TEXT = {
   howTo: 'ตอบกลับ (Reply) ข้อความไฟล์ที่ต้องการ แล้วพิมพ์ "น้องจดดี ขอไฟล์" เพื่อรับลิงก์ Google Drive ของไฟล์นั้น',

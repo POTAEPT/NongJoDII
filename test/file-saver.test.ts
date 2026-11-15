@@ -150,6 +150,19 @@ describe('file saver (#4)', () => {
     expect(h.store.tables.files).toHaveLength(1)
     expect(h.line.pushes).toEqual([])
     expect(flexText(h.line.replies[0].messages[0])).not.toContain('ไม่ต้องมีบัญชี Google')
+    expect(flexText(h.line.replies[0].messages[0])).not.toContain('เฉพาะเจ้าของ Drive')
+  })
+
+  it('a failed share check does not fail the save; the card then says nothing about access', async () => {
+    const h = await setup()
+    h.google.permsError = new AdapterError('google drive permissions 500')
+    h.line.contents.set('m-p', { data: bytes('p'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-p', fileName: 'p.pdf', fileSize: 1 }))
+    await h.runDeferred()
+    expect(h.store.tables.files).toHaveLength(1)
+    const t = flexText(h.line.replies[0].messages[0])
+    expect(t).not.toContain('ไม่ต้องมีบัญชี Google')
+    expect(t).not.toContain('เฉพาะเจ้าของ Drive')
   })
 
   it('saves a main group photo into "Main group files"', async () => {
@@ -317,6 +330,37 @@ describe('file saver (#4)', () => {
     expect(arrived).toBe(true)
     expect(h.store.tables.files).toHaveLength(2)
     expect(cardTexts(h)).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('2 รูป')
+  })
+
+  it('a photo that arrives and settles during the first job\'s wait makes the first job step back', async () => {
+    const h = await setup()
+    for (const i of [1, 2]) h.line.contents.set(`m-k${i}`, { data: bytes(`k ${i}`), contentType: 'image/jpeg' })
+    let releaseB = () => {}
+    const gateB = new Promise<void>((r) => { releaseB = r })
+    let bParked = () => {}
+    const parkedB = new Promise<void>((r) => { bParked = r })
+    let runB: Promise<void> | null = null
+    h.deps.sleep = async (ms) => {
+      if (runB === null) {
+        // First job (photo 1) waits: photo 2 arrives, saves and starts its own wait.
+        await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-k2', imageSet: { id: 'set-K' }, replyToken: 'rt-k2' }))
+        runB = h.runDeferred()
+        await parkedB
+        h.setNow(new Date(h.deps.now().getTime() + ms))
+        return
+      }
+      bParked()
+      await gateB
+      h.setNow(new Date(h.deps.now().getTime() + ms))
+    }
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-k1', imageSet: { id: 'set-K' }, replyToken: 'rt-k1' }))
+    await h.runDeferred()
+    // Photo 1's job is done: it saw a new photo in the set and claimed nothing.
+    expect(h.store.tables.image_set_cards).toEqual([])
+    releaseB()
+    await runB
+    expect(h.line.replies.map((r) => r.replyToken)).toEqual(['rt-k2'])
     expect(cardTexts(h)[0]).toContain('2 รูป')
   })
 

@@ -45,13 +45,14 @@ export function logError(event: string, fields: Fields, err: unknown): void {
   console.error(JSON.stringify({ event, ...fields, error }))
 }
 
-/** Google answered the "anyone with the link" share with 403: a Google Workspace policy
+/** Google refused the "anyone with the link" share for a policy reason (400
+ *  invalidSharingRequest, or a 403 that is not a usage limit): a Google Workspace policy
  *  blocks link sharing, so retrying cannot help until an admin changes it (#4). */
 export class DriveShareRefused extends AdapterError {
   name = 'DriveShareRefused'
 
-  constructor() {
-    super('google drive share 403')
+  constructor(status: number = 403) {
+    super(`google drive share ${status}`)
   }
 }
 

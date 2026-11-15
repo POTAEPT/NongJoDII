@@ -241,17 +241,33 @@ describe('GoogleHttpClient.uploadFile (#4)', () => {
 })
 
 describe('GoogleHttpClient link share (#4 follow-up)', () => {
-  it('a 403 on the share is DriveShareRefused (a Workspace policy)', async () => {
-    const { client } = stubFetch(403, { error: { message: 'secret' } })
-    const err = await client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(DriveShareRefused)
+  const reason = (r: string, domain = 'global') => ({ error: { errors: [{ domain, reason: r, message: 'secret detail' }] } })
+
+  it('a policy refusal is DriveShareRefused: 400 invalidSharingRequest, or a 403 that is not a usage limit', async () => {
+    for (const [status, body] of [[400, reason('invalidSharingRequest')], [403, reason('forbidden')], [403, {}]] as const) {
+      const err = await stubFetch(status, body).client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(DriveShareRefused)
+      expect((err as Error).message).toBe(`google drive share ${status}`)
+    }
   })
 
-  it('folderShared reads permissionIds and looks for anyoneWithLink', async () => {
-    const shared = stubFetch(200, { permissionIds: ['123', 'anyoneWithLink'] })
+  it('a 403 rate limit, a 400 of another kind, or a 5xx is a plain AdapterError (retrying can help)', async () => {
+    for (const [status, body] of [
+      [403, reason('rateLimitExceeded', 'usageLimits')], [403, reason('sharingRateLimitExceeded')],
+      [403, reason('userRateLimitExceeded', 'usageLimits')], [400, reason('badRequest')], [500, {}],
+    ] as const) {
+      const err = await stubFetch(status, body).client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(AdapterError)
+      expect(err).not.toBeInstanceOf(DriveShareRefused)
+      expect((err as Error).message).toBe(`google drive share ${status}`)
+    }
+  })
+
+  it('folderShared lists the permissions and looks for type anyone', async () => {
+    const shared = stubFetch(200, { permissions: [{ type: 'user', role: 'owner' }, { type: 'anyone', role: 'reader' }] })
     expect(await shared.client.folderShared('at', 'f/1')).toBe(true)
-    expect(shared.calls[0].url).toBe('https://www.googleapis.com/drive/v3/files/f%2F1?fields=permissionIds')
-    expect(await stubFetch(200, { permissionIds: ['123'] }).client.folderShared('at', 'f1')).toBe(false)
+    expect(shared.calls[0].url).toBe('https://www.googleapis.com/drive/v3/files/f%2F1/permissions?fields=permissions(type,role)')
+    expect(await stubFetch(200, { permissions: [{ type: 'user', role: 'owner' }] }).client.folderShared('at', 'f1')).toBe(false)
     const err = await stubFetch(404).client.folderShared('at', 'f1').catch((e: unknown) => e)
     expect((err as Error).message).toBe('google drive permissions 404')
   })

@@ -149,8 +149,12 @@ export class FakeGoogle implements GooglePort {
   }
 
   /** Folders checked with folderShared, in order. */
+  /** When set, folderShared rejects with it. */
+  permsError: Error | null = null
+
   async folderShared(accessToken: string, folderId: string): Promise<boolean> {
     await this.drive(`perms:${folderId}`, accessToken)
+    if (this.permsError) throw this.permsError
     return this.shares.some((x) => x.fileId === folderId)
   }
 

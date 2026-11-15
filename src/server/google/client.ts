@@ -141,21 +141,31 @@ export class GoogleHttpClient implements GooglePort {
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ role: 'reader', type: 'anyone' }),
     })
-    // 403: a Google Workspace policy blocks link sharing (#4 follow-up).
-    if (res.status === 403) throw new DriveShareRefused()
-    if (!res.ok) throw new AdapterError(`google drive share ${res.status}`)
+    if (res.ok) return
+    // #4 follow-up: a sharing policy refusal is told apart from a rate limit by the error
+    // reason (Drive's "Resolve errors" guide): 400 invalidSharingRequest ("ACL change not
+    // allowed") or a 403 that is not a usage limit. Rate limits are 403 too, and retrying
+    // later helps them, so they stay a plain AdapterError. Only the reason is read, never
+    // logged with the body.
+    const reasons = await errorReasons(res)
+    const usageLimit = reasons.some((r) => r.domain === 'usageLimits' || /LimitExceeded$/i.test(r.reason))
+    if (!usageLimit && ((res.status === 400 && reasons.some((r) => r.reason === 'invalidSharingRequest')) || res.status === 403)) {
+      throw new DriveShareRefused(res.status)
+    }
+    throw new AdapterError(`google drive share ${res.status}`)
   }
 
-  /** files.get with permissionIds: Drive names the "anyone with the link" permission
-   *  'anyoneWithLink' (Permission resource, id). */
+  /** permissions.list: whether the folder has an "anyone" permission (link sharing).
+   *  Permission IDs are opaque (Permission resource), so the type is read instead. */
   async folderShared(accessToken: string, folderId: string): Promise<boolean> {
-    const res = await this.call(`${DRIVE_FILES}/${encodeURIComponent(folderId)}?fields=permissionIds`, {
+    const res = await this.call(`${DRIVE_FILES}/${encodeURIComponent(folderId)}/permissions?fields=permissions(type,role)`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     if (!res.ok) throw new AdapterError(`google drive permissions ${res.status}`)
-    const json = (await res.json()) as { permissionIds?: unknown }
-    return Array.isArray(json.permissionIds) && json.permissionIds.includes('anyoneWithLink')
+    const json = (await res.json()) as { permissions?: unknown }
+    return Array.isArray(json.permissions) &&
+      json.permissions.some((p) => (p as { type?: unknown } | null)?.type === 'anyone')
   }
 
   /** #4 (developers.google.com/drive/api/guides/manage-uploads). Up to 5 MB one multipart
@@ -218,4 +228,15 @@ function decodeJwtPayload(token: string): { sub?: unknown; email?: unknown } | n
   } catch {
     return null
   }
+}
+
+/** The `reason` and `domain` of each entry in a Google API error body (error.errors[]). */
+async function errorReasons(res: Response): Promise<{ reason: string; domain: string }[]> {
+  const body = (await res.json().catch(() => null)) as { error?: { errors?: unknown } } | null
+  const errors = body?.error?.errors
+  if (!Array.isArray(errors)) return []
+  return errors.map((e) => {
+    const x = e as { reason?: unknown; domain?: unknown } | null
+    return { reason: typeof x?.reason === 'string' ? x.reason : '', domain: typeof x?.domain === 'string' ? x.domain : '' }
+  })
 }

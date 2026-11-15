@@ -28,7 +28,9 @@ export type DashboardMember = { lineUserId: string; displayName: string | null }
  *  Dashboard is where it shows. */
 export type DashboardInsight = { weekStart: string; done: number; inProcess: number; awaitingOwner: number; posted: boolean }
 /** #4: a file the bot saved to Drive from this group (newest first). The link opens without
- *  a Google account. A saved card skipped near the LINE quota leaves the file here only. */
+ *  a Google account when the Project folder is shared "anyone with the link"; if a Google
+ *  Workspace policy refused that share, only the Drive's owner can open it (not marked here).
+ *  A saved card skipped near the LINE quota leaves the file here only. */
 export type DashboardFile = {
   fileId: string; fileName: string; driveLink: string; sizeBytes: number | null; savedAt: string; senderName: string | null
 }

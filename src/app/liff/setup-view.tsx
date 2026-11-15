@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { liffUrl } from '@/server/liff-links'
 import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { ERR_401, post } from './api'
@@ -46,7 +47,7 @@ const STEP_TITLES = [
 
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SetupLoad }
 
-export function SetupView({ liff, idToken, id }: LiffViewProps) {
+export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
   const [form, setForm] = useState<SetupForm | null>(null)
   const [step, setStep] = useState(1)
@@ -137,6 +138,22 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
     )
   }
   const { data } = load
+  // #30: the Owner of this group left (for example a Sub group that detached): the Owner role
+  // goes through the Owner page, which asks for Google Drive before it takes effect.
+  if (data.ownerNeeded && id) {
+    return (
+      <Page title={TITLE} onBack={close}
+        bottom={
+          <a className="flex min-h-12 w-full items-center justify-center rounded-xl bg-primary px-4 text-base font-semibold text-white"
+            href={liffUrl(liffId, 'owner', id)}>เป็นเจ้าของบอทแทน</a>
+        }>
+        <div className="pt-6 text-center">
+          <h2 className="text-[22px] font-semibold leading-snug">กลุ่มนี้ยังไม่มีเจ้าของบอท</h2>
+          <p className="mt-2 text-sm text-ink-2">เจ้าของบอทคนใหม่ยืนยันด้วย LINE แล้วเชื่อม Google Drive ของตัวเอง จากนั้นแก้การตั้งค่าได้ในหน้าตั้งค่า</p>
+        </div>
+      </Page>
+    )
+  }
   if (data.state === 'confirmed' || data.state === 'in_project') {
     return <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="ตั้งค่าเสร็จแล้ว" message={ERR_409} onClose={close} />
   }

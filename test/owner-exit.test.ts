@@ -7,6 +7,7 @@ import {
   OWNER_CLAIM_HOLD_MS, OWNER_EXIT_AFTER_DAYS, OWNER_EXIT_BATCH, OWNER_NEEDED_TEXT, ownerExitJob,
 } from '@/server/members/owner-left'
 import { confirmOwner } from '@/server/setup/confirm'
+import { submitSetup } from '@/server/setup/submit'
 import { handleTickRequest } from '@/server/tick/handle-request'
 import { TICK_JOBS } from '@/server/tick/run-tick'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -421,5 +422,45 @@ describe('a Sub group with no new Owner after 7 days (#30 part B, decided 2026-1
     await t.tickAt(at(7 * DAY + 30 * MIN))
     expect(t.line.pushes).toHaveLength(1)
     expect(t.group(t.subId).ownerLeftAt).toEqual(retry)
+  })
+
+  const form = (groupId: string, ownerLineUserId: string) => ({
+    idToken: TOKEN[PIM], groupId, workDescription: 'งานใหม่',
+    features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
+    dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
+    members: [{ lineUserId: PIM, nicknames: [], role: '' }], ownerLineUserId,
+  })
+
+  it('the setup form on a detached group does not confirm without Drive; the Google callback then does', async () => {
+    const t = await subSetup()
+    await t.tickAt(at(7 * DAY))
+    t.setNow(at(8 * DAY))
+    // Naming yourself is the claim, held until Drive is connected.
+    const res = await submitSetup(t.deps, form(t.subId, PIM), t.defer)
+    await t.runDeferred()
+    expect(res).toEqual({ status: 200, body: { state: 'needs_drive' } })
+    expect(t.group(t.subId)).toMatchObject({ nominatedOwnerLineUserId: PIM, ownerConfirmedAt: null, projectId: null })
+    expect(t.store.tables.projects).toHaveLength(1) // no new Project yet
+    // Naming someone else is refused: that person takes the card themselves.
+    expect(await submitSetup(t.deps, form(t.subId, OWNER), t.defer)).toEqual({ status: 409, body: { error: 'owner_needed' } })
+
+    expect(await signIn(t, PIM, 2)).toBe('ok')
+    const g = t.group(t.subId)
+    expect(g).toMatchObject({ nominatedOwnerLineUserId: PIM, ownerLeftAt: null })
+    expect(g.ownerConfirmedAt).not.toBeNull()
+    expect(g.projectId).not.toBeNull()
+  })
+
+  it('a brand-new group\'s setup is unchanged: naming yourself confirms at once', async () => {
+    const t = setup()
+    const g = t.store.seedGroup({ lineGroupId: 'Cfresh' })
+    t.store.seedMember({ groupId: g.id, lineUserId: PIM, displayName: 'พิม' })
+    t.line.groupMemberCounts.set('Cfresh', 1)
+    const res = await submitSetup(t.deps, form(g.id, PIM), t.defer)
+    await t.runDeferred()
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ state: 'confirmed' })
+    expect(t.group(g.id).ownerConfirmedAt).not.toBeNull()
+    expect(t.group(g.id).projectId).not.toBeNull()
   })
 })

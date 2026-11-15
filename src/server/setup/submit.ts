@@ -5,6 +5,7 @@ import type { ApiResult, Defer, Deps, GroupSetup, Member, SetupMemberWrite, Setu
 import { badRequest, field } from '../review/load'
 import { setupDoneCard } from './card'
 import { lineNameOf, openSetupGroup } from './load'
+import { takeOverOwner } from './owner-change'
 import {
   cleanNicknames, isIsoWeekday, isQuarterHour, isSetupOpen, MEMBERS_MAX, NICKNAME_MAX, NICKNAMES_PER_MEMBER_MAX,
   ROLE_MAX, setupState, WORK_DESCRIPTION_MAX,
@@ -107,6 +108,17 @@ export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Prom
   const parsed = parse(body)
   if (!parsed.ok) return badRequest(parsed.field)
   const v = parsed.value
+  // A group whose Owner left and that has no Project (a Sub group detached by #30 part B):
+  // setup_group would confirm a sender who names themselves at once, without Drive. The
+  // role goes through the owner_needed flow instead (setup/owner-change.ts): naming yourself
+  // is the claim (your LIFF login is the LINE login), and it takes effect only with a valid
+  // Google sign-in, here or on the Google callback. The form's other values are not saved
+  // then: the group keeps its earlier settings, and the new Owner edits them in Settings.
+  // Naming someone else is refused: that person presses the card themselves.
+  if (group.ownerLeftAt !== null) {
+    if (v.ownerLineUserId !== requester) return { status: 409, body: { error: 'owner_needed' } }
+    return takeOverOwner(deps, group, requester, defer, deadline)
+  }
   // Only live Members of this group: the form edits them, it never adds anyone. A listed
   // person who left since the page loaded is dropped (setup_group writes live rows only
   // too), so the rest of the form still goes through. The Owner must still be here.

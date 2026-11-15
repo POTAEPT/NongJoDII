@@ -78,6 +78,13 @@ export type StoredMessage = {
   id: string; senderLineUserId: string | null; senderDisplayName: string | null; text: string; sentAt: Date
   mentions: MessageMention[] | null
 }
+/** #33: what a quote-reply's quotedMessageId leads to in this group. 'no_message': the bot
+ *  has no stored copy (never stored, another group's, or unsent and deleted by #24).
+ *  'no_file': a stored message with no files row. 'file': the newest saved file for it. */
+export type QuotedFileLookup =
+  | { kind: 'no_message' }
+  | { kind: 'no_file' }
+  | { kind: 'file'; fileName: string; driveLink: string }
 export type Member = { lineUserId: string; displayName: string | null; nicknames: string[]; role: string | null }
 export type Membership = 'live' | 'left' | 'none'
 export type NewSummary = {
@@ -105,6 +112,19 @@ export type TaskRow = {
 export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
   dueAt: Date | null; lastEditedByLineUserId: string; lastActivityAt: Date
+}
+// #17 Dashboard read. Names are LINE names (line_users.display_name), never nicknames.
+/** One of the requester's group_members rows, for a group that is in a Project and still
+ *  has the bot. `left` = left_at is set. isPm = group_members.is_pm. */
+export type DashboardMembership = {
+  groupId: string; projectId: string; projectOwnerLineUserId: string; isPm: boolean; left: boolean
+}
+export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
+export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
+/** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
+export type DashboardTaskRow = {
+  id: string; groupId: string; title: string; status: TaskStatus
+  assigneeLineUserId: string | null; assigneeName: string | null; dueAt: Date | null
 }
 export type AiPurpose = 'summary' | 'progress_decision'
 export type NewAiUsage = {
@@ -143,6 +163,11 @@ export type WeeklySummaryGroup = {
 /** Live (not soft-deleted) Tasks of one group by status. "Awaiting an owner" = Not Assigned. */
 export type TaskCounts = { done: number; inProcess: number; awaitingOwner: number }
 export type UnownedTask = { id: string; title: string; dueAt: Date | null }
+/** #22: a group's latest saved weekly insight, for the Dashboard. postedAt null: never posted
+ *  in the group (skipped near the LINE quota, failed, or no Tasks to post). */
+export type LatestWeeklyInsight = {
+  groupId: string; weekStart: string; counts: TaskCounts; postedAt: Date | null
+}
 export type NewWeeklyInsight = {
   groupId: string; weekStart: string   // Monday, 'YYYY-MM-DD' Bangkok
   counts: TaskCounts; createdAt: Date
@@ -257,6 +282,10 @@ export interface StorePort {
    *  (never stored, or already deleted), so a repeat is harmless. Rows that point at it
    *  (task_prompts.trigger_message_id, files.message_id) are kept by ON DELETE SET NULL. */
   deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }>
+  // #33 file request by quote-reply
+  /** The stored message with this LINE message id in this group (never another group's),
+   *  then the newest files row whose message_id points at it. */
+  findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup>
   // #15 Summary
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null
@@ -406,6 +435,16 @@ export interface StorePort {
    *  confirms; this creates the Project (owner = the nominee) with the group as its main
    *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
   confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }>
+  // #17 Dashboard read. The id lists are groups the caller already decided the requester may see.
+  /** The requester's rows (live and left) in groups that belong to a Project and still have the bot. */
+  listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]>
+  /** Groups of these Projects that still have the bot: main group first, then by join time, then id. */
+  listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]>
+  /** Live Members (left_at is null) of these groups, by LINE name. */
+  listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]>
+  /** Live Tasks of these groups, oldest first. */
+  listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]>
+  listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> // #22: one per group that has any
   // #12 Google
   /** Conflict on google_subject: update, token_status 'valid'. Every sign-in sets
    *  connected_at = signedInAt, so a person's latest account is the one that signed in

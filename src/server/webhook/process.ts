@@ -1,4 +1,5 @@
 import { parseGroupCommand } from '@/server/commands/parse'
+import { handleFileRequest } from '@/server/files/request'
 import { sendConnectDriveCard } from '@/server/google/connect-card'
 import { log, logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
@@ -100,6 +101,11 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
     }
     if (command === 'settings') {
       if (replyToken) await replySettingsCard(deps, { groupId, replyToken })
+      return
+    }
+    // #33: a quote-reply asking for a saved file's Drive link.
+    if (command === 'request_file') {
+      if (replyToken) await handleFileRequest(deps, { groupId, quotedMessageId: job.quotedMessageId, replyToken })
       return
     }
     // Any other text line may report progress on a Task (#7). Its card shows the sender's name.

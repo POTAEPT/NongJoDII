@@ -66,7 +66,7 @@ async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
   // The sender of a group message, or the person who pressed a button in a group.
   const senderLineUserId =
     job.kind === 'group_message' ? job.senderLineUserId : job.kind === 'group_postback' ? job.userId : null
-  if (job.kind === 'user_chat' || job.kind === 'group_join' || job.kind === 'member_left' || !senderLineUserId) return
+  if (job.kind === 'user_chat' || job.kind === 'group_join' || job.kind === 'member_left' || job.kind === 'member_joined' || !senderLineUserId) return
   const { lineGroupId } = job
   try {
     const user = await deps.store.findLineUser(senderLineUserId)
@@ -76,6 +76,19 @@ async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
     }
   } catch (err) {
     logError('line_name_refresh_failed', { lineGroupId }, err)
+  }
+}
+
+/** #29: names people who joined from their LINE profile. Best effort per person: a LINE
+ *  5xx/429 leaves that name empty until their first message, button press or LIFF login. */
+async function saveJoinedNames(deps: Deps, job: Extract<Job, { kind: 'member_joined' }>): Promise<void> {
+  for (const lineUserId of job.lineUserIds) {
+    try {
+      const profile = await deps.line.getGroupMemberProfile(job.lineGroupId, lineUserId)
+      if (profile) await deps.store.upsertLineUser({ lineUserId, displayName: profile.displayName })
+    } catch (err) {
+      logError('line_name_refresh_failed', { lineGroupId: job.lineGroupId }, err)
+    }
   }
 }
 
@@ -125,6 +138,10 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
   }
   if (job.kind === 'member_left') {
     await handleMemberLeft(deps, job)
+    return
+  }
+  if (job.kind === 'member_joined') {
+    await saveJoinedNames(deps, job)
     return
   }
   await sendConnectDriveCard(deps, job)

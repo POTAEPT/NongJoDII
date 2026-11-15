@@ -21,6 +21,9 @@ export type Job =
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
+  // #29: people who joined a group, already saved as Members at ingest; the Job fetches their
+  // LINE names so pickers can tell several new Members apart.
+  | { kind: 'member_joined'; lineGroupId: string; lineUserIds: string[] }
 
 /** Stops at the first event that throws and returns the jobs collected before it,
  *  plus that error. Never throws itself. */
@@ -147,19 +150,21 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (source.type === 'group' && event.type === 'memberJoined') {
     // #29: a person who joins is a Member at once, and a rejoin clears left_at, so they get
     // LIFF access back. Writes first, the ledger row last (as for a leave); both are
-    // idempotent and nothing is posted, so no Job. The welcome reply comes later.
+    // idempotent. The Job only fetches LINE names. The welcome reply comes later.
     // A redelivered join cannot undo a later leave: it only clears a left_at older than itself.
     const group = await store.ensureGroup(source.groupId)
+    const lineUserIds: string[] = []
     for (const m of event.joined?.members ?? []) {
       if (m.type !== 'user' || typeof m.userId !== 'string') continue
       await store.upsertLineUser({ lineUserId: m.userId, displayName: null })
       await store.markMemberJoined({ groupId: group.id, lineUserId: m.userId, at: eventTimestamp })
+      lineUserIds.push(m.userId)
     }
-    await store.recordWebhookEvent({
+    const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'memberJoined', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
     })
-    return null
+    return inserted && lineUserIds.length > 0 ? { kind: 'member_joined', lineGroupId: source.groupId, lineUserIds } : null
   }
 
   const { inserted } = await store.recordWebhookEvent({

@@ -210,6 +210,20 @@ describe('a member leaves the group (#29)', () => {
     expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
   })
 
+  it('a take that read the presser as live just before the leave does not keep the Task', async () => {
+    const t = setup()
+    const open = t.store.seedTask({ groupId: t.group.id, createdByLineUserId: OWNER, title: 'จองห้อง', status: 'not_assigned' })
+    const realTake = t.store.takeTask.bind(t.store)
+    // The leave lands between the take's membership check and its write.
+    vi.spyOn(t.store, 'takeTask').mockImplementationOnce(async (p) => {
+      await t.send(ev.memberLeft({ userIds: [TON] }))
+      return realTake(p)
+    })
+    await t.send(ev.groupPostback({ userId: TON, data: encodeReminderAction({ kind: 'take', taskId: open.id }) }))
+    expect(t.task(open.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+    expect(JSON.stringify(t.line.replies.at(-1)?.messages)).toContain(ANSWER_TEXT.left)
+  })
+
   it('makes no AI call', async () => {
     const t = setup()
     await t.send(ev.memberLeft({ userIds: [BIW] }))
@@ -224,6 +238,30 @@ describe('a member joins the group (#29)', () => {
     expect(await t.store.getMembership(t.group.id, 'Unew')).toBe('live')
     expect(t.store.tables.group_members.find((m) => m.lineUserId === 'Unew')).toMatchObject({ source: 'member_join' })
     expect(t.line.pushes).toHaveLength(0)
+  })
+
+  it('names each new person from their LINE profile', async () => {
+    const t = setup()
+    t.line.profiles.set('Cgroup1:Unew1', 'มายด์')
+    t.line.profiles.set('Cgroup1:Unew2', 'ฟ้า')
+    await t.send(ev.memberJoined({ userIds: ['Unew1', 'Unew2'] }))
+    const name = (id: string) => t.store.tables.line_users.find((u) => u.lineUserId === id)?.displayName
+    expect([name('Unew1'), name('Unew2')]).toEqual(['มายด์', 'ฟ้า'])
+  })
+
+  it('a LINE profile error still leaves the person a Member', async () => {
+    const t = setup()
+    t.line.failProfile = true
+    await t.send(ev.memberJoined({ userIds: ['Unew'] }))
+    expect(await t.store.getMembership(t.group.id, 'Unew')).toBe('live')
+  })
+
+  it('a redelivered join does not fetch the names again', async () => {
+    const t = setup()
+    await t.send(ev.memberJoined({ userIds: ['Unew'], eventId: 'ev-join' }))
+    const calls = t.line.profileCalls.length
+    await t.send(ev.memberJoined({ userIds: ['Unew'], eventId: 'ev-join' }))
+    expect(t.line.profileCalls).toHaveLength(calls)
   })
 
   it('a person who left and comes back gets LIFF access again', async () => {

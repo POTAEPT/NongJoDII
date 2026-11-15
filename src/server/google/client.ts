@@ -1,5 +1,5 @@
 import { AdapterError, GoogleTokenRevoked } from '../log'
-import type { DriveFolderState, GooglePort, GoogleTokenResult } from '../ports'
+import type { DriveFolderState, DriveUpload, GooglePort, GoogleTokenResult } from '../ports'
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 
@@ -7,6 +7,9 @@ const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const SCOPE = `openid email ${DRIVE_FILE_SCOPE}`
 const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files'
+const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files'
+/** Drive's guide: multipart for 5 MB or less, resumable above. */
+export const MULTIPART_MAX_BYTES = 5 * 1024 * 1024
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
 
 /** Google OAuth 2.0 web-server flow (developers.google.com/identity/protocols/oauth2/web-server).
@@ -32,9 +35,9 @@ export class GoogleHttpClient implements GooglePort {
 
   /** Drive and refresh calls run inside after(), several per sign-in: each is cut at
    *  10 s so they fit the route's time limit. */
-  private async call(url: string, init: RequestInit): Promise<Response> {
+  private async call(url: string, init: RequestInit, timeoutMs: number = this.timeoutMs): Promise<Response> {
     try {
-      return await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(this.timeoutMs) })
+      return await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) })
     } catch (err) {
       const name = (err as { name?: unknown } | null)?.name
       if (name === 'TimeoutError' || name === 'AbortError') throw new AdapterError('google timeout')
@@ -139,6 +142,51 @@ export class GoogleHttpClient implements GooglePort {
       body: JSON.stringify({ role: 'reader', type: 'anyone' }),
     })
     if (!res.ok) throw new AdapterError(`google drive share ${res.status}`)
+  }
+
+  /** #4 (developers.google.com/drive/api/guides/manage-uploads). Up to 5 MB one multipart
+   *  request; above, a resumable session (one POST for the session, one PUT with every
+   *  byte). The whole upload shares `timeoutMs`. No sharing call: the file inherits the
+   *  Project folder's "anyone with the link" permission (#13). */
+  async uploadFile(accessToken: string, f: DriveUpload, opts: { timeoutMs: number }): Promise<{ id: string; webViewLink: string }> {
+    const end = Date.now() + opts.timeoutMs
+    const left = () => end - Date.now()
+    const meta = JSON.stringify({ name: f.name, parents: [f.parentId], mimeType: f.mimeType })
+    const fields = 'fields=id,webViewLink'
+    let res: Response
+    if (f.data.byteLength <= MULTIPART_MAX_BYTES) {
+      const boundary = `nongjodii-${crypto.randomUUID()}`
+      const body = new Blob([
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`,
+        `--${boundary}\r\nContent-Type: ${f.mimeType}\r\n\r\n`, f.data as Uint8Array<ArrayBuffer>, `\r\n--${boundary}--`,
+      ])
+      res = await this.call(`${DRIVE_UPLOAD}?uploadType=multipart&${fields}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body,
+      }, left())
+    } else {
+      const session = await this.call(`${DRIVE_UPLOAD}?uploadType=resumable&${fields}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8',
+          'X-Upload-Content-Type': f.mimeType, 'X-Upload-Content-Length': String(f.data.byteLength),
+        },
+        body: meta,
+      }, left())
+      const location = session.headers.get('location')
+      if (!session.ok || !location) throw new AdapterError(`google drive upload session ${session.status}`)
+      res = await this.call(location, {
+        method: 'PUT', headers: { 'Content-Type': f.mimeType }, body: new Blob([f.data as Uint8Array<ArrayBuffer>]),
+      }, left())
+    }
+    if (!res.ok) throw new AdapterError(`google drive upload ${res.status}`)
+    const json = (await res.json()) as { id?: unknown; webViewLink?: unknown }
+    if (typeof json.id !== 'string' || json.id === '') throw new AdapterError('google drive upload no id')
+    const webViewLink = typeof json.webViewLink === 'string' && json.webViewLink !== ''
+      ? json.webViewLink
+      : `https://drive.google.com/file/d/${encodeURIComponent(json.id)}/view`
+    return { id: json.id, webViewLink }
   }
 }
 

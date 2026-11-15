@@ -7,8 +7,9 @@ import { BKK_OFFSET_MS, bangkokParts, bangkokTodayLabel, bangkokWeekStartLabel, 
 // Member only their own groups; an outsider gets 403). This file never decides access.
 // Names are LINE names, never nicknames (decided 2026-11-11).
 
-export type { DashboardData, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
-import type { DashboardData, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
+export type { DashboardData, DashboardFile, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
+import type { DashboardData, DashboardFile, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
+import { formatSize } from '@/server/files/card'
 
 // ---- Copy: the agreed UI status labels (docs/PROJECT.md) ----
 export const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -24,6 +25,22 @@ export const INSIGHT_TEXT = {
   notPosted: 'สรุปนี้ไม่ได้โพสต์ในกลุ่ม ดูได้ที่นี่',
   none: 'ยังไม่มีสรุปรายสัปดาห์ของกลุ่มนี้',
 } as const
+
+/** #4: files saved to Drive from the group. */
+export const FILES_TEXT = {
+  title: 'ไฟล์ที่บันทึกลง Google Drive',
+  none: 'ยังไม่มีไฟล์ที่บันทึกจากกลุ่มนี้',
+} as const
+
+/** "1.2 MB · Sender · 12 พ.ย. 09:15" (parts that are known). */
+export function fileLine(f: DashboardFile): string {
+  const parts: string[] = []
+  if (f.sizeBytes !== null) parts.push(formatSize(f.sizeBytes))
+  if (f.senderName) parts.push(f.senderName)
+  const p = bangkokParts(new Date(f.savedAt))
+  parts.push(`${p.d}/${p.m} ${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}`)
+  return parts.join(' · ')
+}
 
 /** The insight's counts in the order the weekly card shows them (ยังไม่มีผู้รับ, กำลังทำ, เสร็จ). */
 export function insightTiles(i: DashboardInsight): { status: TaskStatus; count: number }[] {

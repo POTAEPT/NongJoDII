@@ -20,6 +20,15 @@ export type Job =
       kind: 'member_left'; groupId: string; lineGroupId: string
       released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string
     }
+  | {
+      // #4: a file or image sent in a group. LINE sends only the ID and metadata; the job
+      // downloads the content. receivedAt: when the webhook request came in, which times
+      // the reply token (one minute) and the route's limit.
+      kind: 'group_file'; groupId: string; lineGroupId: string; storedMessageId: string; lineMessageId: string
+      messageType: 'file' | 'image'; fileName: string | null; fileSize: number | null
+      imageSet: { id: string; index: number | null; total: number | null } | null
+      senderLineUserId: string | null; sentAt: Date; receivedAt: Date; replyToken: string | null
+    }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
   // #29: people who joined a group, already saved as Members at ingest. The Job answers with
@@ -28,11 +37,13 @@ export type Job =
 
 /** Stops at the first event that throws and returns the jobs collected before it,
  *  plus that error. Never throws itself. */
-export async function ingestEvents(deps: Deps, events: LineEvent[]): Promise<{ jobs: Job[]; error: unknown | null }> {
+export async function ingestEvents(
+  deps: Deps, events: LineEvent[], receivedAt: Date = deps.now(),
+): Promise<{ jobs: Job[]; error: unknown | null }> {
   const jobs: Job[] = []
   try {
     for (const event of events) {
-      const job = await ingestEvent(deps, event)
+      const job = await ingestEvent(deps, event, receivedAt)
       if (job) jobs.push(job)
     }
     return { jobs, error: null }
@@ -41,7 +52,7 @@ export async function ingestEvents(deps: Deps, events: LineEvent[]): Promise<{ j
   }
 }
 
-async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
+async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Promise<Job | null> {
   const { store } = deps
   const { source, message } = event
   const eventTimestamp = new Date(event.timestamp)
@@ -70,6 +81,16 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     // Gate on the message row, not the ledger row: a half-failed first delivery is
     // retried, and a redelivery never runs twice.
     if (!inserted || storedMessageId === null) return null
+    const file = readFileMessage(message)
+    if (file) {
+      return {
+        kind: 'group_file', groupId: group.id, lineGroupId: source.groupId, storedMessageId, lineMessageId: message.id,
+        ...file, imageSet: imageSet && typeof imageSet.id === 'string'
+          ? { id: imageSet.id, index: intOrNull(imageSet.index), total: intOrNull(imageSet.total) }
+          : null,
+        senderLineUserId: userId, sentAt: eventTimestamp, receivedAt, replyToken: event.replyToken ?? null,
+      }
+    }
     return {
       kind: 'group_message', groupId: group.id, lineGroupId: source.groupId, messageId: message.id,
       storedMessageId, sentAt: eventTimestamp,
@@ -188,6 +209,28 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   // Every other event (leave, room...) is only recorded; handling belongs to #2 and #11.
   // Unsend (#24), memberLeft and memberJoined (#29) are handled above.
   return null
+}
+
+/** #4: a file message (fileName, fileSize) or an image whose content LINE holds. An image
+ *  with contentProvider.type 'external' has no content to download (only bots send those). */
+function readFileMessage(message: { type: string; [k: string]: unknown }): { messageType: 'file' | 'image'; fileName: string | null; fileSize: number | null } | null {
+  if (message.type === 'file') {
+    return {
+      messageType: 'file',
+      fileName: typeof message.fileName === 'string' && message.fileName !== '' ? message.fileName : null,
+      fileSize: intOrNull(message.fileSize),
+    }
+  }
+  if (message.type === 'image') {
+    const provider = (message.contentProvider as { type?: unknown } | undefined)?.type
+    if (provider === 'external') return null
+    return { messageType: 'image', fileName: null, fileSize: null }
+  }
+  return null
+}
+
+function intOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null
 }
 
 /** Keeps LINE's mention entries in the stored shape. The body passed the signature

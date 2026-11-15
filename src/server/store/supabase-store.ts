@@ -19,6 +19,9 @@ import type {
   Membership,
   MessageRef,
   QuotedFileLookup,
+  DashboardFileRow,
+  NewFile,
+  SavedFile,
   NewAiUsage,
   NewCandidate,
   NewGoogleAccount,
@@ -116,6 +119,18 @@ export const WEEKLY_PAGE = 1000
 export const DASHBOARD_PAGE = 1000
 
 type PgError = { code: string } | null
+
+const FILE_COLS = 'id, group_id, message_id, file_name, drive_link, drive_file_id, size_bytes'
+type DbFile = {
+  id: string; group_id: string; message_id: string | null; file_name: string; drive_link: string
+  drive_file_id: string; size_bytes: number | string | null   // bigint may come back as a string
+}
+function toSavedFile(r: DbFile): SavedFile {
+  return {
+    id: r.id, groupId: r.group_id, messageId: r.message_id, fileName: r.file_name, driveLink: r.drive_link,
+    driveFileId: r.drive_file_id, sizeBytes: r.size_bytes === null ? null : Number(r.size_bytes),
+  }
+}
 
 function check(method: keyof StorePort, error: PgError): void {
   if (error) throw new AdapterError(`supabase ${method}: ${error.code}`)
@@ -284,6 +299,112 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('deleteMessageByLineId', error)
     return { deleted: (data ?? []).length > 0 }
+  }
+
+  // ---- #4 file saver ----
+  async findFileByHash(groupId: string, contentSha256: string): Promise<SavedFile | null> {
+    const { data, error } = await this.db
+      .from('files')
+      .select(FILE_COLS)
+      .eq('group_id', groupId)
+      .eq('content_sha256', contentSha256)
+      .maybeSingle()
+    check('findFileByHash', error)
+    return data ? toSavedFile(data as unknown as DbFile) : null
+  }
+
+  async insertFile(f: NewFile): Promise<{ inserted: boolean; file: SavedFile }> {
+    const { data, error } = await this.db
+      .from('files')
+      .upsert(
+        {
+          group_id: f.groupId, message_id: f.messageId, sender_line_user_id: f.senderLineUserId,
+          drive_connection_id: f.driveConnectionId, file_name: f.fileName, content_sha256: f.contentSha256,
+          drive_file_id: f.driveFileId, drive_link: f.driveLink, sent_at: f.sentAt.toISOString(),
+          saved_at: f.savedAt.toISOString(), size_bytes: f.sizeBytes,
+        },
+        { onConflict: 'group_id,content_sha256', ignoreDuplicates: true },
+      )
+      .select(FILE_COLS)
+    check('insertFile', error)
+    const rows = (data ?? []) as unknown as DbFile[]
+    if (rows.length === 1) return { inserted: true, file: toSavedFile(rows[0]) }
+    // ON CONFLICT DO NOTHING returned nothing: the row of the save that got in first.
+    const existing = await this.findFileByHash(f.groupId, f.contentSha256)
+    if (!existing) throw new AdapterError('supabase insertFile: conflict row vanished')
+    return { inserted: false, file: existing }
+  }
+
+  async linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('files')
+      .update({ message_id: messageId })
+      .eq('id', fileId)
+      .select('id')
+    check('linkFileToMessage', error)
+    return { updated: (data ?? []).length > 0 }
+  }
+
+  async findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null> {
+    const { data, error } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .limit(1)
+    check('findActiveDriveConnection', error)
+    const row = ((data ?? []) as { id: string; google_account_id: string }[])[0]
+    return row ? { id: row.id, googleAccountId: row.google_account_id } : null
+  }
+
+  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number }> {
+    // A batch is a handful of photos (LINE sends at most a few dozen at once), so one page.
+    const { data, error } = await this.db
+      .from('messages')
+      .select('id, files(id)')
+      .eq('group_id', groupId)
+      .eq('image_set_id', imageSetId)
+      .order('id', { ascending: true })
+      .limit(PAGE_SIZE)
+    check('countImageSet', error)
+    const rows = (data ?? []) as unknown as { id: string; files: { id: string }[] | null }[]
+    return { messages: rows.length, saved: rows.filter((r) => (r.files ?? []).length > 0).length }
+  }
+
+  async claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }> {
+    const { data, error } = await this.db
+      .from('image_set_cards')
+      .upsert({ group_id: groupId, image_set_id: imageSetId }, { onConflict: 'group_id,image_set_id', ignoreDuplicates: true })
+      .select('image_set_id')
+    check('claimImageSetCard', error)
+    return { claimed: (data ?? []).length === 1 }
+  }
+
+  async listDashboardFiles(groupIds: string[], limit: number): Promise<DashboardFileRow[]> {
+    type Row = {
+      id: string; group_id: string; file_name: string; drive_link: string; size_bytes: number | string | null
+      saved_at: string; line_users: { display_name: string | null } | null
+    }
+    const out: DashboardFileRow[] = []
+    // One request per group: "newest N of each" has no PostgREST form across groups.
+    for (const groupId of groupIds) {
+      const { data, error } = await this.db
+        .from('files')
+        .select('id, group_id, file_name, drive_link, size_bytes, saved_at, line_users(display_name)')
+        .eq('group_id', groupId)
+        .order('saved_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(limit)
+      check('listDashboardFiles', error)
+      for (const r of (data ?? []) as unknown as Row[]) {
+        out.push({
+          id: r.id, groupId: r.group_id, fileName: r.file_name, driveLink: r.drive_link,
+          sizeBytes: r.size_bytes === null ? null : Number(r.size_bytes), savedAt: new Date(r.saved_at),
+          senderName: r.line_users?.display_name ?? null,
+        })
+      }
+    }
+    return out
   }
 
   // ---- #33 file request ----

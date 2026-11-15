@@ -14,6 +14,7 @@ import type {
   Member,
   Membership,
   MessageRef,
+  QuotedFileLookup,
   NewAiUsage,
   NewCandidate,
   NewGoogleAccount,
@@ -267,6 +268,31 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('deleteMessageByLineId', error)
     return { deleted: (data ?? []).length > 0 }
+  }
+
+  // ---- #33 file request ----
+  async findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup> {
+    // Scoped to the asking group: line_message_id is unique across groups, and a quote id
+    // from elsewhere must not reveal another group's Drive link.
+    const { data: message, error: messageError } = await this.db
+      .from('messages')
+      .select('id')
+      .eq('group_id', groupId)
+      .eq('line_message_id', lineMessageId)
+      .maybeSingle()
+    check('findQuotedFile', messageError)
+    if (!message) return { kind: 'no_message' }
+    // files.message_id is not unique, so take the newest row rather than maybeSingle().
+    const { data: files, error: fileError } = await this.db
+      .from('files')
+      .select('file_name, drive_link')
+      .eq('message_id', (message as { id: string }).id)
+      .order('saved_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(1)
+    check('findQuotedFile', fileError)
+    const file = ((files ?? []) as { file_name: string; drive_link: string }[])[0]
+    return file ? { kind: 'file', fileName: file.file_name, driveLink: file.drive_link } : { kind: 'no_file' }
   }
 
   // ---- #15 Summary ----

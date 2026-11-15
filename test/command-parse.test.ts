@@ -21,7 +21,11 @@ describe('parseGroupCommand', () => {
     expect(parseGroupCommand('น้องจดดี need time')).toBe('need_time')
   })
 
-  it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'NongJoDII ขอไฟล์', 'น้องจดดี สรุปหน่อยนะ', 'จดดี สรุปหน่อย', null])('does not match %j', (text) => {
+  it.each(['NongJoDII ตั้งค่า', 'nongjodii SETTINGS', '@NongJoDII settings', 'น้องจดดี ตั้งค่า'])('matches %j as settings (#28)', (text) => {
+    expect(parseGroupCommand(text)).toBe('settings')
+  })
+
+  it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'NongJoDII ขอไฟล์', 'น้องจดดี สรุปหน่อยนะ', 'จดดี สรุปหน่อย', 'ตั้งค่า', null])('does not match %j', (text) => {
     expect(parseGroupCommand(text)).toBeNull()
   })
 })

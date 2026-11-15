@@ -18,6 +18,9 @@ describe('readLiffParams', () => {
   it('reads the my-info view (#29)', () => {
     expect(readLiffParams('?view=me&id=g1')).toEqual({ view: 'me', id: 'g1' })
   })
+  it('reads the settings view (#28)', () => {
+    expect(readLiffParams('?view=settings&id=g1')).toEqual({ view: 'settings', id: 'g1' })
+  })
   it('gives null for an unknown view', () => {
     expect(readLiffParams('?view=bogus')).toEqual({ view: null, id: null })
   })

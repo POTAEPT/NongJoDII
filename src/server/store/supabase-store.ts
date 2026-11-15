@@ -10,7 +10,7 @@ import type {
   DriveGroup,
   GroupRow,
   GroupSetup,
-  GroupSetupWrite,
+  GroupSettingsWrite, GroupSetupWrite,
   Member,
   Membership,
   MessageRef,
@@ -134,6 +134,9 @@ async function readAllPages<R>(
 function iso(d: Date | null): string | null {
   return d === null ? null : d.toISOString()
 }
+
+/** Settings writes this many Members' rows at once (#28). Agent choice. */
+const SETTINGS_MEMBER_WRITES = 10
 
 /** PostgREST filter: the row's last membership event is older than `iso`. A row from before
  *  membership_event_at existed falls back to left_at (its last applied leave), and a live
@@ -932,6 +935,41 @@ export class SupabaseStore implements StorePort {
       .eq('line_user_id', t.lineUserId)
       .or(membershipOlderThan(at))
     check('markMemberJoined', error)
+  }
+
+  async saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }> {
+    // The Owner check is part of the UPDATE, so an Owner change between the page's check and
+    // this write saves nothing.
+    const { data, error } = await this.db
+      .from('groups')
+      .update({
+        work_description: w.workDescription,
+        feature_summarize: w.features.summarize, feature_draft_tasks: w.features.draftTasks,
+        feature_save_files: w.features.saveFiles, feature_track_remind: w.features.trackRemind,
+        feature_weekly_summary: w.features.weeklySummary,
+        daily_reminder_time: w.dailyReminderTime, weekly_summary_weekday: w.weeklySummaryWeekday,
+        weekly_summary_time: w.weeklySummaryTime,
+      })
+      .eq('id', w.groupId)
+      .eq('nominated_owner_line_user_id', w.ownerLineUserId)
+      .not('owner_confirmed_at', 'is', null)
+      .select('id')
+    check('saveGroupSettings', error)
+    if ((data?.length ?? 0) === 0) return { saved: false }
+    // Up to SETTINGS_MEMBER_WRITES at a time, so a save that touches many Members does not
+    // wait through one request after another.
+    for (let i = 0; i < w.members.length; i += SETTINGS_MEMBER_WRITES) {
+      await Promise.all(w.members.slice(i, i + SETTINGS_MEMBER_WRITES).map(async (m) => {
+        const { error: memberError } = await this.db
+          .from('group_members')
+          .update({ nicknames: m.nicknames, role: m.role })
+          .eq('group_id', w.groupId)
+          .eq('line_user_id', m.lineUserId)
+          .is('left_at', null)
+        check('saveGroupSettings', memberError)
+      }))
+    }
+    return { saved: true }
   }
 
   async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {

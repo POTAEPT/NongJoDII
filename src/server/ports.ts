@@ -180,6 +180,11 @@ export type GroupSetup = {
   ownerNominatedAt: Date | null
 }
 export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
+/** #28 Settings: the setup form's values, written by the group's confirmed Owner. */
+export type GroupSettingsWrite = {
+  groupId: string; ownerLineUserId: string; workDescription: string | null; features: GroupFeatures
+  dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]
+}
 export type GroupSetupWrite = {
   groupId: string; byLineUserId: string; workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
@@ -361,6 +366,11 @@ export interface StorePort {
   // #52 onboarding
   setGroupName(groupId: string, name: string): Promise<void>
   getGroupSetup(groupId: string): Promise<GroupSetup | null>
+  /** #28: saves Settings while `ownerLineUserId` is still the group's confirmed Owner (saved
+   *  false otherwise, and nothing is written). Group values first, then the listed live
+   *  Members' nicknames and role (the caller lists only changed ones); not one transaction,
+   *  and repeating it is harmless. */
+  saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }>
   /** One transaction (rpc setup_group): locks the group; a 'closed' group or an Owner who
    *  is not a live Member saves nothing. Otherwise writes the settings and the nominee,
    *  updates nicknames and role of the listed live Members only (never their source), and,

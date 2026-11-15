@@ -1,10 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { NICKNAME_MAX, QUARTER_HOURS, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
-import type { SetupFeatures, SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
+import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
+import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
+import { FEATURES, TimeSelect } from './setup-parts'
 import {
   addNickname, initialSetupForm, removeNickname, setNickname, setRole, SETUP_STEPS, stepForField, toSubmitBody,
   validateAll, validateStep, type SetupForm,
@@ -36,34 +37,12 @@ function errorCopy(status: number, fallback: string): string {
   return fallback
 }
 
-const FEATURES: { key: keyof SetupFeatures; label: string; sub: string }[] = [
-  { key: 'summarize', label: 'สรุปงานจากแชต', sub: 'แยกงาน ผู้รับ และกำหนดส่ง ให้ทีมกดยืนยัน' },
-  { key: 'saveFiles', label: 'เก็บไฟล์ลง Google Drive', sub: 'ไฟล์ในกลุ่มไม่หมดอายุ' },
-  { key: 'trackRemind', label: 'ติดตามงาน + เตือน', sub: 'ถามปิดงาน และเตือนก่อนถึงกำหนด' },
-  { key: 'weeklySummary', label: 'สรุปรายสัปดาห์', sub: 'โพสต์สรุปในกลุ่มทุกสัปดาห์' },
-]
-
 const STEP_TITLES = [
   { title: 'กลุ่มนี้ทำเรื่องอะไร?', sub: 'เล่าสั้น ๆ เพื่อให้น้องจดดีเข้าใจกลุ่ม' },
   { title: 'ใครทำหน้าที่อะไร?', sub: 'ชื่อเล่นช่วยให้น้องจดดีรู้ว่าแชตพูดถึงใคร' },
   { title: 'อยากให้น้องจดดีช่วยอะไร?', sub: 'เลือกได้หลายข้อ' },
   { title: 'ให้น้องจดดีเตือนตอนไหน?', sub: 'เวลาประเทศไทย' },
 ]
-
-function TimeSelect({ value, disabled, onChange }: { value: string; disabled: boolean; onChange: (v: string) => void }) {
-  return (
-    <select
-      className={inputClass}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      {QUARTER_HOURS.map((t) => (
-        <option key={t} value={t}>{t}</option>
-      ))}
-    </select>
-  )
-}
 
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SetupLoad }
 

@@ -43,8 +43,19 @@ export async function startProjectOwnerChange(
   }
   const { outcome } = await store.changeProjectOwner(p.projectId, p.newOwnerLineUserId)
   if (outcome === 'not_nominee') return { outcome, waitingSubGroups: 0, card: 'none' }
+  const asked = await askTakeoverQuestion(deps, { projectId: p.projectId, newOwnerLineUserId: p.newOwnerLineUserId })
+  return { outcome: 'changed', ...asked }
+}
 
-  const after = await store.getOwnerChange(p.projectId)
+/** Step 2 alone, for a change change_project_owner already made: the #30 flow, where
+ *  complete_owner_change ran it under the main group's lock. Posts the one take-over card
+ *  in the main group when Sub groups wait on the question. Safe to repeat: the retry key is
+ *  named by the database's ask time, so LINE drops a second push of the same question. */
+export async function askTakeoverQuestion(
+  deps: Deps,
+  p: { projectId: string; newOwnerLineUserId: string },
+): Promise<Pick<OwnerChangeStart, 'waitingSubGroups' | 'card'>> {
+  const after = await deps.store.getOwnerChange(p.projectId)
   const waiting = after?.waiting ?? []
   const mainGroup = after?.mainGroup ?? null
   let card: OwnerChangeStart['card'] = 'none'
@@ -59,5 +70,5 @@ export async function startProjectOwnerChange(
     })
   }
   log('project_owner_changed', { projectId: p.projectId, waitingSubGroups: waiting.length, card })
-  return { outcome: 'changed', waitingSubGroups: waiting.length, card }
+  return { waitingSubGroups: waiting.length, card }
 }

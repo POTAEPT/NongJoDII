@@ -239,7 +239,7 @@ export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nomin
  *  nomination. not_pending: no Owner change is pending. not_main_group: the Owner left a Sub
  *  group, whose Owner must stay the Project's owner (check_same_owner). */
 export type OwnerClaimOutcome = 'claimed' | 'already_claimed' | 'taken' | 'not_pending' | 'not_main_group'
-/** #30, rpc complete_owner_change (migration 20261115120000). */
+/** #30, rpc complete_owner_change (migration 20261115130000). */
 export type CompleteOwnerChangeOutcome = 'changed' | 'already_owner' | 'not_pending' | 'not_nominee' | 'not_member' | 'needs_drive'
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null

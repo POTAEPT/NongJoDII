@@ -1,5 +1,6 @@
 import { syncDriveForOwner } from '../google/drive-folders'
-import { log } from '../log'
+import { log, logError } from '../log'
+import { askTakeoverQuestion } from '../owner-change/start'
 import type { ApiResult, CompleteOwnerChangeOutcome, Defer, Deps, GroupSetup } from '../ports'
 import type { OwnerConfirmResult } from './types'
 
@@ -72,15 +73,19 @@ export async function completePendingOwnerChanges(deps: Deps, lineUserId: string
 
 /** The main group's Owner changed (complete_owner_change ran). That transaction already
  *  started the take-over question for every attached Sub group (takeover_asked_at set, Sub
- *  groups paused, still naming their old Owner).
- *
- *  Hook for #31 (Sub group take-over): ask the new Owner whether to take over the Project's
- *  Sub groups and answer it with answer_subgroup_takeover. Until #31 lands it only logs. */
+ *  groups paused, still naming their old Owner). This posts the question (#31): one card in
+ *  the main group that opens the LIFF take-over view, after the response. Without it the
+ *  Sub groups would wait unasked and the 7-day rule would detach them. A failed push is
+ *  logged; the question still waits in the LIFF view. */
 export async function onMainGroupOwnerChanged(
   deps: Deps, change: { projectId: string; groupId: string; ownerLineUserId: string }, defer: Defer,
 ): Promise<void> {
-  // #31 asks the take-over question with deps and defer.
-  void deps
-  void defer
   log('main_group_owner_changed', { projectId: change.projectId, groupId: change.groupId })
+  defer(async () => {
+    try {
+      await askTakeoverQuestion(deps, { projectId: change.projectId, newOwnerLineUserId: change.ownerLineUserId })
+    } catch (err) {
+      logError('owner_takeover_card_failed', { projectId: change.projectId }, err)
+    }
+  })
 }

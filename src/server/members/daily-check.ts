@@ -4,6 +4,7 @@ import type { Deps, MemberCheckGroup, TaskRow } from '../ports'
 import { bangkokTodayLabel, isDailyDue } from '../time/bangkok'
 import type { TickJob } from '../tick/run-tick'
 import { handleMemberLeft, recordMemberLeft } from './left'
+import { markOwnerLeftOnLeave } from './owner-left'
 
 // #32: the daily member check, a backup for lost memberLeft events. Once a Bangkok day, from
 // MEMBER_CHECK_TIME, the tick asks LINE for the group member profile of each live Member of
@@ -49,14 +50,14 @@ export async function runMemberCheckForGroup(
 
   const { groupId, lineGroupId } = group
   const counts: Counts = { members: 0, left: 0, errors: 0, repaired: 0 }
-  const card = async (lineUserId: string, released: Released) => {
-    if (released.length === 0) return
+  const card = async (lineUserId: string, released: Released, ownerLeft: string | null = null) => {
+    if (released.length === 0 && ownerLeft === null) return
     try {
       // One card per person, keyed on them and the day: a retried tick never posts it twice,
       // and two people's cards never share a key.
       await handleMemberLeft(deps, {
         kind: 'member_left', groupId, lineGroupId, released,
-        eventId: `member_check:${groupId}:${lineUserId}:${today}`, ownerLeft: null,
+        eventId: `member_check:${groupId}:${lineUserId}:${today}`, ownerLeft,
       })
     } catch (err) {
       logError('member_check_card_failed', { groupId }, err)
@@ -101,9 +102,13 @@ export async function runMemberCheckForGroup(
         }
         // Stamped with the tick's start, read before the call: a join that lands since is
         // newer and wins (markMemberLeft applies only a leave newer than the last event).
+        const before = await deps.store.getGroupById(groupId) // read before the leave writes
         const released = await recordMemberLeft(deps, { groupId, lineUserIds: [lineUserId], at: now })
+        // #30: the confirmed Owner found gone pauses the group and asks for a new Owner, as a
+        // leave event would (markOwnerLeftOnLeave, then the owner_needed card with the job).
+        const ownerLeft = before ? await markOwnerLeftOnLeave(deps, before, [lineUserId], now) : null
         counts.left++
-        await card(lineUserId, released)
+        await card(lineUserId, released, ownerLeft)
       }
     }
   } catch (err) {

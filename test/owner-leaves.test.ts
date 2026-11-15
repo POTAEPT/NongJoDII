@@ -6,6 +6,7 @@ import { retryKeyFrom } from '@/server/line/push-budget'
 import type { LineEvent, LineMessage } from '@/server/line/types'
 import { MEMBER_LEFT_TEXT } from '@/server/members/card'
 import { OWNER_NEEDED_TEXT } from '@/server/members/owner-left'
+import { TAKEOVER_CARD_TEXT } from '@/server/owner-change/card'
 import { loadSetup } from '@/server/setup/load'
 import { confirmOwner } from '@/server/setup/confirm'
 import { handleTickRequest } from '@/server/tick/handle-request'
@@ -346,3 +347,46 @@ describe('a new Owner takes over (#30)', () => {
     expect(await press(t, sub.id, TON)).toEqual({ status: 409, body: { error: 'sub_group' } })
   })
 })
+
+describe('the Owner change reaches #31 and #32', () => {
+  const isTakeoverCard = (m: LineMessage) => texts(m.type === 'flex' ? m.contents : null).includes(TAKEOVER_CARD_TEXT.title)
+
+  it('a new Owner through LINE login and Drive posts the Sub group take-over question once, in the main group', async () => {
+    const t = await setup()
+    const sub = t.store.seedGroup({
+      lineGroupId: SUB, projectId: t.projectId, nominatedOwnerLineUserId: OWNER, ownerConfirmedAt: TEST_NOW,
+    })
+    t.store.seedMember({ groupId: sub.id, lineUserId: OWNER, displayName: 'เจ้าของ' })
+    await send(t, ev.memberLeft({ userIds: [OWNER], groupId: MAIN }))
+    t.line.pushes = []
+    await press(t, t.groupId, PIM)
+    expect(await signIn(t, PIM, 2)).toBe('ok')
+    const takeover = t.line.pushes.filter((p) => p.messages.some(isTakeoverCard))
+    expect(takeover).toHaveLength(1)
+    expect(takeover[0].to).toBe(MAIN)
+    expect(uris(takeover[0].messages[0])).toEqual([liffUrl(TEST_LIFF_ID, 'takeover', t.groupId)])
+    // The Sub group waits on the question, not detached.
+    expect(t.store.tables.groups.find((g) => g.id === sub.id)!.projectId).toBe(t.projectId)
+  })
+
+  it('a new Owner with no Sub groups gets no take-over card', async () => {
+    const t = await setup()
+    await send(t, ev.memberLeft({ userIds: [OWNER], groupId: MAIN }))
+    t.line.pushes = []
+    await press(t, t.groupId, PIM)
+    await signIn(t, PIM, 2)
+    expect(t.line.pushes.some((p) => p.messages.some(isTakeoverCard))).toBe(false)
+  })
+
+  it('the daily member check that finds the Owner gone pauses the group and posts the owner card, as a leave event would', async () => {
+    const t = await setup()
+    t.line.groupNames.set(MAIN, 'ทีมหลัก')
+    for (const u of [PIM, TON]) t.line.profiles.set(`${MAIN}:${u}`, u) // OWNER has no profile: gone
+    await tickAt(t, bkk('2026-11-16T08:00:00'))
+    expect(group(t, t.groupId)).toMatchObject({ ownerConfirmedAt: null })
+    expect(group(t, t.groupId).ownerLeftAt).not.toBeNull()
+    expect(t.line.pushes.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(1)
+    expect(prompts(t, t.groupId)).toHaveLength(1)
+  })
+})
+

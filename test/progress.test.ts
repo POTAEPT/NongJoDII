@@ -353,7 +353,7 @@ describe('answers', () => {
     const b2 = await askDone(t2)
     await t2.press(BIW, b2['ใช่ ปิดงาน'], 'ev-y')
     await t2.press(BIW, b2['เลือกงานอื่น'], 'ev-w')
-    expect(json(lastReply(t2))).toContain('มีคนตอบไปแล้ว')
+    expect(json(lastReply(t2))).toContain('งานนี้ถูกปิดไปแล้ว')
   })
 
   it('a pick whose write fails can be pressed again', async () => {
@@ -447,13 +447,32 @@ describe('answers', () => {
     expect(t.task(t.slides.id).status).toBe('done')
   })
 
-  it('a second press says the card was already answered', async () => {
+  it('a second press on a card that closed its Task says the Task is already closed', async () => {
     const t = setup()
     const b = await askDone(t)
-    await t.press(BIW, b['ใช่ ปิดงาน'])
-    await t.press(BIW, b['ไม่ใช่'])
-    expect(json(lastReply(t))).toContain('มีคนตอบไปแล้ว')
+    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-1')
+    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-2')
+    expect(json(lastReply(t))).toContain('งานนี้ถูกปิดไปแล้ว')
+    await t.press(BIW, b['ไม่ใช่'], 'ev-3')
+    expect(json(lastReply(t))).toContain('งานนี้ถูกปิดไปแล้ว')
     expect(t.task(t.slides.id).status).toBe('done')
+  })
+
+  it('a card answered No still says it was already answered', async () => {
+    const t = setup()
+    const b = await askDone(t)
+    await t.press(BIW, b['ไม่ใช่'], 'ev-1')
+    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-2')
+    expect(json(lastReply(t))).toContain('การ์ดนี้มีคนตอบไปแล้ว')
+    expect(t.task(t.slides.id).status).toBe('in_process')
+  })
+
+  it('Yes on a card whose Task was closed another way says the Task is already closed', async () => {
+    const t = setup()
+    const b = await askDone(t)
+    t.task(t.slides.id).status = 'done'
+    await t.press(BIW, b['ใช่ ปิดงาน'])
+    expect(json(lastReply(t))).toContain('งานนี้ถูกปิดไปแล้ว')
   })
 
   it('a redelivered press runs once', async () => {
@@ -499,17 +518,57 @@ describe('answers', () => {
     expect(t.task(t.problem.id).status).toBe('done')
 
     await t.press(TON, b['ทำสไลด์ปัญหา'])
-    expect(json(lastReply(t))).toContain('มีคนตอบไปแล้ว')
+    expect(json(lastReply(t))).toContain('งานนี้ถูกปิดไปแล้ว')
   })
 
-  it('"ไม่ใช่การอัปเดตงาน" changes nothing', async () => {
+  it('"ไม่ใช่การอัปเดตงาน" changes nothing and closes the picker: its Task buttons no longer work', async () => {
     const t = setup()
     t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
     await t.say(TON, 'สไลด์เสร็จแล้วนะ')
-    await t.press(TON, buttons(lastReply(t))['ไม่ใช่การอัปเดตงาน'])
+    const b = buttons(lastReply(t))
+    await t.press(TON, b['ไม่ใช่การอัปเดตงาน'], 'ev-dismiss')
     expect(json(lastReply(t))).toContain('ไม่ใช่การอัปเดตงาน')
-    expect(t.task(t.slides.id).status).toBe('in_process')
+    expect(t.store.tables.messages[0].progressDismissedAt).toEqual(LATER)
+
+    // ต้น is the assignee of Task 3, but the picker is closed.
+    await t.press(TON, b['ทำสไลด์ปัญหา'], 'ev-pick-3')
+    expect(json(lastReply(t))).toContain('รายการนี้ปิดไปแล้ว')
+    await t.press(BIW, b['ทำสไลด์คู่แข่ง'], 'ev-pick-1')
+    expect(json(lastReply(t))).toContain('รายการนี้ปิดไปแล้ว')
     expect(t.task(t.problem.id).status).toBe('in_process')
+    expect(t.task(t.slides.id).status).toBe('in_process')
+    expect(t.store.tables.task_prompts).toHaveLength(0)
+  })
+
+  it('only the sender of the line may press "ไม่ใช่การอัปเดตงาน"; a press without a userId goes to LIFF', async () => {
+    const t = setup()
+    t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t.say(TON, 'สไลด์เสร็จแล้วนะ')
+    const b = buttons(lastReply(t))
+
+    await t.press(JEFF, b['ไม่ใช่การอัปเดตงาน'], 'ev-d1')
+    expect(json(lastReply(t))).toContain('เฉพาะ ต้น ที่ปิดรายการนี้ได้')
+    await t.press(null, b['ไม่ใช่การอัปเดตงาน'], 'ev-d2')
+    expect(lastReply(t).type).toBe('template')
+    expect(t.store.tables.messages[0].progressDismissedAt ?? null).toBeNull()
+
+    // Still open: a pick works.
+    await t.press(TON, b['ทำสไลด์ปัญหา'], 'ev-pick')
+    expect(t.task(t.problem.id).status).toBe('done')
+  })
+
+  it('"ผิดงาน" after its picker was closed does not show the picker again', async () => {
+    const t = setup()
+    t.answer({ kind: 'match', task: 1, status: 'done' })
+    await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
+    const wrong = buttons(lastReply(t))['เลือกงานอื่น']
+    await t.press(BIW, wrong, 'ev-w1')
+    const picker = buttons(lastReply(t))
+    await t.press(BIW, picker['ไม่ใช่การอัปเดตงาน'], 'ev-d')
+    await t.press(BIW, wrong, 'ev-w2')
+    expect(json(lastReply(t))).toContain('รายการนี้ปิดไปแล้ว')
+    await t.press(BIW, picker['ทำโลโก้'], 'ev-p')
+    expect(t.task(t.logo.id).status).toBe('not_assigned')
   })
 
   it('ignores postbacks of other features', async () => {

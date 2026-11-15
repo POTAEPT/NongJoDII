@@ -79,7 +79,10 @@ function membershipOlderThan(row: GroupMemberRecord, at: Date): boolean {
   const last = row.membershipEventAt ?? row.leftAt
   return last === null || last < at
 }
-export type MessageRecord = NewMessage & { id: string }
+export type MessageRecord = NewMessage & {
+  id: string
+  progressDismissedAt?: Date | null; progressDismissedByLineUserId?: string | null // #7 picker dismissed
+}
 export type SummaryRecord = NewSummary & { id: string }
 export type CandidateRecord = CandidateRow & {
   decidedByLineUserId: string | null; decidedAt: Date | null; createdAt: Date
@@ -678,7 +681,19 @@ export class FakeStore implements StorePort {
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
     this.fault('getMessageRef')
     const m = this.tables.messages.find((row) => row.id === messageId)
-    return m ? { id: m.id, groupId: m.groupId, senderLineUserId: m.senderLineUserId, sentAt: m.sentAt } : null
+    return m
+      ? { id: m.id, groupId: m.groupId, senderLineUserId: m.senderLineUserId, sentAt: m.sentAt, progressDismissedAt: m.progressDismissedAt ?? null }
+      : null
+  }
+
+  async dismissProgressPicker(messageId: string, byLineUserId: string, at: Date): Promise<{ updated: boolean }> {
+    this.fault('dismissProgressPicker')
+    const m = this.tables.messages.find((row) => row.id === messageId && !row.progressDismissedAt)
+    if (!m) return { updated: false }
+    fk(this.hasLineUser(byLineUserId), 'messages.progress_dismissed_by_line_user_id')
+    m.progressDismissedAt = at
+    m.progressDismissedByLineUserId = byLineUserId
+    return { updated: true }
   }
 
   async findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null> {

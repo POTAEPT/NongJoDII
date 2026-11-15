@@ -221,7 +221,11 @@ export type NewProgressPrompt = {
 export type ProgressPromptRow = NewProgressPrompt & {
   id: string; answer: ProgressAnswer | null; answeredByLineUserId: string | null; answeredAt: Date | null
 }
-export type MessageRef = { id: string; groupId: string; senderLineUserId: string | null; sentAt: Date }
+export type MessageRef = {
+  id: string; groupId: string; senderLineUserId: string | null; sentAt: Date
+  /** #7: set once someone pressed "ไม่ใช่การอัปเดตงาน" on this message's picker; its picks are then refused. */
+  progressDismissedAt: Date | null
+}
 /** A person's Yes on a card: the answer and the Task move are one transaction. */
 export type ProgressYes = {
   promptId: string; taskId: string; fromStatus: TaskStatus; toStatus: ProgressTarget
@@ -506,6 +510,8 @@ export interface StorePort {
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>
+  /** "ไม่ใช่การอัปเดตงาน": closes the message's picker. Only while not yet dismissed (first wins). */
+  dismissProgressPicker(messageId: string, byLineUserId: string, at: Date): Promise<{ updated: boolean }>
   findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null>           // kind mark_done, answer null
   /** Insert a mark_done card. prompt null when the Task already has an open one
    *  (unique index task_prompts_one_open_mark_done). */

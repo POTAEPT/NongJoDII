@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { liffUrl } from '@/server/liff-links'
 import type { LineMessage } from '@/server/line/types'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
-import { buttonActions } from './flex-text'
-import { ev, makeTestDeps, signedRequest, TEST_LIFF_ID, webhookBody } from './harness'
+import { buttonActions, messageText } from './flex-text'
+import { ev, makeTestDeps, signedRequest, TEST_LIFF_ID, TEST_NOW, webhookBody } from './harness'
 
 const OWNER = 'Uowner1'
 
@@ -54,16 +54,21 @@ describe('connect card', () => {
     vi.restoreAllMocks()
   })
 
-  it('3. a connected Owner gets the already-connected text', async () => {
+  it('3. a connected Owner gets the already-connected card, with a button to the LIFF google view (#14: change of account)', async () => {
     const { send, line, store } = setup()
     await store.upsertLineUser({ lineUserId: OWNER, displayName: null })
     await store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.x',
+      signedInAt: TEST_NOW,
     })
     await send(ev.follow({ userId: OWNER }))
-    expect(line.replies[0].messages).toEqual([
-      { type: 'text', text: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ' },
-    ])
+    expect(line.replies[0].messages).toHaveLength(1)
+    const m = line.replies[0].messages[0]
+    expect(m).toMatchObject({ type: 'flex', altText: 'เชื่อม Google Drive ไว้แล้ว' })
+    expect(messageText(m)).toContain('น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ')
+    const t = card(m)
+    expect(t.actions).toEqual([{ type: 'uri', label: 'จัดการ Google Drive', uri: liffUrl(TEST_LIFF_ID, 'google') }])
+    expect([...t.actions[0].label].length).toBeLessThanOrEqual(20)
   })
 
   it('3b. a revoked account still gets the card', async () => {
@@ -71,6 +76,7 @@ describe('connect card', () => {
     await store.upsertLineUser({ lineUserId: OWNER, displayName: null })
     await store.upsertGoogleAccount({
       lineUserId: OWNER, googleSubject: 'g1', email: null, grantedScopes: [], refreshTokenCiphertext: 'v1.x',
+      signedInAt: TEST_NOW,
     })
     store.tables.google_accounts[0].tokenStatus = 'revoked'
     await send(ev.follow({ userId: OWNER }))

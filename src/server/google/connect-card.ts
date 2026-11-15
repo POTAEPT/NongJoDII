@@ -15,7 +15,9 @@ export const CONNECT_TEXT = {
   scope: 'เข้าถึงเฉพาะไฟล์ที่น้องจดดีสร้างเท่านั้น',
   connect: 'เชื่อม Google Drive',
   later: 'ไว้ทีหลัง',
+  connectedTitle: 'เชื่อม Google Drive ไว้แล้ว',
   connected: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ',
+  manage: 'จัดการ Google Drive',
 } as const
 
 /** Postback data of "ไว้ทีหลัง". No handler reads it (1:1 postbacks are only recorded). */
@@ -39,6 +41,19 @@ export function connectDriveCard(liffId: string): LineMessage {
   }
 }
 
+/** #14: the answer when the person's Google account is connected. Its button opens the LIFF
+ *  Google view, where the Owner can change the account. */
+export function connectedCard(liffId: string): LineMessage {
+  return {
+    type: 'flex',
+    altText: CONNECT_TEXT.connectedTitle,
+    contents: bubble(
+      [header('success', CONNECT_TEXT.connectedTitle), text('น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ', { color: '#545454' })],
+      [button('secondary', uri(CONNECT_TEXT.manage, liffUrl(liffId, 'google')))],
+    ),
+  }
+}
+
 export async function sendConnectDriveCard(
   deps: Deps,
   job: { lineUserId: string; replyToken: string | null },
@@ -53,7 +68,8 @@ export async function sendConnectDriveCard(
     logError('connect_card_lookup_failed', {}, err)
   }
   if (account?.tokenStatus === 'valid') {
-    await deps.line.reply(job.replyToken, [{ type: 'text', text: CONNECT_TEXT.connected }])
+    // #14: the button opens the LIFF Google view, where the Owner can change the account.
+    await deps.line.reply(job.replyToken, [connectedCard(deps.config.liffId)])
     return
   }
   await deps.line.reply(job.replyToken, [connectDriveCard(deps.config.liffId)])

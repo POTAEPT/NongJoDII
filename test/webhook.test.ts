@@ -249,12 +249,33 @@ describe('webhook: unsend (#24)', () => {
     const { send, store } = setup()
     await send(webhookBody(ev.groupText({ text: 'oops', messageId: 'm-gone' })))
     const body = webhookBody(ev.unsend({ messageId: 'm-gone', eventId: 'ev-u' }))
-    store.failNext('deleteMessageByLineId')
+    store.failNext('unsendMessage')
     expect((await send(body)).status).toBe(500)
     expect(store.tables.messages).toHaveLength(1)
     expect(store.tables.webhook_events.some((w) => w.webhookEventId === 'ev-u')).toBe(false)
     expect((await send(body)).status).toBe(200)
     expect(store.tables.messages).toHaveLength(0)
     expect(store.tables.webhook_events.some((w) => w.webhookEventId === 'ev-u')).toBe(true)
+  })
+  it('17. a message whose event arrives after its unsend is never stored and runs no job', async () => {
+    const { send, store, deferred } = setup()
+    await send(webhookBody(ev.groupText({ text: 'keep', messageId: 'm-keep' })))
+    deferred.length = 0
+    expect((await send(webhookBody(ev.unsend({ messageId: 'm-late' })))).status).toBe(200)
+    expect((await send(webhookBody(ev.groupText({ text: 'secret', messageId: 'm-late' })))).status).toBe(200)
+    expect(store.tables.messages.map((m) => m.lineMessageId)).toEqual(['m-keep'])
+    expect(deferred).toHaveLength(0)
+  })
+
+  it('18. a redelivered message after a failed first delivery and an unsend stays gone', async () => {
+    const { send, store, deferred } = setup()
+    const message = webhookBody(ev.groupText({ text: 'secret', messageId: 'm-gone', eventId: 'ev-msg' }))
+    store.failNext('insertMessage')
+    expect((await send(message)).status).toBe(500) // LINE will redeliver this event
+    expect((await send(webhookBody(ev.unsend({ messageId: 'm-gone' })))).status).toBe(200)
+    deferred.length = 0
+    expect((await send(message)).status).toBe(200) // the redelivery
+    expect(store.tables.messages).toHaveLength(0)
+    expect(deferred).toHaveLength(0)
   })
 })

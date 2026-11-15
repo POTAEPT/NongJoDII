@@ -282,14 +282,12 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #24 unsend ----
-  async deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }> {
-    const { data, error } = await this.db
-      .from('messages')
-      .delete()
-      .eq('line_message_id', lineMessageId)
-      .select('id')
-    check('deleteMessageByLineId', error)
-    return { deleted: (data ?? []).length > 0 }
+  async unsendMessage(lineMessageId: string): Promise<{ deleted: boolean }> {
+    // rpc unsend_message: the tombstone and the delete in one transaction, under the same
+    // lock the messages insert trigger takes, so a late delivery is never stored again.
+    const { data, error } = await this.db.rpc('unsend_message', { p_line_message_id: lineMessageId })
+    check('unsendMessage', error)
+    return { deleted: data === true }
   }
 
   // ---- #33 file request ----

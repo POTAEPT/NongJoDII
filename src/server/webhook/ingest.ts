@@ -130,10 +130,11 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
 
   if (event.type === 'unsend' && typeof event.unsend?.messageId === 'string') {
     // Delete first, the ledger row last: a failed delete answers 500 before the event is
-    // recorded, so LINE's redelivery retries it. The delete is idempotent (an unknown or
+    // recorded, so LINE's redelivery retries it. The unsend is idempotent (an unknown or
     // already deleted message deletes nothing), so it needs no store-once gate and no Job.
-    // Confirmed Tasks have no link to messages, so they stay (#24).
-    await store.deleteMessageByLineId(event.unsend.messageId)
+    // It also keeps a tombstone of the message ID, so the message is not stored again when
+    // its own event arrives late. Confirmed Tasks have no link to messages, so they stay (#24).
+    await store.unsendMessage(event.unsend.messageId)
     await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'unsend',
       lineGroupId: source.type === 'group' ? source.groupId : null, eventTimestamp, isRedelivery,

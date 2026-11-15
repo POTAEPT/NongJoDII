@@ -18,6 +18,8 @@ import type {
   NewTask,
   NewProgressPrompt,
   NewWebhookEvent,
+  OwnerChangeOutcome,
+  OwnerClaimOutcome,
   OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
@@ -101,6 +103,12 @@ export type GroupSetupRecord = {
   groupId: string; isMain: boolean; featureSaveFiles: boolean
   ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
   driveFolderId?: string | null   // groups.drive_folder_id; absent = null (#13)
+  takeoverAskedAt?: Date | null   // groups.takeover_asked_at; absent = null (set by change_project_owner)
+}
+/** task_prompts rows of kind owner_needed (#30). */
+export type OwnerPromptRecord = {
+  id: string; groupId: string; subjectLineUserId: string; askedAt: Date
+  answer: 'owner_confirmed' | null; answeredByLineUserId: string | null; answeredAt: Date | null
 }
 export type ProjectRecord = { id: string; ownerLineUserId: string; driveProjectFolderId?: string | null }
 
@@ -123,6 +131,7 @@ export type FakeTables = {
   group_setups: GroupSetupRecord[]
   projects: ProjectRecord[]
   drive_connections: DriveConnectionRecord[]
+  owner_prompts: OwnerPromptRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -155,6 +164,7 @@ export class FakeStore implements StorePort {
     group_setups: [],
     projects: [],
     drive_connections: [],
+    owner_prompts: [],
   }
 
   /** The database's now(), for columns it stamps itself (google_accounts.updated_at).
@@ -249,6 +259,7 @@ export class FakeStore implements StorePort {
         id: randomUUID(), lineGroupId, projectId: null, name: null,
         nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
         featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
+        ownerLeftAt: null,
       }
       this.tables.groups.push(row)
     }
@@ -901,7 +912,7 @@ export class FakeStore implements StorePort {
   async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     this.fault('listWeeklySummaryGroups')
     return this.tables.groups
-      .filter((g) => g.projectId !== null)
+      .filter((g) => g.projectId !== null && g.ownerLeftAt === null)
       .map((g) => ({ g, s: this.scheduleOf(g.id) }))
       .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary && s.weeklySummaryWeekday === weekday)
       .sort((a, b) => a.g.id.localeCompare(b.g.id))
@@ -1081,7 +1092,7 @@ export class FakeStore implements StorePort {
       weeklySummaryWeekday: s.weeklySummaryWeekday,
       weeklySummaryTime: s.weeklySummaryTime.slice(0, 5),
       nominatedOwnerLineUserId: g.nominatedOwnerLineUserId, ownerConfirmedAt: g.ownerConfirmedAt,
-      ownerNominatedAt: x.ownerNominatedAt,
+      ownerNominatedAt: x.ownerNominatedAt, ownerLeftAt: g.ownerLeftAt,
     }
   }
 
@@ -1174,6 +1185,90 @@ export class FakeStore implements StorePort {
     return { outcome: 'confirmed' }
   }
 
+  // ---- #30 the Owner leaves ----
+  /** groups_owner_rules: setting owner_left_at clears owner_confirmed_at. */
+  async markOwnerLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markOwnerLeft')
+    const g = this.tables.groups.find((row) => row.id === t.groupId)
+    if (!g || g.nominatedOwnerLineUserId !== t.lineUserId || g.ownerConfirmedAt === null) return { updated: false }
+    g.ownerLeftAt = new Date(t.at.getTime())
+    g.ownerConfirmedAt = null
+    return { updated: true }
+  }
+
+  /** The unique index task_prompts_one_open_owner_needed: one open card per group. */
+  async openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }> {
+    this.fault('openOwnerNeededPrompt')
+    fk(this.hasGroup(p.groupId), 'task_prompts.group_id')
+    fk(this.hasLineUser(p.subjectLineUserId), 'task_prompts.subject_line_user_id')
+    if (this.tables.owner_prompts.some((r) => r.groupId === p.groupId && r.answer === null)) return { promptId: null }
+    const row: OwnerPromptRecord = {
+      id: randomUUID(), groupId: p.groupId, subjectLineUserId: p.subjectLineUserId, askedAt: new Date(p.askedAt.getTime()),
+      answer: null, answeredByLineUserId: null, answeredAt: null,
+    }
+    this.tables.owner_prompts.push(row)
+    return { promptId: row.id }
+  }
+
+  /** Same rules as SupabaseStore.claimOwnerChange. */
+  async claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }> {
+    this.fault('claimOwnerChange')
+    const g = this.tables.groups.find((row) => row.id === groupId)
+    if (!g || g.projectId === null || g.ownerLeftAt === null || g.ownerConfirmedAt !== null || this.isLeft(groupId)) {
+      return { outcome: 'not_pending' }
+    }
+    if (!this.isMainGroup(groupId)) return { outcome: 'not_main_group' }
+    const nominee = g.nominatedOwnerLineUserId
+    if (nominee === lineUserId) return { outcome: 'already_claimed' }
+    if (nominee !== null && this.isLiveMember(groupId, nominee)) return { outcome: 'taken' }
+    fk(this.hasLineUser(lineUserId), 'groups.nominated_owner_line_user_id')
+    g.nominatedOwnerLineUserId = lineUserId
+    Object.assign(this.setupOf(groupId), { ownerNominatedByLineUserId: lineUserId, ownerNominatedAt: new Date(at.getTime()) })
+    return { outcome: 'claimed' }
+  }
+
+  /** Same rules and writes as complete_owner_change, change_project_owner included. The
+   *  database stamps owner_confirmed_at and status_changed_at with now(): the fake clock. */
+  async completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerChangeOutcome }> {
+    this.fault('completeOwnerChange')
+    const g = this.groupOf(groupId)
+    if (g.ownerConfirmedAt !== null && g.nominatedOwnerLineUserId === lineUserId) return { outcome: 'already_owner' }
+    if (g.projectId === null || !this.isMainGroup(groupId) || g.ownerLeftAt === null || g.ownerConfirmedAt !== null ||
+      this.isLeft(groupId)) return { outcome: 'not_pending' }
+    if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }
+    if (!this.isLiveMember(groupId, lineUserId)) return { outcome: 'not_member' }
+    if (this.latestGoogleAccount(lineUserId)?.tokenStatus !== 'valid') return { outcome: 'needs_drive' }
+    const now = this.clock()
+    const projectId = g.projectId
+    // change_project_owner
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (project) Object.assign(project, { ownerLineUserId: lineUserId, driveProjectFolderId: null })
+    g.ownerConfirmedAt = now
+    g.ownerLeftAt = null // groups_owner_rules: confirming clears owner_left_at
+    this.setupOf(groupId).driveFolderId = null
+    for (const sub of this.tables.groups.filter((r) => r.projectId === projectId && !this.isMainGroup(r.id))) {
+      sub.ownerConfirmedAt = null
+      this.setupOf(sub.id).takeoverAskedAt = now
+    }
+    for (const c of this.tables.drive_connections.filter((r) => r.projectId === projectId && r.status === 'active')) {
+      c.status = 'replaced'
+      c.statusChangedAt = now
+    }
+    for (const r of this.tables.owner_prompts.filter((p) => p.groupId === groupId && p.answer === null)) {
+      Object.assign(r, { answer: 'owner_confirmed', answeredByLineUserId: lineUserId, answeredAt: new Date(at.getTime()) })
+    }
+    return { outcome: 'changed' }
+  }
+
+  async listPendingOwnerChanges(lineUserId: string): Promise<string[]> {
+    this.fault('listPendingOwnerChanges')
+    return this.tables.groups
+      .filter((g) => g.nominatedOwnerLineUserId === lineUserId && this.isMainGroup(g.id) && g.ownerLeftAt !== null &&
+        g.ownerConfirmedAt === null && !this.isLeft(g.id))
+      .map((g) => g.id)
+      .sort()
+  }
+
   async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
     this.fault('markMemberLeft')
     const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
@@ -1239,6 +1334,7 @@ export class FakeStore implements StorePort {
       id: randomUUID(), lineGroupId: 'Cgroup1', projectId: null, name: null,
       nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
       featureSummarize: true, featureDraftTasks: true, workDescription: null, featureTrackRemind: true,
+      ownerLeftAt: null,
       ...partial,
     }
     unique(this.tables.groups.some((g) => g.id === row.id), 'groups.id')

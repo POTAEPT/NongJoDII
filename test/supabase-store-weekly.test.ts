@@ -52,6 +52,12 @@ describe('SupabaseStore.listWeeklySummaryGroups', () => {
     expect(calls).toContainEqual({ method: 'order', args: ['id'] })
   })
 
+  it('leaves out groups whose Owner left (#30)', async () => {
+    const { store, calls } = stubDb([rows(1)])
+    await store.listWeeklySummaryGroups(3)
+    expect(calls).toContainEqual({ method: 'is', args: ['owner_left_at', null] })
+  })
+
   it('asks for one more page when the last full page ends exactly on the page size', async () => {
     const { store, calls } = stubDb([rows(PAGE_SIZE), []])
     expect(await store.listWeeklySummaryGroups(3)).toHaveLength(PAGE_SIZE)

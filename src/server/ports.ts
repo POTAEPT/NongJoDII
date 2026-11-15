@@ -59,6 +59,9 @@ export type GroupRow = {
   nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
   featureSummarize: boolean; featureDraftTasks: boolean; workDescription: string | null
   featureTrackRemind: boolean   // setup form: progress tracking, reminders, gap flags (#7, #8)
+  /** #30: when the confirmed Owner left this group; null otherwise. While set, file saving,
+   *  Summaries and the weekly insight pause (owner_confirmed_at is null too). */
+  ownerLeftAt: Date | null
 }
 export type NewWebhookEvent = {
   webhookEventId: string; eventType: string; lineGroupId: string | null
@@ -115,7 +118,7 @@ export type NewAiUsage = {
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 /** What a push is for; stored in push_log.purpose (free text in the schema). */
-export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
+export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left' | 'owner_needed'
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -178,6 +181,8 @@ export type GroupSetup = {
   nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
   /** When the current nominee was named; a resend that keeps the nominee keeps it. */
   ownerNominatedAt: Date | null
+  /** #30: when the confirmed Owner left; set while the group needs a new Owner. */
+  ownerLeftAt: Date | null
 }
 export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
 /** #28 Settings: the setup form's values, written by the group's confirmed Owner. */
@@ -193,6 +198,13 @@ export type GroupSetupWrite = {
 /** 'closed': the group has a confirmed Owner or already belongs to a Project. */
 export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'
 export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nominee' | 'not_member' | 'closed'
+/** #30, a live Member presses the owner_needed card. claimed: they are now the main group's
+ *  nominee. already_claimed: they already were. taken: another live Member holds the
+ *  nomination. not_pending: no Owner change is pending. not_main_group: the Owner left a Sub
+ *  group, whose Owner must stay the Project's owner (check_same_owner). */
+export type OwnerClaimOutcome = 'claimed' | 'already_claimed' | 'taken' | 'not_pending' | 'not_main_group'
+/** #30, rpc complete_owner_change (migration 20261115120000). */
+export type OwnerChangeOutcome = 'changed' | 'already_owner' | 'not_pending' | 'not_nominee' | 'not_member' | 'needs_drive'
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
@@ -293,7 +305,8 @@ export interface StorePort {
   sumOwnerMonthUsage(ownerLineUserId: string, monthStartBkk: string): Promise<{ tokens: number; costMicroUsd: number }> // monthStartBkk 'YYYY-MM-01'; integer micro-dollars
   claimFairUseNotice(n: { ownerLineUserId: string; groupId: string; monthStartBkk: string; kind: 'warn_80' }): Promise<{ inserted: boolean }> // ON CONFLICT (PK) DO NOTHING
   // #20 weekly insight
-  /** groups where project_id is not null, left_at is null, feature_weekly_summary and
+  /** groups where project_id is not null, left_at is null, owner_left_at is null (#30: the
+   *  weekly insight pauses while the group has no Owner), feature_weekly_summary and
    *  weekly_summary_weekday = `weekday` (ISO 1..7). Every page, ordered by id. */
   listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]>
   /** One statement: sets weekly_summary_last_sent_on = todayBkk where it is null or before
@@ -383,6 +396,27 @@ export interface StorePort {
    *  confirms; this creates the Project (owner = the nominee) with the group as its main
    *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
   confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }>
+  // #30 the Owner leaves
+  /** The leaver was the group's confirmed Owner: one UPDATE sets owner_left_at = at where the
+   *  nominee is `lineUserId` and owner_confirmed_at is set (groups_owner_rules then clears
+   *  owner_confirmed_at). updated false = they were not the confirmed Owner (any more). */
+  markOwnerLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
+  /** Inserts the group's owner_needed card (task_prompts). promptId null when the group already
+   *  has an open one (unique index task_prompts_one_open_owner_needed). */
+  openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }>
+  /** The presser becomes the nominee of a main group whose Owner left, unless another live
+   *  Member already holds the nomination. Compare-and-set on the nominee read first, so of two
+   *  presses at once one wins. The caller has checked that `lineUserId` is a live Member. */
+  claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }>
+  /** One transaction (rpc complete_owner_change): when `lineUserId` is the pending nominee, a
+   *  live Member and has a valid latest Google account, runs change_project_owner (new Project
+   *  owner, main group confirmed, owner_left_at cleared, folder IDs cleared, the active Drive
+   *  connection retired, the Sub group take-over question started) and answers the open
+   *  owner_needed card. Repeating it changes nothing. */
+  completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerChangeOutcome }>
+  /** IDs of the main groups (bot still in) whose Owner left and that name `lineUserId` as the
+   *  nominee, not yet confirmed. Ordered by id. */
+  listPendingOwnerChanges(lineUserId: string): Promise<string[]>
   // #12 Google
   /** Conflict on google_subject: update, token_status 'valid'. Every sign-in sets
    *  connected_at = signedInAt, so a person's latest account is the one that signed in

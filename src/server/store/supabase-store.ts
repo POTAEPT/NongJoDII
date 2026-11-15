@@ -22,6 +22,8 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  OwnerChangeOutcome,
+  OwnerClaimOutcome,
   OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
@@ -63,15 +65,16 @@ import {
 // Errors throw AdapterError with the Postgres/PostgREST code only (messages may echo data).
 
 const GROUP_COLS =
-  'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind'
+  'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind, owner_left_at'
 const SETUP_COLS =
-  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at, owner_nominated_at'
+  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at, owner_nominated_at, owner_left_at'
 type DbGroupSetup = {
   id: string; line_group_id: string; name: string | null; project_id: string | null; work_description: string | null
   feature_summarize: boolean; feature_draft_tasks: boolean; feature_save_files: boolean
   feature_track_remind: boolean; feature_weekly_summary: boolean
   daily_reminder_time: string; weekly_summary_weekday: number; weekly_summary_time: string
   nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null; owner_nominated_at: string | null
+  owner_left_at: string | null
 }
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
@@ -686,6 +689,7 @@ export class SupabaseStore implements StorePort {
         .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
         .not('project_id', 'is', null)
         .is('left_at', null)
+        .is('owner_left_at', null)   // #30: paused while the group has no Owner
         .eq('feature_weekly_summary', true)
         .eq('weekly_summary_weekday', weekday)
         .order('id')
@@ -1047,7 +1051,7 @@ export class SupabaseStore implements StorePort {
       weeklySummaryWeekday: r.weekly_summary_weekday,
       weeklySummaryTime: r.weekly_summary_time.slice(0, 5),
       nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
-      ownerNominatedAt: toDate(r.owner_nominated_at),
+      ownerNominatedAt: toDate(r.owner_nominated_at), ownerLeftAt: toDate(r.owner_left_at),
     }
   }
 
@@ -1079,6 +1083,99 @@ export class SupabaseStore implements StorePort {
       throw new Error('confirmGroupOwner: unexpected result from confirm_group_owner')
     }
     return { outcome: data as OwnerConfirmOutcome }
+  }
+
+  // ---- #30 the Owner leaves ----
+  async markOwnerLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    // groups_owner_rules clears owner_confirmed_at in the same UPDATE.
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ owner_left_at: t.at.toISOString() })
+      .eq('id', t.groupId)
+      .eq('nominated_owner_line_user_id', t.lineUserId)
+      .not('owner_confirmed_at', 'is', null)
+      .select('id')
+    check('markOwnerLeft', error)
+    return { updated: (data ?? []).length === 1 }
+  }
+
+  async openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .insert({
+        group_id: p.groupId, kind: 'owner_needed', subject_line_user_id: p.subjectLineUserId,
+        asked_at: p.askedAt.toISOString(),
+      })
+      .select('id')
+      .single()
+    // 23505 = unique_violation on task_prompts_one_open_owner_needed: the group has an open card.
+    if (error?.code === '23505') return { promptId: null }
+    check('openOwnerNeededPrompt', error)
+    return { promptId: (data as { id: string }).id }
+  }
+
+  async claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }> {
+    const { data: g, error } = await this.db
+      .from('groups')
+      .select('is_main, project_id, nominated_owner_line_user_id, owner_confirmed_at, owner_left_at, left_at')
+      .eq('id', groupId)
+      .maybeSingle()
+    check('claimOwnerChange', error)
+    const row = g as {
+      is_main: boolean; project_id: string | null; nominated_owner_line_user_id: string | null
+      owner_confirmed_at: string | null; owner_left_at: string | null; left_at: string | null
+    } | null
+    if (!row || row.project_id === null || row.owner_left_at === null || row.owner_confirmed_at !== null || row.left_at !== null) {
+      return { outcome: 'not_pending' }
+    }
+    if (!row.is_main) return { outcome: 'not_main_group' }
+    const nominee = row.nominated_owner_line_user_id
+    if (nominee === lineUserId) return { outcome: 'already_claimed' }
+    // The old Owner (or an earlier claimer) who left the group frees the nomination.
+    if (nominee !== null && (await this.getMembership(groupId, nominee)) === 'live') return { outcome: 'taken' }
+    // Compare-and-set on the nominee read above: of two presses at once, one wins. A new
+    // nominee leaves owner_confirmed_at null (groups_owner_rules) and owner_left_at set.
+    let update = this.db
+      .from('groups')
+      .update({
+        nominated_owner_line_user_id: lineUserId, owner_nominated_by_line_user_id: lineUserId,
+        owner_nominated_at: at.toISOString(),
+      })
+      .eq('id', groupId)
+      .eq('is_main', true)
+      .not('owner_left_at', 'is', null)
+      .is('owner_confirmed_at', null)
+    update = nominee === null ? update.is('nominated_owner_line_user_id', null) : update.eq('nominated_owner_line_user_id', nominee)
+    const { data: won, error: updateError } = await update.select('id')
+    check('claimOwnerChange', updateError)
+    return { outcome: (won ?? []).length === 1 ? 'claimed' : 'taken' }
+  }
+
+  async completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerChangeOutcome }> {
+    const { data, error } = await this.db.rpc('complete_owner_change', {
+      p_group_id: groupId, p_line_user_id: lineUserId, p_at: at.toISOString(),
+    })
+    check('completeOwnerChange', error)
+    const outcomes: OwnerChangeOutcome[] = ['changed', 'already_owner', 'not_pending', 'not_nominee', 'not_member', 'needs_drive']
+    if (!outcomes.includes(data as OwnerChangeOutcome)) {
+      throw new Error('completeOwnerChange: unexpected result from complete_owner_change')
+    }
+    return { outcome: data as OwnerChangeOutcome }
+  }
+
+  async listPendingOwnerChanges(lineUserId: string): Promise<string[]> {
+    const rows = await readAllPages<{ id: string }>('listPendingOwnerChanges', (from, to) =>
+      this.db
+        .from('groups')
+        .select('id')
+        .eq('nominated_owner_line_user_id', lineUserId)
+        .eq('is_main', true)
+        .not('owner_left_at', 'is', null)
+        .is('owner_confirmed_at', null)
+        .is('left_at', null)
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.id)
   }
 
   // ---- #12 Google ----

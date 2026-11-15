@@ -946,17 +946,13 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
-  async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
-    // last_activity_at is left alone: a person leaving is not progress on the Task.
+  async releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    // One database step (release_tasks_if_left locks the membership row first), so a newer
+    // join cannot land between the membership check and the release.
     const { data, error } = await this.db
-      .from('tasks')
-      .update({ assignee_line_user_id: null, status: 'not_assigned' })
-      .eq('group_id', t.groupId)
-      .eq('assignee_line_user_id', t.lineUserId)
-      .is('deleted_at', null)
-      .neq('status', 'done')
+      .rpc('release_tasks_if_left', { p_group_id: t.groupId, p_line_user_id: t.lineUserId })
       .select(TASK_COLS)
-    check('releaseTasksOf', error)
+    check('releaseTasksIfLeft', error)
     return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
   }
 

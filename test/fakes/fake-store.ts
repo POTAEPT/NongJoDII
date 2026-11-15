@@ -1114,8 +1114,11 @@ export class FakeStore implements StorePort {
     return { updated: true }
   }
 
-  async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
-    this.fault('releaseTasksOf')
+  async releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    this.fault('releaseTasksIfLeft')
+    // Same as release_tasks_if_left: a live Member keeps their Tasks.
+    const member = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (member && member.leftAt === null) return []
     const rows = this.tables.tasks.filter((x) =>
       x.groupId === t.groupId && x.assigneeLineUserId === t.lineUserId && x.deletedAt === null && x.status !== 'done')
     for (const x of rows) Object.assign(x, { assigneeLineUserId: null, status: 'not_assigned' })

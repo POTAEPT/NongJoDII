@@ -308,6 +308,22 @@ describe('a member joins the group (#29)', () => {
     expect(t.line.pushes).toHaveLength(0)
   })
 
+  it('a newer rejoin and assignment that land just before the leave\'s release keep the Task', async () => {
+    const t = setup()
+    const T1 = TEST_NOW.getTime()
+    const realRelease = t.store.releaseTasksIfLeft.bind(t.store)
+    // The leave is written; then, before its release runs, a newer join lands and the person
+    // takes a Task again.
+    vi.spyOn(t.store, 'releaseTasksIfLeft').mockImplementationOnce(async (p) => {
+      await t.store.markMemberJoined({ groupId: t.group.id, lineUserId: BIW, at: new Date(T1 + 60_000) })
+      return realRelease(p)
+    })
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: T1 }))
+    expect(await t.store.getMembership(t.group.id, BIW)).toBe('live')
+    expect(t.task(t.slides.id)).toMatchObject({ assigneeLineUserId: BIW, status: 'in_process' })
+    expect(t.line.pushes).toHaveLength(0)
+  })
+
   it('leave, rejoin and leave in order end with the person left and their Tasks released', async () => {
     const t = setup()
     const T1 = TEST_NOW.getTime()

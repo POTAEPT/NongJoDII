@@ -1012,7 +1012,7 @@ export class FakeStore implements StorePort {
   async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     this.fault('listWeeklySummaryGroups')
     return this.tables.groups
-      .filter((g) => g.projectId !== null && g.ownerLeftAt === null)
+      .filter((g) => g.projectId !== null && g.ownerLeftAt === null && g.ownerConfirmedAt !== null)
       .map((g) => ({ g, s: this.scheduleOf(g.id) }))
       .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary && s.weeklySummaryWeekday === weekday)
       .sort((a, b) => a.g.id.localeCompare(b.g.id))
@@ -1373,6 +1373,29 @@ export class FakeStore implements StorePort {
     g.ownerLeftAt = new Date(t.at.getTime())
     g.ownerConfirmedAt = null
     return { updated: true }
+  }
+
+  /** Same rule as SupabaseStore.listConfirmedOwnersWhoLeft. */
+  async listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineUserId: string; leftAt: Date }[]> {
+    this.fault('listConfirmedOwnersWhoLeft')
+    const out: { groupId: string; lineUserId: string; leftAt: Date }[] = []
+    for (const g of [...this.tables.groups].sort((a, b) => a.id.localeCompare(b.id))) {
+      if (g.ownerConfirmedAt === null || g.nominatedOwnerLineUserId === null || this.isLeft(g.id)) continue
+      const m = this.tables.group_members.find((x) => x.groupId === g.id && x.lineUserId === g.nominatedOwnerLineUserId)
+      if (m?.leftAt) out.push({ groupId: g.id, lineUserId: m.lineUserId, leftAt: new Date(m.leftAt.getTime()) })
+    }
+    return out
+  }
+
+  /** Same rule as SupabaseStore.listGroupsWithoutOwnerCard. */
+  async listGroupsWithoutOwnerCard(): Promise<{ groupId: string; lineGroupId: string; ownerLineUserId: string }[]> {
+    this.fault('listGroupsWithoutOwnerCard')
+    return [...this.tables.groups]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .filter((g) => g.ownerLeftAt != null && g.ownerConfirmedAt === null && g.projectId !== null && !this.isLeft(g.id) &&
+        g.nominatedOwnerLineUserId !== null)
+      .filter((g) => !this.tables.owner_prompts.some((p) => p.groupId === g.id && p.answer === null))
+      .map((g) => ({ groupId: g.id, lineGroupId: g.lineGroupId, ownerLineUserId: g.nominatedOwnerLineUserId as string }))
   }
 
   /** The unique index task_prompts_one_open_owner_needed: one open card per group. */

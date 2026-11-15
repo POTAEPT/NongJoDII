@@ -58,6 +58,12 @@ describe('SupabaseStore.listWeeklySummaryGroups', () => {
     expect(calls).toContainEqual({ method: 'is', args: ['owner_left_at', null] })
   })
 
+  it('leaves out groups with no confirmed Owner, such as a Sub group waiting on the take-over question (#31)', async () => {
+    const { store, calls } = stubDb([rows(1)])
+    await store.listWeeklySummaryGroups(3)
+    expect(calls).toContainEqual({ method: 'not', args: ['owner_confirmed_at', 'is', null] })
+  })
+
   it('asks for one more page when the last full page ends exactly on the page size', async () => {
     const { store, calls } = stubDb([rows(PAGE_SIZE), []])
     expect(await store.listWeeklySummaryGroups(3)).toHaveLength(PAGE_SIZE)

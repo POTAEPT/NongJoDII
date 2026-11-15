@@ -491,6 +491,13 @@ export interface StorePort {
   /** Inserts the group's owner_needed card (task_prompts). promptId null when the group already
    *  has an open one (unique index task_prompts_one_open_owner_needed). */
   openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }>
+  /** #30 reconcile (#74): groups the bot is in whose confirmed Owner's membership is marked
+   *  left, with the leave time. A leave whose Owner mark failed after the membership write. */
+  listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineUserId: string; leftAt: Date }[]>
+  /** #30 reconcile (#74): groups the bot is in, paused by an Owner leave (owner_left_at set,
+   *  no confirmed Owner), with no open owner_needed card. ownerLineUserId is the nominee
+   *  column (the Owner who left, or a later claimer). */
+  listGroupsWithoutOwnerCard(): Promise<{ groupId: string; lineGroupId: string; ownerLineUserId: string }[]>
   /** The presser becomes the nominee of a main group whose Owner left, unless another live
    *  Member already holds the nomination. Compare-and-set on the nominee read first, so of two
    *  presses at once one wins. The caller has checked that `lineUserId` is a live Member. */

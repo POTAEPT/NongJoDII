@@ -736,6 +736,7 @@ export class SupabaseStore implements StorePort {
         .not('project_id', 'is', null)
         .is('left_at', null)
         .is('owner_left_at', null)   // #30: paused while the group has no Owner
+        .not('owner_confirmed_at', 'is', null) // as ownerBackedOn: a Sub group waiting on take-over too
         .eq('feature_weekly_summary', true)
         .eq('weekly_summary_weekday', weekday)
         .order('id')
@@ -1258,6 +1259,60 @@ export class SupabaseStore implements StorePort {
     return { promptId: (data as { id: string }).id }
   }
 
+  async listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineUserId: string; leftAt: Date }[]> {
+    type Row = { group_id: string; line_user_id: string; left_at: string; groups: { nominated_owner_line_user_id: string | null } }
+    // Left memberships of groups with a confirmed Owner the bot is still in; the Owner's own
+    // row is picked out below (PostgREST cannot compare two columns).
+    const rows = await readAllPages<Row>('listConfirmedOwnersWhoLeft', (from, to) =>
+      this.db
+        .from('group_members')
+        .select('group_id, line_user_id, left_at, groups!inner(nominated_owner_line_user_id)')
+        .not('left_at', 'is', null)
+        .not('groups.owner_confirmed_at', 'is', null)
+        .is('groups.left_at', null)
+        .order('group_id')
+        .order('line_user_id')
+        .range(from, to))
+    return rows
+      .filter((r) => r.line_user_id === r.groups.nominated_owner_line_user_id)
+      .map((r) => ({ groupId: r.group_id, lineUserId: r.line_user_id, leftAt: new Date(r.left_at) }))
+  }
+
+  async listGroupsWithoutOwnerCard(): Promise<{ groupId: string; lineGroupId: string; ownerLineUserId: string }[]> {
+    const m = 'listGroupsWithoutOwnerCard'
+    // groups_owner_left_idx serves this filter.
+    const groups = await readAllPages<{ id: string; line_group_id: string; nominated_owner_line_user_id: string | null }>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('id, line_group_id, nominated_owner_line_user_id')
+        .not('owner_left_at', 'is', null)
+        // A detached Sub group (no Project) gets the setup card instead; the Owner page's
+        // take-over needs a Project (claimOwnerChange).
+        .not('project_id', 'is', null)
+        .is('owner_confirmed_at', null)
+        .is('left_at', null)
+        .order('id')
+        .range(from, to))
+    if (groups.length === 0) return []
+    const open = new Set<string>()
+    for (let i = 0; i < groups.length; i += PAGE_SIZE) {
+      const ids = groups.slice(i, i + PAGE_SIZE).map((g) => g.id)
+      const rows = await readAllPages<{ group_id: string }>(m, (from, to) =>
+        this.db
+          .from('task_prompts')
+          .select('group_id')
+          .eq('kind', 'owner_needed')
+          .is('answer', null)
+          .in('group_id', ids)
+          .order('id')
+          .range(from, to))
+      for (const r of rows) open.add(r.group_id)
+    }
+    return groups
+      .filter((g) => !open.has(g.id) && g.nominated_owner_line_user_id !== null)
+      .map((g) => ({ groupId: g.id, lineGroupId: g.line_group_id, ownerLineUserId: g.nominated_owner_line_user_id as string }))
+  }
+
   async claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }> {
     const { data: g, error } = await this.db
       .from('groups')
@@ -1292,7 +1347,17 @@ export class SupabaseStore implements StorePort {
     update = nominee === null ? update.is('nominated_owner_line_user_id', null) : update.eq('nominated_owner_line_user_id', nominee)
     const { data: won, error: updateError } = await update.select('id')
     check('claimOwnerChange', updateError)
-    return { outcome: (won ?? []).length === 1 ? 'claimed' : 'taken' }
+    if ((won ?? []).length === 1) return { outcome: 'claimed' }
+    // Lost the compare-and-set: two presses of the same person at once both read the old
+    // nominee, and the other press won. Read again: the winner may be this person.
+    const { data: again, error: rereadError } = await this.db
+      .from('groups')
+      .select('nominated_owner_line_user_id')
+      .eq('id', groupId)
+      .maybeSingle()
+    check('claimOwnerChange', rereadError)
+    const now = again as { nominated_owner_line_user_id: string | null } | null
+    return { outcome: now?.nominated_owner_line_user_id === lineUserId ? 'already_claimed' : 'taken' }
   }
 
   async completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: CompleteOwnerChangeOutcome }> {

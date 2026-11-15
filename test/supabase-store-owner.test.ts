@@ -99,8 +99,20 @@ describe('SupabaseStore.claimOwnerChange', () => {
       { data: PENDING, error: null },
       { data: { left_at: '2026-11-12T03:00:00+00:00' }, error: null },
       { data: [], error: null },
+      { data: { nominated_owner_line_user_id: 'Uother' }, error: null }, // read again after the lost CAS
     ])
     expect(await store.claimOwnerChange('g1', 'Unew', AT)).toEqual({ outcome: 'taken' })
+  })
+
+  it('two presses of the same person at once: the press that lost the CAS answers already_claimed', async () => {
+    const { store, calls } = stubDb([
+      { data: PENDING, error: null },
+      { data: { left_at: '2026-11-12T03:00:00+00:00' }, error: null },
+      { data: [], error: null }, // the other press won
+      { data: { nominated_owner_line_user_id: 'Unew' }, error: null },
+    ])
+    expect(await store.claimOwnerChange('g1', 'Unew', AT)).toEqual({ outcome: 'already_claimed' })
+    expect(calls).toContainEqual({ method: 'select', args: ['nominated_owner_line_user_id'] })
   })
 
   it('tells a Sub group and a group with no pending change apart', async () => {
@@ -138,5 +150,39 @@ describe('SupabaseStore.listPendingOwnerChanges', () => {
       { method: 'is', args: ['owner_confirmed_at', null] },
       { method: 'is', args: ['left_at', null] },
     ]))
+  })
+})
+
+describe('SupabaseStore #30 reconcile queries (#74)', () => {
+  it('listConfirmedOwnersWhoLeft keeps only the left membership that is the confirmed Owner of a live group', async () => {
+    const { store, calls } = stubDb([{
+      data: [
+        { group_id: 'g1', line_user_id: 'Uowner', left_at: '2026-11-12T03:00:00+00:00', groups: { nominated_owner_line_user_id: 'Uowner' } },
+        { group_id: 'g1', line_user_id: 'Umember', left_at: '2026-11-12T03:00:00+00:00', groups: { nominated_owner_line_user_id: 'Uowner' } },
+      ],
+      error: null,
+    }])
+    expect(await store.listConfirmedOwnersWhoLeft()).toEqual([
+      { groupId: 'g1', lineUserId: 'Uowner', leftAt: new Date('2026-11-12T03:00:00Z') },
+    ])
+    expect(calls).toContainEqual({ method: 'from', args: ['group_members'] })
+    expect(calls).toContainEqual({ method: 'not', args: ['left_at', 'is', null] })
+    expect(calls).toContainEqual({ method: 'not', args: ['groups.owner_confirmed_at', 'is', null] })
+    expect(calls).toContainEqual({ method: 'is', args: ['groups.left_at', null] })
+  })
+
+  it('listGroupsWithoutOwnerCard lists paused live groups with no open owner_needed card', async () => {
+    const { store, calls } = stubDb([
+      { data: [{ id: 'g1', line_group_id: 'C1', nominated_owner_line_user_id: 'Uold' }, { id: 'g2', line_group_id: 'C2', nominated_owner_line_user_id: 'Uold' }], error: null },
+      { data: [{ group_id: 'g2' }], error: null },
+    ])
+    expect(await store.listGroupsWithoutOwnerCard()).toEqual([{ groupId: 'g1', lineGroupId: 'C1', ownerLineUserId: 'Uold' }])
+    expect(calls).toContainEqual({ method: 'not', args: ['owner_left_at', 'is', null] })
+    expect(calls).toContainEqual({ method: 'not', args: ['project_id', 'is', null] })
+    expect(calls).toContainEqual({ method: 'is', args: ['owner_confirmed_at', null] })
+    expect(calls).toContainEqual({ method: 'is', args: ['left_at', null] })
+    expect(calls).toContainEqual({ method: 'eq', args: ['kind', 'owner_needed'] })
+    expect(calls).toContainEqual({ method: 'is', args: ['answer', null] })
+    expect(calls).toContainEqual({ method: 'in', args: ['group_id', ['g1', 'g2']] })
   })
 })

@@ -232,12 +232,26 @@ describe('daily Drive access check', () => {
     for (let n = 1; n <= 12; n++) await seedConnectedOwner(h, n)
     h.google.callMs = DRIVE_CALL_MAX_MS // every day is slow: 5 accounts fit
     const tried = new Set<string>()
-    for (let day = 0; day < 3; day++) {
+    // With a step of 1 and 5 a day, the last account is first reached on day n - 5.
+    for (let day = 0; day <= 12 - 5; day++) {
       await tick(h, new Date(SLOT.getTime() + day * 24 * 60 * MIN))
       expect(h.google.refreshCalls).toHaveLength(5)
       for (const t of h.google.refreshCalls) tried.add(t)
     }
-    expect(tried.size).toBe(12) // ceil(12 / 5) = 3 days reach every account
+    expect(tried.size).toBe(12)
+  })
+
+  it('reaches every account within n days even when a day fits fewer accounts than before', async () => {
+    const h = makeTestDeps()
+    for (let n = 1; n <= 10; n++) await seedConnectedOwner(h, n)
+    h.google.callMs = 2.5 * DRIVE_CALL_MAX_MS // a very slow day: 2 accounts fit
+    const tried = new Set<string>()
+    for (let day = 0; day < 10; day++) {
+      await tick(h, new Date(SLOT.getTime() + day * 24 * 60 * MIN))
+      expect(h.google.refreshCalls.length).toBeGreaterThanOrEqual(1)
+      for (const t of h.google.refreshCalls) tried.add(t)
+    }
+    expect(tried.size).toBe(10)
   })
 
   it('logs counts and IDs only', async () => {

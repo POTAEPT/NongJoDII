@@ -28,10 +28,13 @@ export function isAccessCheckSlot(now: Date): boolean {
   return sinceSlot >= 0 && sinceSlot < SLOT_MINUTES
 }
 
-/** How far the start of the list moves each day. A day of slow Google calls (10 s each)
- *  still reaches this many accounts inside the tick's time, so with this step every
- *  account is reached within ceil(n / step) days, with no stored resume point. */
-export const ACCESS_CHECK_STEP = 5
+/** How far the start of the list moves each day. One, so every account is reached within n
+ *  days for as long as a day reaches at least one, however many the tick's time allows that
+ *  day (earlier jobs in the tick, slow Google calls and a revoked account's card all take
+ *  some of it). A larger step finishes the round sooner on fast days but skips accounts for
+ *  good on days that reach fewer than the step. A stored resume point, or ordering by a
+ *  last-checked time, is the better fix once there are many accounts; both need a column. */
+export const ACCESS_CHECK_STEP = 1
 
 /** `ids` starting at a place that moves by ACCESS_CHECK_STEP each Bangkok day, wrapping
  *  around. Without it a slow check would stop at the same place every day, and the

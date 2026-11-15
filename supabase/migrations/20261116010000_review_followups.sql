@@ -100,8 +100,8 @@ $$;
 -- The "detach" part of the answer also (#30 part B, PR #78 review; user decision
 -- 2026-11-16):
 --   * starts the detached group's 7-day Owner count in the same statement as the detach:
---     owner_left_at = greatest(coalesce(owner_left_at, now()), now()), for rows with no
---     confirmed Owner (every waiting Sub group). PR #94 relies on this. The function has no time parameter, so now(). The app
+--     owner_left_at = now(): the count restarts at the detach, for rows with no confirmed
+--     Owner (every waiting Sub group). PR #94 relies on this. The function has no time parameter, so now(). The app
 --     keeps its idempotent startDetachedOwnerCount step after the call, so both agree;
 --   * clears the old nominee (nominated_owner_line_user_id, owner_nominated_by_line_user_id,
 --     owner_nominated_at), so any live Member can claim the group's owner_needed card.
@@ -171,11 +171,10 @@ begin
      set project_id = null,
          takeover_asked_at = null,
          drive_folder_id = null,
-         -- A waiting Sub group never has a confirmed Owner (groups_takeover_pending_rules);
-         -- the case keeps that explicit.
-         owner_left_at = case when owner_confirmed_at is null
-                              then greatest(coalesce(owner_left_at, now()), now())
-                              else owner_left_at end,
+         -- The 7-day Owner count restarts on detach: owner_left_at = now(). A waiting Sub
+         -- group never has a confirmed Owner (groups_takeover_pending_rules); the case
+         -- keeps that explicit.
+         owner_left_at = case when owner_confirmed_at is null then now() else owner_left_at end,
          nominated_owner_line_user_id = null,
          owner_nominated_by_line_user_id = null,
          owner_nominated_at = null

@@ -16,8 +16,17 @@ export async function sendConnectDriveCard(
     logError('connect_card_lookup_failed', {}, err)
   }
   if (account?.tokenStatus === 'valid') {
+    // #14: the button opens the LIFF Google view, where the Owner can change the account.
     await deps.line.reply(job.replyToken, [
-      { type: 'text', text: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ' },
+      {
+        type: 'template',
+        altText: 'เชื่อม Google Drive ไว้แล้ว',
+        template: {
+          type: 'buttons',
+          text: 'เชื่อม Google Drive ไว้แล้ว น้องจดดีจะเก็บไฟล์ของกลุ่มลงไดรฟ์ของคุณ',
+          actions: [{ type: 'uri', label: 'จัดการ Google Drive', uri: liffUrl(deps.config.liffId, 'google') }],
+        },
+      },
     ])
     return
   }

@@ -3,6 +3,10 @@
 // 'me' (a Member's own nicknames and role, from the welcome reply) takes groups.id (#29).
 // 'settings' (Settings, from the "NongJoDII ตั้งค่า" command) takes groups.id (#28).
 export type LiffView = 'google' | 'review' | 'task' | 'progress' | 'dashboard' | 'setup' | 'owner' | 'me' | 'settings'
+/** The ids the Google OAuth callback page links back to the LIFF google view with: `done`
+ *  after a sign-in that finished, `back` after one that did not (cancelled, expired,
+ *  failed). Neither starts a new sign-in by itself. */
+export const GOOGLE_RETURN = { done: 'done', back: 'back' } as const
 export function liffUrl(liffId: string, view: LiffView, id?: string): string {
   return `https://liff.line.me/${liffId}?view=${view}` + (id ? `&id=${encodeURIComponent(id)}` : '')
 }

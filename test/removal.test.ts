@@ -45,7 +45,8 @@ function setup() {
   /** groups.left_at, delete_after and owner_left_at of a group (null when unset). */
   const marks = (groupId = group.id) => {
     const s = h.store.tables.group_schedules.find((r) => r.groupId === groupId)
-    return { leftAt: s?.leftAt ?? null, deleteAfter: s?.deleteAfter ?? null, ownerLeftAt: s?.ownerLeftAt ?? null }
+    const g = h.store.tables.groups.find((r) => r.id === groupId)
+    return { leftAt: s?.leftAt ?? null, deleteAfter: s?.deleteAfter ?? null, ownerLeftAt: g?.ownerLeftAt ?? null }
   }
   const exists = (groupId = group.id) => h.store.tables.groups.some((g) => g.id === groupId)
   return { ...h, group, send, tickAt, marks, exists }

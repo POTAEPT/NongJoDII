@@ -81,7 +81,8 @@ describe('SupabaseStore.claimOwnerChange', () => {
       method: 'update',
       args: [{ nominated_owner_line_user_id: 'Unew', owner_nominated_by_line_user_id: 'Unew', owner_nominated_at: AT.toISOString() }],
     })
-    expect(calls).toContainEqual({ method: 'eq', args: ['nominated_owner_line_user_id', 'Uold'] })
+    expect(calls).toContainEqual({ method: 'filter', args: ['nominated_owner_line_user_id', 'eq', 'Uold'] })
+    expect(calls).toContainEqual({ method: 'filter', args: ['is_main', 'eq', true] })
     expect(calls).toContainEqual({ method: 'is', args: ['owner_confirmed_at', null] })
   })
 
@@ -133,10 +134,117 @@ describe('SupabaseStore.listPendingOwnerChanges', () => {
     expect(await store.listPendingOwnerChanges('Unew')).toEqual(['g1', 'g2'])
     expect(calls).toEqual(expect.arrayContaining([
       { method: 'eq', args: ['nominated_owner_line_user_id', 'Unew'] },
-      { method: 'eq', args: ['is_main', true] },
+      { method: 'or', args: ['is_main.eq.true,project_id.is.null'] },
       { method: 'not', args: ['owner_left_at', 'is', null] },
       { method: 'is', args: ['owner_confirmed_at', null] },
       { method: 'is', args: ['left_at', null] },
     ]))
+  })
+})
+
+describe('SupabaseStore.listOwnerlessGroups (#30 part B)', () => {
+  it('lists groups the bot is in with no confirmed Owner since owner_left_at <= the cutoff, oldest first', async () => {
+    const { store, calls } = stubDb([{
+      data: [{
+        id: 'g1', line_group_id: 'C1', project_id: 'p1', is_main: false, nominated_owner_line_user_id: 'Uold',
+        owner_left_at: '2026-11-06T03:00:00+00:00', joined_at: '2026-11-01T03:00:00+00:00',
+      }],
+      error: null,
+    }])
+    expect(await store.listOwnerlessGroups(AT, 50)).toEqual([{
+      groupId: 'g1', lineGroupId: 'C1', subGroup: true, nominatedOwnerLineUserId: 'Uold',
+      ownerLeftAt: new Date('2026-11-06T03:00:00Z'), joinedAt: new Date('2026-11-01T03:00:00Z'),
+    }])
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'lte', args: ['owner_left_at', AT.toISOString()] },
+      { method: 'is', args: ['owner_confirmed_at', null] },
+      { method: 'is', args: ['left_at', null] },
+      { method: 'order', args: ['owner_left_at', { ascending: true }] },
+      { method: 'limit', args: [50] },
+    ]))
+  })
+})
+
+describe('SupabaseStore.claimOwnerChange on a group with no Project (#30 part B)', () => {
+  it('claims a detached Sub group whose Owner left, guarded on project_id is null', async () => {
+    const { store, calls } = stubDb([
+      { data: { ...PENDING, is_main: false, project_id: null }, error: null },
+      { data: { left_at: '2026-11-12T03:00:00+00:00' }, error: null },
+      { data: [{ id: 'g1' }], error: null },
+    ])
+    expect(await store.claimOwnerChange('g1', 'Unew', AT)).toEqual({ outcome: 'claimed' })
+    expect(calls).toContainEqual({ method: 'filter', args: ['project_id', 'is', null] })
+  })
+})
+
+describe('SupabaseStore.detachOwnerlessSubGroup (#30 part B)', () => {
+  it('detaches in one conditional UPDATE and resets owner_left_at', async () => {
+    const before = new Date('2026-11-06T03:00:00Z')
+    const { store, calls } = stubDb([{ data: [{ id: 'g1' }], error: null }])
+    expect(await store.detachOwnerlessSubGroup('g1', before, AT)).toEqual({ detached: true })
+    expect(calls).toContainEqual({
+      method: 'update', args: [{ project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: AT.toISOString() }],
+    })
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'not', args: ['project_id', 'is', null] },
+      { method: 'eq', args: ['is_main', false] },
+      { method: 'is', args: ['owner_confirmed_at', null] },
+      { method: 'lte', args: ['owner_left_at', before.toISOString()] },
+      { method: 'is', args: ['left_at', null] },
+    ]))
+  })
+
+  it('answers detached false when the group no longer matches (already detached)', async () => {
+    expect(await stubDb([{ data: [], error: null }]).store.detachOwnerlessSubGroup('g1', AT, AT)).toEqual({ detached: false })
+  })
+})
+
+describe('SupabaseStore.getOwnerExitState (#30 part B)', () => {
+  it('maps the re-read columns', async () => {
+    const { store } = stubDb([{
+      data: {
+        project_id: 'p1', is_main: true, owner_confirmed_at: null, owner_left_at: '2026-11-06T03:00:00+00:00',
+        left_at: null, joined_at: '2026-11-01T03:00:00+00:00', owner_nominated_at: null,
+      },
+      error: null,
+    }])
+    expect(await store.getOwnerExitState('g1')).toEqual({
+      ownerConfirmedAt: null, ownerLeftAt: new Date('2026-11-06T03:00:00Z'), leftAt: null,
+      joinedAt: new Date('2026-11-01T03:00:00Z'), subGroup: false, ownerNominatedAt: null,
+    })
+  })
+})
+
+describe('SupabaseStore.answerOwnerNeededPrompt (#30 part B)', () => {
+  it('answers only the open owner_needed card', async () => {
+    const { store, calls } = stubDb([{ data: null, error: null }])
+    await store.answerOwnerNeededPrompt('g1', 'Unew', AT)
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'update', args: [{ answer: 'owner_confirmed', answered_by_line_user_id: 'Unew', answered_at: AT.toISOString() }] },
+      { method: 'eq', args: ['kind', 'owner_needed'] },
+      { method: 'is', args: ['answer', null] },
+    ]))
+  })
+})
+
+describe('SupabaseStore.startDetachedOwnerCount (#30 part B)', () => {
+  it('starts the Owner count on detached groups with no confirmed Owner, never moving it back', async () => {
+    const { store, calls } = stubDb([{ data: [{ id: 'g1', line_group_id: 'C1', name: null, nominated_owner_line_user_id: 'Uold' }], error: null }])
+    expect(await store.startDetachedOwnerCount(['g1'], AT)).toEqual([
+      { groupId: 'g1', lineGroupId: 'C1', name: null, nominatedOwnerLineUserId: 'Uold' },
+    ])
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'update', args: [{ owner_left_at: AT.toISOString() }] },
+      { method: 'in', args: ['id', ['g1']] },
+      { method: 'is', args: ['project_id', null] },
+      { method: 'is', args: ['owner_confirmed_at', null] },
+      { method: 'or', args: [`owner_left_at.is.null,owner_left_at.lt.${AT.toISOString()}`] },
+    ]))
+  })
+
+  it('does nothing for no groups', async () => {
+    const { store, calls } = stubDb([])
+    expect(await store.startDetachedOwnerCount([], AT)).toEqual([])
+    expect(calls).toEqual([])
   })
 })

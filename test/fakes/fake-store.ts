@@ -24,6 +24,8 @@ import type {
   NewWebhookEvent,
   OwnerChangeOutcome,
   OwnerClaimOutcome,
+  OwnerlessGroup,
+  OwnerExitState,
   OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
@@ -124,11 +126,10 @@ export type GroupScheduleRecord = {
   /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
   memberCheckOn?: string | null
   memberCheckClaimedAt?: Date | null
-  /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = long ago) and
-   *  groups.owner_left_at. Absent = null. */
+  /** #11: groups.delete_after (left_at + 7 days) and groups.joined_at (absent = long ago).
+   *  Absent = null. groups.owner_left_at lives on GroupRow (`groups`). */
   deleteAfter?: Date | null
   joinedAt?: Date | null
-  ownerLeftAt?: Date | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 /** The other groups columns setup writes (#52). No row = schema defaults. */
@@ -1442,6 +1443,7 @@ export class FakeStore implements StorePort {
     this.tables.projects.push(project)
     g.projectId = project.id
     g.ownerConfirmedAt = at
+    g.ownerLeftAt = null // groups_owner_rules: confirming clears owner_left_at
     this.setupOf(groupId).isMain = true
     return { outcome: 'confirmed' }
   }
@@ -1475,10 +1477,10 @@ export class FakeStore implements StorePort {
   async claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }> {
     this.fault('claimOwnerChange')
     const g = this.tables.groups.find((row) => row.id === groupId)
-    if (!g || g.projectId === null || g.ownerLeftAt === null || g.ownerConfirmedAt !== null || this.isLeft(groupId)) {
+    if (!g || g.ownerLeftAt === null || g.ownerConfirmedAt !== null || this.isLeft(groupId)) {
       return { outcome: 'not_pending' }
     }
-    if (!this.isMainGroup(groupId)) return { outcome: 'not_main_group' }
+    if (g.projectId !== null && !this.isMainGroup(groupId)) return { outcome: 'not_main_group' }
     const nominee = g.nominatedOwnerLineUserId
     if (nominee === lineUserId) return { outcome: 'already_claimed' }
     if (nominee !== null && this.isLiveMember(groupId, nominee)) return { outcome: 'taken' }
@@ -1521,10 +1523,17 @@ export class FakeStore implements StorePort {
     return { outcome: 'changed' }
   }
 
+  async answerOwnerNeededPrompt(groupId: string, byLineUserId: string, at: Date): Promise<void> {
+    this.fault('answerOwnerNeededPrompt')
+    for (const r of this.tables.owner_prompts.filter((p) => p.groupId === groupId && p.answer === null)) {
+      Object.assign(r, { answer: 'owner_confirmed', answeredByLineUserId: byLineUserId, answeredAt: new Date(at.getTime()) })
+    }
+  }
+
   async listPendingOwnerChanges(lineUserId: string): Promise<string[]> {
     this.fault('listPendingOwnerChanges')
     return this.tables.groups
-      .filter((g) => g.nominatedOwnerLineUserId === lineUserId && this.isMainGroup(g.id) && g.ownerLeftAt !== null &&
+      .filter((g) => g.nominatedOwnerLineUserId === lineUserId && (this.isMainGroup(g.id) || g.projectId === null) && g.ownerLeftAt !== null &&
         g.ownerConfirmedAt === null && !this.isLeft(g.id))
       .map((g) => g.id)
       .sort()
@@ -1664,7 +1673,7 @@ export class FakeStore implements StorePort {
     return { outcome: 'saved' }
   }
 
-  async detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]> {
+  async detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]> {
     this.fault('detachExpiredTakeovers')
     const out: DetachedSubGroup[] = []
     for (const g of this.tables.groups) {
@@ -1672,7 +1681,20 @@ export class FakeStore implements StorePort {
       if (asked === null || asked >= askedBefore) continue
       this.setupOf(g.id).takeoverAskedAt = null
       g.projectId = null
-      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
+      if (at) g.ownerLeftAt = new Date(at.getTime())
+      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
+    }
+    return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]> {
+    this.fault('startDetachedOwnerCount')
+    const out: DetachedSubGroup[] = []
+    for (const g of this.tables.groups) {
+      if (!groupIds.includes(g.id) || g.projectId !== null || g.ownerConfirmedAt !== null) continue
+      if (g.ownerLeftAt !== null && g.ownerLeftAt >= at) continue
+      g.ownerLeftAt = new Date(at.getTime())
+      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
@@ -1702,12 +1724,56 @@ export class FakeStore implements StorePort {
     const g = this.tables.groups.find((row) => row.id === j.groupId)
     if (!g) return
     const s = this.scheduleOf(g.id)
-    if (g.ownerConfirmedAt === null && s.ownerLeftAt != null && s.ownerLeftAt < j.at) s.ownerLeftAt = new Date(j.at.getTime())
+    if (g.ownerConfirmedAt === null && g.ownerLeftAt !== null && g.ownerLeftAt < j.at) g.ownerLeftAt = new Date(j.at.getTime())
     if (s.joinedAt == null || s.joinedAt < j.at) s.joinedAt = new Date(j.at.getTime())
     if (s.leftAt !== null && s.leftAt <= j.at) {
       s.leftAt = null
       s.deleteAfter = null
     }
+  }
+
+  /** Same rule as SupabaseStore: no confirmed Owner, owner_left_at <= leftBefore, bot in. */
+  async listOwnerlessGroups(leftBefore: Date, limit: number): Promise<OwnerlessGroup[]> {
+    this.fault('listOwnerlessGroups')
+    return this.tables.groups
+      .filter((g) => g.ownerConfirmedAt === null && g.ownerLeftAt !== null && g.ownerLeftAt <= leftBefore && !this.isLeft(g.id))
+      .sort((a, b) => (a.ownerLeftAt as Date).getTime() - (b.ownerLeftAt as Date).getTime() || a.id.localeCompare(b.id))
+      .slice(0, limit)
+      .map((g) => ({
+        groupId: g.id, lineGroupId: g.lineGroupId, subGroup: g.projectId !== null && !this.isMainGroup(g.id),
+        nominatedOwnerLineUserId: g.nominatedOwnerLineUserId,
+        ownerLeftAt: new Date((g.ownerLeftAt as Date).getTime()), joinedAt: this.joinedAtOf(g.id),
+      }))
+  }
+
+  private joinedAtOf(groupId: string): Date | null {
+    const j = this.tables.group_schedules.find((r) => r.groupId === groupId)?.joinedAt ?? null
+    return j ? new Date(j.getTime()) : null
+  }
+
+  async getOwnerExitState(groupId: string): Promise<OwnerExitState | null> {
+    this.fault('getOwnerExitState')
+    const g = this.tables.groups.find((r) => r.id === groupId)
+    if (!g) return null
+    const s = this.tables.group_schedules.find((r) => r.groupId === groupId)
+    const copy = (d: Date | null | undefined) => (d ? new Date(d.getTime()) : null)
+    return {
+      ownerConfirmedAt: copy(g.ownerConfirmedAt), ownerLeftAt: copy(g.ownerLeftAt), leftAt: copy(s?.leftAt),
+      joinedAt: copy(s?.joinedAt), subGroup: g.projectId !== null && !this.isMainGroup(g.id),
+      ownerNominatedAt: copy(this.tables.group_setups.find((r) => r.groupId === groupId)?.ownerNominatedAt),
+    }
+  }
+
+  /** The one conditional UPDATE of SupabaseStore. */
+  async detachOwnerlessSubGroup(groupId: string, leftBefore: Date, at: Date): Promise<{ detached: boolean }> {
+    this.fault('detachOwnerlessSubGroup')
+    const g = this.tables.groups.find((r) => r.id === groupId)
+    if (!g || g.projectId === null || this.isMainGroup(groupId) || g.ownerConfirmedAt !== null ||
+      g.ownerLeftAt === null || g.ownerLeftAt > leftBefore || this.isLeft(groupId)) return { detached: false }
+    g.projectId = null
+    g.ownerLeftAt = new Date(at.getTime())
+    Object.assign(this.setupOf(groupId), { takeoverAskedAt: null, driveFolderId: null })
+    return { detached: true }
   }
 
   async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
@@ -1744,8 +1810,11 @@ export class FakeStore implements StorePort {
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
   /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
-  seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {
-    Object.assign(this.scheduleOf(groupId), partial)
+  /** `ownerLeftAt` is written to the group row (GroupRow.ownerLeftAt), its one home. */
+  seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>> & { ownerLeftAt?: Date | null }): void {
+    const { ownerLeftAt, ...rest } = partial
+    if (ownerLeftAt !== undefined) this.groupOf(groupId).ownerLeftAt = ownerLeftAt
+    Object.assign(this.scheduleOf(groupId), rest)
   }
 
   seedGroup(partial: Partial<GroupRow> = {}): GroupRow {

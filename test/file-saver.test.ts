@@ -77,8 +77,12 @@ describe('file saver (#4)', () => {
     expect(up).toMatchObject({ name: 'report.pdf', mimeType: 'application/pdf' })
     // One refresh for the whole save.
     expect(h.google.refreshCalls).toEqual(['rt-1'])
-    // No sharing call: the file inherits the Project folder's "anyone with the link" share.
+    // No sharing call for the file: it sits under the Project folder, which is shared
+    // "anyone with the link can view", and inherits that, so the link opens without a Google account.
     expect(h.google.driveCalls.filter((c) => c.startsWith('share:'))).toEqual([])
+    const projectFolder = h.store.tables.projects.find((p) => p.id === h.projectId)!.driveProjectFolderId!
+    expect(h.google.folders.get(up.parentId)!.parentId).toBe(projectFolder)
+    expect(h.google.shares).toContainEqual({ fileId: projectFolder, role: 'reader', type: 'anyone' })
 
     expect(h.line.replies).toHaveLength(1)
     expect(h.line.replies[0].replyToken).toBe('rt-file')

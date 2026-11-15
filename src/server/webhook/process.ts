@@ -23,6 +23,9 @@ import type { Job } from './ingest'
  *  Run one after another, two slow Summaries already pass 60 s, so jobs run together. A job beyond this limit waits for a free slot and could then run out
  *  of time, so the limit sits above any realistic batch: LINE sends a group's events
  *  in small batches, and commands (the only slow jobs) are rare among them.
+ *  A file save (#4) is timed on its own from the request's start and stops by 55 s; it
+ *  holds the whole file in memory (at most MAX_FILE_BYTES, files/save.ts) while it hashes
+ *  and uploads it, so a batch of large files uses that much memory per file at once.
  *  No queue (rules: Webhook). */
 export const JOB_CONCURRENCY = 10
 

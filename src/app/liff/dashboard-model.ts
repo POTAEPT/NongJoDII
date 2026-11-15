@@ -7,8 +7,8 @@ import { BKK_OFFSET_MS, bangkokParts, bangkokTodayLabel, bangkokWeekStartLabel, 
 // Member only their own groups; an outsider gets 403). This file never decides access.
 // Names are LINE names, never nicknames (decided 2026-11-11).
 
-export type { DashboardData, DashboardGroup, DashboardMember, DashboardTask } from '@/server/dashboard/load'
-import type { DashboardData, DashboardGroup, DashboardMember, DashboardTask } from '@/server/dashboard/load'
+export type { DashboardData, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
+import type { DashboardData, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
 
 // ---- Copy: the agreed UI status labels (docs/PROJECT.md) ----
 export const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -17,6 +17,22 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   done: 'เสร็จ',
 }
 export const STATUS_ORDER: TaskStatus[] = ['not_assigned', 'in_process', 'done']
+
+/** #22: the latest weekly insight on a group's overview. */
+export const INSIGHT_TEXT = {
+  title: (weekStart: string) => `สรุปรายสัปดาห์ · ${formatThaiWeekRange(weekStart)}`,
+  notPosted: 'สรุปนี้ไม่ได้โพสต์ในกลุ่ม ดูได้ที่นี่',
+  none: 'ยังไม่มีสรุปรายสัปดาห์ของกลุ่มนี้',
+} as const
+
+/** The insight's counts in the order the weekly card shows them (ยังไม่มีผู้รับ, กำลังทำ, เสร็จ). */
+export function insightTiles(i: DashboardInsight): { status: TaskStatus; count: number }[] {
+  return [
+    { status: 'not_assigned', count: i.awaitingOwner },
+    { status: 'in_process', count: i.inProcess },
+    { status: 'done', count: i.done },
+  ]
+}
 export const FALLBACK_MEMBER = 'สมาชิก LINE'
 export const FALLBACK_GROUP = 'กลุ่ม LINE'
 

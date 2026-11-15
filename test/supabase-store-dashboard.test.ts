@@ -52,3 +52,29 @@ describe('SupabaseStore.listDashboardMemberships', () => {
     expect(calls.filter((c) => c.method === 'range')).toHaveLength(1)
   })
 })
+
+const insightRow = (groupId: string, weekStart: string, done: number, postedAt: string | null) => ({
+  group_id: groupId, week_start: weekStart, tasks_done: done, tasks_in_process: 0, tasks_awaiting_owner: 0, posted_at: postedAt,
+})
+
+describe('SupabaseStore.listLatestWeeklyInsights (#22)', () => {
+  it('keeps the newest week of each group, across pages, in group then newest-week order', async () => {
+    const first = [
+      insightRow('g1', '2026-11-16', 3, '2026-11-16T02:00:00Z'),
+      ...Array.from({ length: DASHBOARD_PAGE - 1 }, (_, i) => insightRow('g1', `2025-01-${String((i % 28) + 1).padStart(2, '0')}`, 0, null)),
+    ]
+    const { store, calls } = stubDb([first, [insightRow('g2', '2026-11-09', 7, null)]])
+    expect(await store.listLatestWeeklyInsights(['g1', 'g2'])).toEqual([
+      { groupId: 'g1', weekStart: '2026-11-16', counts: { done: 3, inProcess: 0, awaitingOwner: 0 }, postedAt: new Date('2026-11-16T02:00:00Z') },
+      { groupId: 'g2', weekStart: '2026-11-09', counts: { done: 7, inProcess: 0, awaitingOwner: 0 }, postedAt: null },
+    ])
+    expect(calls).toContainEqual({ method: 'order', args: ['week_start', { ascending: false }] })
+    expect(calls.filter((c) => c.method === 'range')).toHaveLength(2)
+  })
+
+  it('reads nothing for no groups', async () => {
+    const { store, calls } = stubDb([])
+    expect(await store.listLatestWeeklyInsights([])).toEqual([])
+    expect(calls).toEqual([])
+  })
+})

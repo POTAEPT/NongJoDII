@@ -154,6 +154,11 @@ export type WeeklySummaryGroup = {
 /** Live (not soft-deleted) Tasks of one group by status. "Awaiting an owner" = Not Assigned. */
 export type TaskCounts = { done: number; inProcess: number; awaitingOwner: number }
 export type UnownedTask = { id: string; title: string; dueAt: Date | null }
+/** #22: a group's latest saved weekly insight, for the Dashboard. postedAt null: never posted
+ *  in the group (skipped near the LINE quota, failed, or no Tasks to post). */
+export type LatestWeeklyInsight = {
+  groupId: string; weekStart: string; counts: TaskCounts; postedAt: Date | null
+}
 export type NewWeeklyInsight = {
   groupId: string; weekStart: string   // Monday, 'YYYY-MM-DD' Bangkok
   counts: TaskCounts; createdAt: Date
@@ -405,6 +410,7 @@ export interface StorePort {
   listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]>
   /** Live Tasks of these groups, oldest first. */
   listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]>
+  listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> // #22: one per group that has any
   // #12 Google
   /** Conflict on google_subject: update, token_status 'valid'. Every sign-in sets
    *  connected_at = signedInAt, so a person's latest account is the one that signed in

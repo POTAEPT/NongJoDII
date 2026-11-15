@@ -5,10 +5,10 @@ import { liffUrl } from '@/server/liff-links'
 import type { TaskStatus } from '@/server/ports'
 import { post } from './api'
 import {
-  FALLBACK_MEMBER, FILTERS, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
-  errorCopy, filterTasks, groupName, hhmm, initialOf, initialScope, isOverdue, memberCards, memberName,
+  FALLBACK_MEMBER, FILTERS, INSIGHT_TEXT, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
+  errorCopy, filterTasks, groupName, hhmm, initialOf, initialScope, insightTiles, isOverdue, memberCards, memberName,
   overviewLine, scopeAfterRefresh, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
-  type DashboardData, type DashboardGroup, type DashboardTab, type DashboardTask, type GroupSummary,
+  type DashboardData, type DashboardGroup, type DashboardInsight, type DashboardTab, type DashboardTask, type GroupSummary,
   type Scope, type StatusCounts, type TaskFilter,
 } from './dashboard-model'
 import type { LiffViewProps } from './liff-sdk'
@@ -173,7 +173,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
           <>
             <Tabs tab={tab} onChange={(t) => { setTab(t); setMemberId(null) }} />
             {group!.tasks.length === 0 && group!.members.length === 0 ? (
-              <Notice tone="doc" title="ยังไม่มีงานในกลุ่มนี้" text="เมื่อน้องจดดีสรุปแชตและทีมยืนยัน งานจะแสดงที่นี่" />
+              <EmptyGroup insight={group!.insight} showInsight={tab === 'overview'} />
             ) : tab === 'overview' ? (
               memberId ? (
                 <MemberDetail group={group!} memberId={memberId} now={now} onBack={() => setMemberId(null)} onOpen={openTask} />
@@ -250,6 +250,42 @@ function Tabs({ tab, onChange }: { tab: DashboardTab; onChange: (t: DashboardTab
   )
 }
 
+/** A group with no Tasks and no known Members (a PM can still see it after its last known
+ *  Member left). Its saved weekly insight still shows on the overview (#22). */
+export function EmptyGroup({ insight, showInsight }: { insight: DashboardInsight | null; showInsight: boolean }) {
+  return (
+    <>
+      {showInsight && insight && <InsightCard insight={insight} />}
+      <Notice tone="doc" title="ยังไม่มีงานในกลุ่มนี้" text="เมื่อน้องจดดีสรุปแชตและทีมยืนยัน งานจะแสดงที่นี่" />
+    </>
+  )
+}
+
+/** #22: the group's latest weekly insight. A week that never reached the group (near the
+ *  LINE quota, a failed push, or no Tasks) says so: the Dashboard is where it shows. */
+function InsightCard({ insight }: { insight: DashboardInsight | null }) {
+  if (!insight) {
+    return <p className="rounded-2xl bg-white p-3 text-xs text-[#8A94A6] ring-1 ring-[#E6EAF0]">{INSIGHT_TEXT.none}</p>
+  }
+  return (
+    <section className="flex flex-col gap-2 rounded-2xl bg-white p-3 ring-1 ring-[#E6EAF0]">
+      <h2 className="text-sm font-bold">{INSIGHT_TEXT.title(insight.weekStart)}</h2>
+      <div className="grid grid-cols-3 gap-2">
+        {insightTiles(insight).map((t) => (
+          <div key={t.status} className="flex flex-col gap-1 rounded-xl p-2 ring-1 ring-[#E6EAF0]">
+            <span className="flex items-center gap-1 text-[11px] text-[#6B7690]">
+              <span className={`h-1.5 w-1.5 rounded-full ${DOT[t.status]}`} />
+              {STATUS_LABEL[t.status]}
+            </span>
+            <span className="text-xl font-bold">{t.count}</span>
+          </div>
+        ))}
+      </div>
+      {!insight.posted && <p className="text-xs text-[#8A94A6]">{INSIGHT_TEXT.notPosted}</p>}
+    </section>
+  )
+}
+
 function StatusPill({ status }: { status: TaskStatus }) {
   return (
     <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ${BADGE[status]}`}>
@@ -297,6 +333,7 @@ function Overview({ group, now, onMember, onOpen }: {
   const unowned = unownedTasks(group.tasks)
   return (
     <>
+      <InsightCard insight={group.insight} />
       <div>
         <h2 className="text-base font-bold">สมาชิก {cards.length} คน</h2>
         <p className="text-xs text-[#8A94A6]">{overviewLine(cards)}</p>

@@ -1,5 +1,5 @@
 import { ensureGroupAccess, requireLiffUser } from '../liff-auth'
-import type { ApiResult, DashboardGroupRow, DashboardMembership, Deps, TaskStatus } from '../ports'
+import type { ApiResult, DashboardGroupRow, DashboardMembership, Deps, LatestWeeklyInsight, TaskStatus } from '../ports'
 import { badRequest, field } from '../review/load'
 
 // #17 (9a) Dashboard data and access. The screen is #18 (app/liff/dashboard-view.tsx).
@@ -23,8 +23,19 @@ export type DashboardTask = {
   dueAt: string | null // ISO
 }
 export type DashboardMember = { lineUserId: string; displayName: string | null }
-export type DashboardGroup = { groupId: string; name: string | null; members: DashboardMember[]; tasks: DashboardTask[] }
+/** #22: the group's latest weekly insight (counts saved on its weekly day). posted false: it
+ *  never reached the group (skipped near the LINE quota, failed, or no Tasks), so the
+ *  Dashboard is where it shows. */
+export type DashboardInsight = { weekStart: string; done: number; inProcess: number; awaitingOwner: number; posted: boolean }
+export type DashboardGroup = {
+  groupId: string; name: string | null; members: DashboardMember[]; tasks: DashboardTask[]; insight: DashboardInsight | null
+}
 export type DashboardData = { role: 'pm' | 'member'; groups: DashboardGroup[] }
+
+function insightOf(i: LatestWeeklyInsight | undefined): DashboardInsight | null {
+  if (!i) return null
+  return { weekStart: i.weekStart, ...i.counts, posted: i.postedAt !== null }
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -70,7 +81,9 @@ export async function loadDashboard(deps: Deps, body: unknown): Promise<ApiResul
   if (groups.length === 0) return { status: 403, body: { error: 'forbidden' } }
 
   const groupIds = groups.map((g) => g.groupId)
-  const [members, tasks] = await Promise.all([deps.store.listDashboardMembers(groupIds), deps.store.listDashboardTasks(groupIds)])
+  const [members, tasks, insights] = await Promise.all([
+    deps.store.listDashboardMembers(groupIds), deps.store.listDashboardTasks(groupIds), deps.store.listLatestWeeklyInsights(groupIds),
+  ])
   const data: DashboardData = {
     role: pm ? 'pm' : 'member',
     groups: groups.map((g) => ({
@@ -81,6 +94,7 @@ export async function loadDashboard(deps: Deps, body: unknown): Promise<ApiResul
         taskId: t.id, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
         assigneeName: t.assigneeName, dueAt: t.dueAt ? t.dueAt.toISOString() : null,
       })),
+      insight: insightOf(insights.find((i) => i.groupId === g.groupId)),
     })),
   }
   return { status: 200, body: data }

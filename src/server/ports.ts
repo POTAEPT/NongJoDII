@@ -583,10 +583,11 @@ export interface StorePort {
    *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. */
   detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
-  // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
+  // groups.joined_at is the time of the latest join event applied (null until the row's
+  // first join, not the insert time), so a stale leave is ignored.
   /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One
    *  UPDATE by line_group_id: left_at = at and delete_after = at + 7 days, only where
-   *  left_at is null (an existing mark never moves) and joined_at <= at (a leave older
+   *  left_at is null (an existing mark never moves) and joined_at is null or <= at (a leave older
    *  than the latest re-invite changes nothing). Answers the delete_after the group holds
    *  afterwards; null when no group has this ID or the bot is in it after a newer join. */
   markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }>
@@ -594,7 +595,7 @@ export interface StorePort {
   getGroupDeleteAfter(groupId: string): Promise<Date | null>
   /** The bot joined the group at `at` (a join event). Separate idempotent UPDATEs: first,
    *  with no confirmed Owner and an owner_left_at older than `at`, owner_left_at = at (the
-   *  7-day Owner count starts again, #30); then joined_at = at where it is older; then
+   *  7-day Owner count starts again, #30); then joined_at = at where it is null or older; then
    *  left_at and delete_after are cleared where left_at <= at (a re-invite inside the 7
    *  days). The Owner reset runs first, so a redelivery after a half-failure redoes all. */
   markBotJoined(j: { groupId: string; at: Date }): Promise<void>

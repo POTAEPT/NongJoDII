@@ -1905,7 +1905,8 @@ export class SupabaseStore implements StorePort {
       .update({ left_at: at, delete_after: new Date(m.at.getTime() + BOT_DELETE_AFTER_MS).toISOString() })
       .eq('line_group_id', m.lineGroupId)
       .is('left_at', null)
-      .lte('joined_at', at)
+      // joined_at null: no join applied to this row yet (20261115150000), so any leave counts.
+      .or(`joined_at.is.null,joined_at.lte."${at}"`)
     check('markBotLeft', error)
     const read = await this.db.from('groups').select('delete_after').eq('line_group_id', m.lineGroupId).maybeSingle()
     check('markBotLeft', read.error)
@@ -1931,7 +1932,10 @@ export class SupabaseStore implements StorePort {
       .is('owner_confirmed_at', null)
       .lt('owner_left_at', at)
     check('markBotJoined', owner.error)
-    const joined = await this.db.from('groups').update({ joined_at: at }).eq('id', j.groupId).lt('joined_at', at)
+    // The first join of a row sets joined_at to the event's time (null until then); later
+    // joins only move it forward.
+    const joined = await this.db.from('groups').update({ joined_at: at }).eq('id', j.groupId)
+      .or(`joined_at.is.null,joined_at.lt."${at}"`)
     check('markBotJoined', joined.error)
     const cleared = await this.db
       .from('groups')

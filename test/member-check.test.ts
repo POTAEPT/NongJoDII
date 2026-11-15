@@ -213,7 +213,8 @@ describe('daily member check (#32)', () => {
 
   it('marks nobody in a group the bot is no longer in, and marks the bot as left there (#11)', async () => {
     const t = setup()
-    t.line.groupNames.clear() // LINE answers 404 for the group itself
+    t.line.groupNames.clear()
+    t.line.goneGroups.add(LINE_GROUP) // LINE answers 404 for the group itself
     for (const u of [OWNER, TON, BIW]) t.line.profiles.delete(`${LINE_GROUP}:${u}`)
     await t.tick(SLOT)
     expect(t.line.profileCalls).toEqual([])

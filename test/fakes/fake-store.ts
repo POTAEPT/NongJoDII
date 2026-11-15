@@ -118,7 +118,8 @@ export type GroupScheduleRecord = {
   /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
   memberCheckOn?: string | null
   memberCheckClaimedAt?: Date | null
-  /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = long ago) and
+  /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = null: no join applied to the row yet, the
+   *  20261115150000 schema) and
    *  groups.owner_left_at. Absent = null. */
   deleteAfter?: Date | null
   joinedAt?: Date | null

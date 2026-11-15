@@ -46,7 +46,8 @@ describe(`migration ${FILE}`, () => {
     expect(guard).toBeGreaterThan(lock)
     expect(fn).toContain("errcode = 'nj409'")
     expect(fn).toContain('set project_id = null, takeover_asked_at = null, drive_folder_id = null, ' +
-      'owner_left_at = greatest(coalesce(owner_left_at, now()), now()), nominated_owner_line_user_id = null, ' +
+      'owner_left_at = case when owner_confirmed_at is null then greatest(coalesce(owner_left_at, now()), now()) ' +
+      'else owner_left_at end, nominated_owner_line_user_id = null, ' +
       'owner_nominated_by_line_user_id = null, owner_nominated_at = null')
   })
 })

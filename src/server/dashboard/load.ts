@@ -27,8 +27,14 @@ export type DashboardMember = { lineUserId: string; displayName: string | null }
  *  never reached the group (skipped near the LINE quota, failed, or no Tasks), so the
  *  Dashboard is where it shows. */
 export type DashboardInsight = { weekStart: string; done: number; inProcess: number; awaitingOwner: number; posted: boolean }
+/** #4: a file the bot saved to Drive from this group (newest first). The link opens without
+ *  a Google account. A saved card skipped near the LINE quota leaves the file here only. */
+export type DashboardFile = {
+  fileId: string; fileName: string; driveLink: string; sizeBytes: number | null; savedAt: string; senderName: string | null
+}
 export type DashboardGroup = {
   groupId: string; name: string | null; members: DashboardMember[]; tasks: DashboardTask[]; insight: DashboardInsight | null
+  files: DashboardFile[]
 }
 export type DashboardData = { role: 'pm' | 'member'; groups: DashboardGroup[] }
 
@@ -36,6 +42,9 @@ function insightOf(i: LatestWeeklyInsight | undefined): DashboardInsight | null 
   if (!i) return null
   return { weekStart: i.weekStart, ...i.counts, posted: i.postedAt !== null }
 }
+
+/** Files per group on the Dashboard. */
+export const DASHBOARD_FILES_LIMIT = 20
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -81,8 +90,9 @@ export async function loadDashboard(deps: Deps, body: unknown): Promise<ApiResul
   if (groups.length === 0) return { status: 403, body: { error: 'forbidden' } }
 
   const groupIds = groups.map((g) => g.groupId)
-  const [members, tasks, insights] = await Promise.all([
+  const [members, tasks, insights, files] = await Promise.all([
     deps.store.listDashboardMembers(groupIds), deps.store.listDashboardTasks(groupIds), deps.store.listLatestWeeklyInsights(groupIds),
+    deps.store.listDashboardFiles(groupIds, DASHBOARD_FILES_LIMIT),
   ])
   const data: DashboardData = {
     role: pm ? 'pm' : 'member',
@@ -95,6 +105,10 @@ export async function loadDashboard(deps: Deps, body: unknown): Promise<ApiResul
         assigneeName: t.assigneeName, dueAt: t.dueAt ? t.dueAt.toISOString() : null,
       })),
       insight: insightOf(insights.find((i) => i.groupId === g.groupId)),
+      files: files.filter((f) => f.groupId === g.groupId).map((f) => ({
+        fileId: f.id, fileName: f.fileName, driveLink: f.driveLink, sizeBytes: f.sizeBytes,
+        savedAt: f.savedAt.toISOString(), senderName: f.senderName,
+      })),
     })),
   }
   return { status: 200, body: data }

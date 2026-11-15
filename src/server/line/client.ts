@@ -3,6 +3,8 @@ import type { LinePort, LinePushResult } from '../ports'
 import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
+/** Content downloads have their own host (Messaging API reference, "Get content"). */
+const DATA_API = 'https://api-data.line.me'
 
 /** LINE Messaging API (reply, push, quota, group member profile, group summary, leave group) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
@@ -10,6 +12,7 @@ export class LineHttpClient implements LinePort {
   private readonly token: string
   private readonly loginChannelId: string
   private readonly fetchImpl: typeof fetch
+  private readonly rawFetch: typeof fetch
   private readonly timeoutMs: number
 
   constructor(opts: { channelAccessToken: string; loginChannelId: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
@@ -17,6 +20,7 @@ export class LineHttpClient implements LinePort {
     this.loginChannelId = opts.loginChannelId
     // Resolve the global at call time, so a fetch replaced after construction is used.
     const fetchImpl = opts.fetchImpl ?? ((...args) => fetch(...args))
+    this.rawFetch = fetchImpl
     // Every LINE call is cut at 10 s, so a slow LINE answer cannot use up the webhook
     // route's 60 s budget (a Summary's model call takes up to 45 s of it).
     this.timeoutMs = opts.timeoutMs ?? 10_000
@@ -104,6 +108,27 @@ export class LineHttpClient implements LinePort {
     if (q.type === 'none') return { limit: null, used: u.totalUsage }
     if (q.type !== 'limited' || typeof q.value !== 'number') throw new AdapterError('line quota 200')
     return { limit: q.value, used: u.totalUsage }
+  }
+
+  /** #4. The caller's timeout covers the body read too (the content can be large), so a
+   *  slow transfer stops by the caller's deadline. 404: the content is gone (LINE keeps it
+   *  only for a while). Any other non-200 (202 while a video is still being prepared, a 5xx)
+   *  throws. */
+  async getMessageContent(messageId: string, opts: { timeoutMs: number }): Promise<{ data: Uint8Array; contentType: string | null } | null> {
+    const signal = AbortSignal.timeout(Math.max(1, opts.timeoutMs))
+    try {
+      const res = await this.rawFetch(`${DATA_API}/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
+        method: 'GET', headers: { Authorization: `Bearer ${this.token}` }, signal,
+      })
+      if (res.status === 404) return null
+      if (res.status !== 200) throw new AdapterError(`line content ${res.status}`)
+      const data = new Uint8Array(await res.arrayBuffer())
+      return { data, contentType: res.headers.get('content-type') }
+    } catch (err) {
+      const name = (err as { name?: unknown } | null)?.name
+      if (name === 'TimeoutError' || name === 'AbortError') throw new AdapterError('line timeout')
+      throw err
+    }
   }
 
   /** POST /v2/bot/group/{groupId}/leave (LINE answers 200, 400 or 404). 404: the bot is

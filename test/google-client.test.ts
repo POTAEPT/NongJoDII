@@ -192,3 +192,50 @@ describe('GoogleHttpClient Drive', () => {
       .toBe('google drive share 403')
   })
 })
+
+describe('GoogleHttpClient.uploadFile (#4)', () => {
+  function stubSeq(answers: { status: number; body?: unknown; headers?: Record<string, string> }[]) {
+    const calls: Call[] = []
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} })
+      const a = answers[calls.length - 1]
+      return new Response(a.body === undefined ? null : JSON.stringify(a.body), { status: a.status, headers: a.headers })
+    }) as typeof fetch
+    const client = new GoogleHttpClient({ clientId: 'cid', clientSecret: 'cs', redirectUri: REDIRECT, fetchImpl })
+    return { client, calls }
+  }
+  const file = (size: number) => ({ name: 'a.pdf', parentId: 'folder-1', mimeType: 'application/pdf', data: new Uint8Array(size) })
+
+  it('sends a small file as one multipart request into the folder and returns id and link', async () => {
+    const { client, calls } = stubSeq([{ status: 200, body: { id: 'f1', webViewLink: 'https://drive.google.com/file/d/f1/view' } }])
+    const got = await client.uploadFile('at', file(10), { timeoutMs: 5_000 })
+    expect(got).toEqual({ id: 'f1', webViewLink: 'https://drive.google.com/file/d/f1/view' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink')
+    expect(new Headers(calls[0].init.headers).get('Authorization')).toBe('Bearer at')
+    expect(new Headers(calls[0].init.headers).get('Content-Type')).toMatch(/^multipart\/related; boundary=/)
+    const body = await new Response(calls[0].init.body as Blob).text()
+    expect(body).toContain('"parents":["folder-1"]')
+    expect(body).toContain('"name":"a.pdf"')
+  })
+
+  it('sends a file above 5 MB through a resumable session', async () => {
+    const { client, calls } = stubSeq([
+      { status: 200, headers: { Location: 'https://upload.example/session-1' } },
+      { status: 200, body: { id: 'f2', webViewLink: 'https://drive.google.com/file/d/f2/view' } },
+    ])
+    const got = await client.uploadFile('at', file(5 * 1024 * 1024 + 1), { timeoutMs: 5_000 })
+    expect(got.id).toBe('f2')
+    expect(calls[0].url).toContain('uploadType=resumable')
+    expect(new Headers(calls[0].init.headers).get('X-Upload-Content-Length')).toBe(String(5 * 1024 * 1024 + 1))
+    expect(calls[1].url).toBe('https://upload.example/session-1')
+    expect(calls[1].init.method).toBe('PUT')
+  })
+
+  it('throws "google drive upload 403" on a refused upload, and makes no sharing call', async () => {
+    const { client, calls } = stubSeq([{ status: 403, body: { error: 'secret' } }])
+    const err = await client.uploadFile('at', file(1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    expect((err as Error).message).toBe('google drive upload 403')
+    expect(calls.some((c) => c.url.includes('/permissions'))).toBe(false)
+  })
+})

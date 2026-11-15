@@ -41,6 +41,10 @@ export function makeTestDeps(opts?: { now?: Date }): {
   const deps: Deps = {
     line, llm, google, store,
     now: () => new Date(current.getTime()),
+    // #4 batch wait: moves the test clock instead of waiting.
+    sleep: async (ms) => {
+      current = new Date(current.getTime() + ms)
+    },
     config: { lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET },
   }
   return {
@@ -100,7 +104,8 @@ function next(prefix: string): string {
 
 export const ev: {
   groupText(p: { text: string; groupId?: string; userId?: string | null; eventId?: string; messageId?: string; timestamp?: number; replyToken?: string; redelivery?: boolean; mentionees?: LineMention[]; quotedMessageId?: string }): LineEvent
-  groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number } }): LineEvent
+  groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number }; replyToken?: string; external?: boolean }): LineEvent
+  groupFile(p: { fileName: string; fileSize: number; groupId?: string; userId?: string; eventId?: string; messageId?: string; replyToken?: string }): LineEvent
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
   groupPostback(p: { data: string; groupId?: string; userId?: string | null; eventId?: string; replyToken?: string; pickedDate?: string }): LineEvent
@@ -136,12 +141,26 @@ export const ev: {
       mode: 'active',
       timestamp: TEST_NOW.getTime(),
       source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP, userId: p.userId ?? DEFAULT_USER },
-      replyToken: next('rt'),
+      replyToken: p.replyToken ?? next('rt'),
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: false },
-      message: p.imageSet
-        ? { id: p.messageId ?? next('msg'), type: 'image', imageSet: p.imageSet }
-        : { id: p.messageId ?? next('msg'), type: 'image' },
+      message: {
+        id: p.messageId ?? next('msg'), type: 'image',
+        contentProvider: { type: p.external ? 'external' : 'line' },
+        ...(p.imageSet ? { imageSet: p.imageSet } : {}),
+      },
+    }
+  },
+  groupFile(p) {
+    return {
+      type: 'message',
+      mode: 'active',
+      timestamp: TEST_NOW.getTime(),
+      source: { type: 'group', groupId: p.groupId ?? DEFAULT_GROUP, userId: p.userId ?? DEFAULT_USER },
+      replyToken: p.replyToken ?? next('rt'),
+      webhookEventId: p.eventId ?? next('ev'),
+      deliveryContext: { isRedelivery: false },
+      message: { id: p.messageId ?? next('msg'), type: 'file', fileName: p.fileName, fileSize: p.fileSize },
     }
   },
   userText(p) {

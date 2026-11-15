@@ -26,8 +26,9 @@ const dii: DashboardGroup = {
     task('t5', 'not_assigned', null, '2026-11-13T17:00:00+07:00'),
   ],
   insight: null,
+  files: [],
 }
-const design: DashboardGroup = { groupId: 'g2', name: null, members: [], tasks: [task('t6', 'done', null, null)], insight: null }
+const design: DashboardGroup = { groupId: 'g2', name: null, members: [], tasks: [task('t6', 'done', null, null)], insight: null, files: [] }
 
 describe('Dashboard model (#18)', () => {
   it('counts the three status labels and the progress percent', () => {

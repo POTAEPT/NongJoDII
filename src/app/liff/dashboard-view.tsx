@@ -5,10 +5,10 @@ import { liffUrl } from '@/server/liff-links'
 import type { TaskStatus } from '@/server/ports'
 import { post } from './api'
 import {
-  FALLBACK_MEMBER, FILTERS, INSIGHT_TEXT, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
+  FALLBACK_MEMBER, FILES_TEXT, FILTERS, INSIGHT_TEXT, fileLine, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
   errorCopy, filterTasks, groupName, hhmm, initialOf, initialScope, insightTiles, isOverdue, memberCards, memberName,
   overviewLine, scopeAfterRefresh, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
-  type DashboardData, type DashboardGroup, type DashboardInsight, type DashboardTab, type DashboardTask, type GroupSummary,
+  type DashboardData, type DashboardFile, type DashboardGroup, type DashboardInsight, type DashboardTab, type DashboardTask, type GroupSummary,
   type Scope, type StatusCounts, type TaskFilter,
 } from './dashboard-model'
 import type { LiffViewProps } from './liff-sdk'
@@ -173,7 +173,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
           <>
             <Tabs tab={tab} onChange={(t) => { setTab(t); setMemberId(null) }} />
             {group!.tasks.length === 0 && group!.members.length === 0 ? (
-              <EmptyGroup insight={group!.insight} showInsight={tab === 'overview'} />
+              <EmptyGroup insight={group!.insight} showInsight={tab === 'overview'} files={group!.files} />
             ) : tab === 'overview' ? (
               memberId ? (
                 <MemberDetail group={group!} memberId={memberId} now={now} onBack={() => setMemberId(null)} onOpen={openTask} />
@@ -252,10 +252,13 @@ function Tabs({ tab, onChange }: { tab: DashboardTab; onChange: (t: DashboardTab
 
 /** A group with no Tasks and no known Members (a PM can still see it after its last known
  *  Member left). Its saved weekly insight still shows on the overview (#22). */
-export function EmptyGroup({ insight, showInsight }: { insight: DashboardInsight | null; showInsight: boolean }) {
+export function EmptyGroup({ insight, showInsight, files = [] }: {
+  insight: DashboardInsight | null; showInsight: boolean; files?: DashboardFile[]
+}) {
   return (
     <>
       {showInsight && insight && <InsightCard insight={insight} />}
+      {showInsight && files.length > 0 && <FilesCard files={files} />}
       <Notice tone="doc" title="ยังไม่มีงานในกลุ่มนี้" text="เมื่อน้องจดดีสรุปแชตและทีมยืนยัน งานจะแสดงที่นี่" />
     </>
   )
@@ -282,6 +285,30 @@ function InsightCard({ insight }: { insight: DashboardInsight | null }) {
         ))}
       </div>
       {!insight.posted && <p className="text-xs text-[#8A94A6]">{INSIGHT_TEXT.notPosted}</p>}
+    </section>
+  )
+}
+
+/** #4: the group's saved files, newest first. Each link opens in Drive without a Google
+ *  account. A card skipped near the LINE quota leaves the file here only. */
+export function FilesCard({ files }: { files: DashboardFile[] }) {
+  return (
+    <section className="flex flex-col gap-2 rounded-2xl bg-white p-3 ring-1 ring-[#E6EAF0]">
+      <h2 className="text-sm font-bold">{FILES_TEXT.title}</h2>
+      {files.length === 0 ? (
+        <p className="text-xs text-[#8A94A6]">{FILES_TEXT.none}</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {files.map((f) => (
+            <li key={f.fileId} className="min-w-0">
+              <a href={f.driveLink} target="_blank" rel="noopener noreferrer" className="block truncate text-sm font-bold text-[#1F5BAD]">
+                {f.fileName}
+              </a>
+              <span className="block text-xs text-[#8A94A6]">{fileLine(f)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   )
 }
@@ -334,6 +361,7 @@ function Overview({ group, now, onMember, onOpen }: {
   return (
     <>
       <InsightCard insight={group.insight} />
+      <FilesCard files={group.files} />
       <div>
         <h2 className="text-base font-bold">สมาชิก {cards.length} คน</h2>
         <p className="text-xs text-[#8A94A6]">{overviewLine(cards)}</p>

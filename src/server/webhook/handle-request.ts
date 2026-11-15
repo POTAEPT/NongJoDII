@@ -6,6 +6,8 @@ import { ingestEvents } from './ingest'
 import { processJobs } from './process'
 
 export async function handleWebhookRequest(request: Request, deps: Deps, defer: Defer): Promise<Response> {
+  // #4: file saves are timed from here (reply token and route limit).
+  const receivedAt = deps.now()
   const raw = await request.text()
   const signature = request.headers.get('x-line-signature')
   if (!verifyLineSignature(raw, signature, deps.config.lineChannelSecret)) {
@@ -22,7 +24,7 @@ export async function handleWebhookRequest(request: Request, deps: Deps, defer: 
     return new Response('bad request', { status: 400 })
   }
 
-  const { jobs, error } = await ingestEvents(deps, events)
+  const { jobs, error } = await ingestEvents(deps, events, receivedAt)
   // Even when ingest failed midway: events before the failing one already have their
   // messages rows, so a redelivery reports them as duplicates and would lose their jobs.
   if (jobs.length) defer(() => processJobs(deps, jobs))

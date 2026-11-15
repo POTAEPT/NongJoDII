@@ -1,5 +1,6 @@
 import { parseGroupCommand } from '@/server/commands/parse'
 import { handleFileRequest } from '@/server/files/request'
+import { handleGroupFile } from '@/server/files/save'
 import { sendConnectDriveCard } from '@/server/google/connect-card'
 import { log, logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
@@ -22,6 +23,9 @@ import type { Job } from './ingest'
  *  Run one after another, two slow Summaries already pass 60 s, so jobs run together. A job beyond this limit waits for a free slot and could then run out
  *  of time, so the limit sits above any realistic batch: LINE sends a group's events
  *  in small batches, and commands (the only slow jobs) are rare among them.
+ *  A file save (#4) is timed on its own from the request's start and stops by 55 s; it
+ *  holds the whole file in memory (at most MAX_FILE_BYTES, files/save.ts) while it hashes
+ *  and uploads it, so a batch of large files uses that much memory per file at once.
  *  No queue (rules: Webhook). */
 export const JOB_CONCURRENCY = 10
 
@@ -68,7 +72,8 @@ async function runAll(jobs: Job[], fn: (job: Job) => Promise<void>): Promise<voi
 async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
   // The sender of a group message, or the person who pressed a button in a group.
   const senderLineUserId =
-    job.kind === 'group_message' ? job.senderLineUserId : job.kind === 'group_postback' ? job.userId : null
+    job.kind === 'group_message' || job.kind === 'group_file' ? job.senderLineUserId
+      : job.kind === 'group_postback' ? job.userId : null
   if (job.kind === 'user_chat' || job.kind === 'group_join' || job.kind === 'member_left' || job.kind === 'member_joined' || !senderLineUserId) return
   const { lineGroupId } = job
   try {
@@ -129,6 +134,10 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
         await handleProgressPostback(deps, { groupId: job.groupId, userId: job.userId, data: job.data, replyToken: job.replyToken })
       }
     }
+    return
+  }
+  if (job.kind === 'group_file') {
+    await handleGroupFile(deps, job)
     return
   }
   if (job.kind === 'group_join') {

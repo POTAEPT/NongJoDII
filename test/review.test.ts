@@ -311,6 +311,18 @@ describe('submitReview', () => {
     expect(await loadReview(t.deps, { lineUserId: 'Upim', summaryId: t.summaryId }))
       .toEqual({ status: 401, body: { error: 'unauthorized' } })
   })
+
+  it('17. an assignee who leaves between the check and the confirm is not kept on the Task (#29)', async () => {
+    const t = await setup()
+    const realConfirm = t.store.confirmCandidate.bind(t.store)
+    vi.spyOn(t.store, 'confirmCandidate').mockImplementationOnce(async (task, at) => {
+      await t.send(ev.memberLeft({ userIds: ['Ubank'] }))
+      return realConfirm(task, at)
+    })
+    const res = await t.submit([t.confirm(t.c1, { assigneeLineUserId: 'Ubank' })])
+    expect(results(res.body)).toMatchObject([{ outcome: 'created' }])
+    expect(t.store.tables.tasks[0]).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+  })
 })
 
 function createdIds(body: unknown): string[] {

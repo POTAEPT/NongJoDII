@@ -1,6 +1,7 @@
 import { liffUrl } from '../liff-links'
 import type { LineDatePickerAction, LineMessage, LinePostbackAction } from '../line/types'
 import { log } from '../log'
+import { releaseIfLeft } from '../members/recheck'
 import type { Deps, TaskRow } from '../ports'
 import { resultCard } from '../progress/card'
 import { BKK_OFFSET_MS, bangkokIsoWeekday, bangkokParts, bangkokTodayLabel, formatThaiDayMonth } from '../time/bangkok'
@@ -161,6 +162,10 @@ export async function resolveReminderAction(
       return fresh?.assigneeLineUserId
         ? { result: 'already_taken', message: text(ANSWER_TEXT.alreadyTaken(nameOf(fresh.assigneeLineUserId))) }
         : { result: 'gone', message: text(ANSWER_TEXT.gone) }
+    }
+    // #29: the presser may have left between the membership read above and the take.
+    if (await releaseIfLeft(deps, { groupId, lineUserId: userId, event: 'reminder_take_taker_left', taskId: task.id })) {
+      return { result: 'left', message: text(ANSWER_TEXT.left) }
     }
     log('reminder_taken', { groupId, taskId: task.id })
     return {

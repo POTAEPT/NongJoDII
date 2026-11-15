@@ -13,7 +13,8 @@ import type { TickJob } from '../tick/run-tick'
 // 1. The leave event (webhook/ingest.ts) calls markOwnerLeftOnLeave beside the other leave
 //    writes, before the ledger row: groups.owner_left_at is set and owner_confirmed_at is
 //    cleared (groups_owner_rules). From then on the Owner-backed features pause in that
-//    group: file saving (#4, gated on ownerBackedOn below), Summaries (run-summary.ts) and
+//    group: file saving (#4: files/save.ts handleGroupFile checks ownerBackedOn before any
+//    download, so nothing is saved and no card is sent), Summaries (run-summary.ts) and
 //    the weekly insight (listWeeklySummaryGroups skips the group). Tasks, reminders and the
 //    Dashboard do not read the Owner, so they keep working.
 // 2. The member_left job (members/left.ts) calls postOwnerNeededCard: one owner_needed card

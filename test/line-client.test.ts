@@ -278,6 +278,51 @@ describe('LineHttpClient.push failure kinds', () => {
   })
 })
 
+describe('LineHttpClient.getMessageContent (#4)', () => {
+  function stubBinary(status: number, bytes: Uint8Array, contentType: string | null) {
+    const calls: Call[] = []
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} })
+      const headers = new Headers()
+      if (contentType) headers.set('Content-Type', contentType)
+      return new Response(status === 200 ? new Blob([bytes as Uint8Array<ArrayBuffer>]) : null, { status, headers })
+    }) as typeof fetch
+    return { client: new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl }), calls }
+  }
+
+  it('downloads the bytes from the data host with a Bearer token', async () => {
+    const { client, calls } = stubBinary(200, new Uint8Array([1, 2, 3]), 'image/jpeg')
+    const got = await client.getMessageContent('m/1', { timeoutMs: 5_000 })
+    expect(calls[0].url).toBe('https://api-data.line.me/v2/bot/message/m%2F1/content')
+    expect(headersOf(calls[0]).get('Authorization')).toBe('Bearer tok')
+    expect(calls[0].init.signal).toBeInstanceOf(AbortSignal)
+    expect([...got!.data]).toEqual([1, 2, 3])
+    expect(got!.contentType).toBe('image/jpeg')
+  })
+
+  it('answers null on a 404 (content gone)', async () => {
+    const { client } = stubBinary(404, new Uint8Array(), null)
+    expect(await client.getMessageContent('m1', { timeoutMs: 5_000 })).toBeNull()
+  })
+
+  it('throws "line content 202" while the content is not ready', async () => {
+    const { client } = stubBinary(202, new Uint8Array(), null)
+    const err = await client.getMessageContent('m1', { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as Error).message).toBe('line content 202')
+  })
+
+  it('turns a timeout into AdapterError "line timeout"', async () => {
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('t'), { name: 'TimeoutError' })))
+      })) as typeof fetch
+    const client = new LineHttpClient({ channelAccessToken: 'tok', loginChannelId: '1234', fetchImpl })
+    const err = await client.getMessageContent('m1', { timeoutMs: 5 }).catch((e: unknown) => e)
+    expect((err as Error).message).toBe('line timeout')
+  })
+})
+
 describe('LineHttpClient.leaveGroup (#11)', () => {
   it('posts to the leave endpoint with the Bearer token and answers left on 200', async () => {
     const { client, calls } = stubFetch(200)

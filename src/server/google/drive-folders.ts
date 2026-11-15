@@ -168,9 +168,20 @@ async function layOutProject(deps: Deps, projectId: string, deadline: Date, mode
  *  making the root and Project folders first when needed, by `deadline`. null when the
  *  group has no Project or no confirmed Owner, the Owner has no usable Google account, or
  *  another Google account holds the Project. Throws on a token, Drive or store failure,
- *  and DriveTimeUp when time runs out, so the caller (the Sub group attach flow, #4's file
- *  save) must catch. */
+ *  and DriveTimeUp when time runs out, so the caller (the Sub group attach flow) must catch. */
 export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: Date): Promise<string | null> {
+  return (await openGroupDrive(deps, groupId, deadline))?.folderId ?? null
+}
+
+/** What #4's file save needs from one Drive run: the group's folder, the access token the
+ *  run refreshed (so the upload needs no second refresh) and the Google account that holds
+ *  the Project's active connection. */
+export type GroupDrive = { projectId: string; folderId: string; accessToken: string; googleAccountId: string }
+
+/** ensureGroupFolder, also answering the run's access token and account. Same nulls and
+ *  throws. A revoked token takes the #14 path (account marked, one sign-in card) and
+ *  answers null. */
+export async function openGroupDrive(deps: Deps, groupId: string, deadline: Date): Promise<GroupDrive | null> {
   const row = await deps.store.getGroupById(groupId)
   if (!row?.projectId) return null
   const ctx = await deps.store.getDriveContext(row.projectId)
@@ -182,7 +193,7 @@ export async function ensureGroupFolder(deps: Deps, groupId: string, deadline: D
   try {
     const folderId = await run.group(target, await run.project())
     await run.finish()
-    return folderId
+    return { projectId: ctx.projectId, folderId, accessToken: run.accessToken, googleAccountId: run.accountId }
   } catch (err) {
     if (err instanceof DriveClaimLost) return lostClaim(ctx.projectId)
     throw err
@@ -276,6 +287,8 @@ async function openRun(deps: Deps, ctx: DriveContext, deadline: Date, mode: RunM
 
   let project: Folder | null = null
   return {
+    accessToken: token,
+    accountId,
     /** Both modes verify a stored Project folder: it is the parent of every folder a run
      *  makes. The root is checked only when a Project folder must be made under it; a
      *  folder inside a trashed or deleted root reads as trashed or missing itself. */

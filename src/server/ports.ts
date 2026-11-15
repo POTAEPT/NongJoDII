@@ -23,6 +23,11 @@ export interface LinePort {
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
   getMessageQuota(): Promise<{ limit: number | null; used: number }>
+  /** #4: the bytes of an image or file a user sent (GET api-data.line.me/v2/bot/message/{id}/content).
+   *  null when LINE answers 404 (the content is gone). `timeoutMs` cuts the whole call, body
+   *  included, so a big file cannot run past the route's limit. contentType: LINE's
+   *  Content-Type header, null when absent. */
+  getMessageContent(messageId: string, opts: { timeoutMs: number }): Promise<{ data: Uint8Array; contentType: string | null } | null>
   /** The bot leaves the group (POST /v2/bot/group/{id}/leave, #11). 'left': LINE answered
    *  200. 'not_in_group': LINE answered 404, so the bot is not in the group (it was removed,
    *  or an earlier leave went through and its answer was lost). Rejects on anything else
@@ -56,7 +61,11 @@ export interface GooglePort {
   getFolder(accessToken: string, folderId: string): Promise<DriveFolderState>
   /** "Anyone with the link can view" (permissions.create role reader, type anyone). */
   shareAnyoneReader(accessToken: string, fileId: string): Promise<void>
+  /** #4: uploads a file into `parentId` (files.create with media); it inherits the folder's
+   *  sharing. `timeoutMs` cuts the whole upload. Returns Drive's id and webViewLink. */
+  uploadFile(accessToken: string, f: DriveUpload, opts: { timeoutMs: number }): Promise<{ id: string; webViewLink: string }>
 }
+export type DriveUpload = { name: string; parentId: string; mimeType: string; data: Uint8Array }
 
 // ---- Supabase ----
 export type GroupRow = {
@@ -93,6 +102,16 @@ export type QuotedFileLookup =
   | { kind: 'no_message' }
   | { kind: 'no_file' }
   | { kind: 'file'; fileName: string; driveLink: string }
+/** #4: a files row. messageId: the stored message it was last sent in (null after an unsend). */
+export type SavedFile = {
+  id: string; groupId: string; messageId: string | null; fileName: string; driveLink: string; driveFileId: string
+  sizeBytes: number | null
+}
+export type NewFile = {
+  groupId: string; messageId: string; senderLineUserId: string | null; driveConnectionId: string
+  fileName: string; contentSha256: string; driveFileId: string; driveLink: string; sentAt: Date
+  savedAt: Date; sizeBytes: number
+}
 export type Member = { lineUserId: string; displayName: string | null; nicknames: string[]; role: string | null }
 export type Membership = 'live' | 'left' | 'none'
 export type NewSummary = {
@@ -127,12 +146,18 @@ export type TaskPatch = {
 export type DashboardMembership = {
   groupId: string; projectId: string; projectOwnerLineUserId: string; isPm: boolean; left: boolean
 }
+/** #84: one group in the 1:1 chat menu. */
+export type UserGroup = { groupId: string; name: string | null; isOwner: boolean }
 export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
 export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
 /** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
 export type DashboardTaskRow = {
   id: string; groupId: string; title: string; status: TaskStatus
   assigneeLineUserId: string | null; assigneeName: string | null; dueAt: Date | null
+}
+export type DashboardFileRow = {
+  id: string; groupId: string; fileName: string; driveLink: string; sizeBytes: number | null
+  savedAt: Date; senderName: string | null
 }
 export type AiPurpose = 'summary' | 'progress_decision'
 export type NewAiUsage = {
@@ -147,6 +172,7 @@ export type PushPurpose =
   | 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
   | 'owner_takeover' | 'subgroup_detached'   // #31
   | 'owner_needed'                           // #30
+  | 'file_saved'                             // #4
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -197,7 +223,11 @@ export type NewProgressPrompt = {
 export type ProgressPromptRow = NewProgressPrompt & {
   id: string; answer: ProgressAnswer | null; answeredByLineUserId: string | null; answeredAt: Date | null
 }
-export type MessageRef = { id: string; groupId: string; senderLineUserId: string | null; sentAt: Date }
+export type MessageRef = {
+  id: string; groupId: string; senderLineUserId: string | null; sentAt: Date
+  /** #7: set once someone pressed "ไม่ใช่การอัปเดตงาน" on this message's picker; its picks are then refused. */
+  progressDismissedAt: Date | null
+}
 /** A person's Yes on a card: the answer and the Task move are one transaction. */
 export type ProgressYes = {
   promptId: string; taskId: string; fromStatus: TaskStatus; toStatus: ProgressTarget
@@ -321,6 +351,26 @@ export interface StorePort {
   /** The stored message with this LINE message id in this group (never another group's),
    *  then the newest files row whose message_id points at it. */
   findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup>
+  // #4 file saver
+  /** The files row of this group with this content hash (unique files_one_per_hash), or null. */
+  findFileByHash(groupId: string, contentSha256: string): Promise<SavedFile | null>
+  /** INSERT ... ON CONFLICT (group_id, content_sha256) DO NOTHING. inserted false: another
+   *  save of the same content got in first; `file` is then that row. */
+  insertFile(f: NewFile): Promise<{ inserted: boolean; file: SavedFile }>
+  /** A re-sent file (same hash): points the row's message_id at the newest message that
+   *  carried it, so a quote-reply to that message (#33) finds the link. updated false when
+   *  the row is gone (group purged). */
+  linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }>
+  /** The Project's active drive_connections row, or null. */
+  findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null>
+  /** A photo batch (#4): how many messages of the group carry this imageSet ID, and how
+   *  many of those have a files row pointing at them. */
+  countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number }>
+  /** INSERT INTO image_set_cards ... ON CONFLICT DO NOTHING: claimed true for the one caller
+   *  that inserted the row, so one batch gets one "saved N photos" card. */
+  claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }>
+  /** #4 Dashboard: the newest `limit` files of each group, newest first, with the sender's LINE name. */
+  listDashboardFiles(groupIds: string[], limit: number): Promise<DashboardFileRow[]>
   // #15 Summary
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null
@@ -458,6 +508,8 @@ export interface StorePort {
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>
+  /** "ไม่ใช่การอัปเดตงาน": closes the message's picker. Only while not yet dismissed (first wins). */
+  dismissProgressPicker(messageId: string, byLineUserId: string, at: Date): Promise<{ updated: boolean }>
   findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null>           // kind mark_done, answer null
   /** Insert a mark_done card. prompt null when the Task already has an open one
    *  (unique index task_prompts_one_open_mark_done). */
@@ -521,6 +573,9 @@ export interface StorePort {
   // #17 Dashboard read. The id lists are groups the caller already decided the requester may see.
   /** The requester's rows (live and left) in groups that belong to a Project and still have the bot. */
   listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]>
+  /** #84: the groups this person is a live Member of while the bot is still in them, for the
+   *  1:1 chat menu. isOwner: they are the group's confirmed Owner. */
+  listUserGroups(lineUserId: string): Promise<UserGroup[]>
   /** Groups of these Projects that still have the bot: main group first, then by join time, then id. */
   listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]>
   /** Live Members (left_at is null) of these groups, by LINE name. */
@@ -655,6 +710,9 @@ export type HandlerConfig = { lineChannelSecret: string; liffId: string; tokenEn
 export type Deps = {
   line: LinePort; llm: LlmPort; google: GooglePort; store: StorePort
   now: () => Date; config: HandlerConfig
+  /** Waits `ms` (#4: the quiet wait of a photo batch without a total). Absent = setTimeout.
+   *  The test harness moves its clock instead. */
+  sleep?: (ms: number) => Promise<void>
 }
 export type Defer = (job: () => Promise<void>) => void
 export type ApiResult = { status: number; body: unknown }

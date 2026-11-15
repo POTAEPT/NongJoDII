@@ -31,7 +31,7 @@ export async function handleProgressPostback(deps: Deps, job: ProgressPostbackJo
   if (!action) return 'not_mine'
   const reply = (m: LineMessage) => deps.line.reply(job.replyToken, [m])
 
-  if (!job.userId && action.kind !== 'not_update') {
+  if (!job.userId) {
     await reply(loginMessage(deps.config.liffId, job.data))
     log('progress_needs_login', { groupId: job.groupId })
     return 'needs_login'
@@ -85,9 +85,21 @@ export async function resolveProgressAction(
   const now = deps.now()
   const say = (result: ProgressOutcome['result'], text: string): ProgressOutcome => ({ result, message: textMessage(text) })
 
-  if (action.kind === 'not_update') return say('dismissed', PROGRESS_REPLY.notUpdate)
-
   const members = await store.listLiveMembers(groupId)
+
+  if (action.kind === 'not_update') {
+    // Stored on the message, so the same card's Task buttons stop working afterwards.
+    const msg = await store.getMessageRef(action.messageId)
+    if (!msg || msg.groupId !== groupId) return say('gone', PROGRESS_REPLY.cardExpired)
+    // Only the person whose line it was may say it was not an update.
+    if (msg.senderLineUserId !== userId) {
+      log('progress_refused', { groupId, messageId: msg.id })
+      return say('refused', PROGRESS_REPLY.notAllowedDismiss(displayName(members, msg.senderLineUserId)))
+    }
+    if (!msg.progressDismissedAt) await store.dismissProgressPicker(msg.id, userId, now)
+    log('progress_dismissed', { groupId, messageId: msg.id })
+    return say('dismissed', PROGRESS_REPLY.notUpdate)
+  }
 
   /** null = may answer; otherwise the refusal. */
   const refusal = (task: TaskRow, subject: string | null): ProgressOutcome | null => {
@@ -123,9 +135,13 @@ export async function resolveProgressAction(
     if (!msg || msg.groupId !== groupId || !task || task.groupId !== groupId || task.deletedAt) {
       return say('gone', PROGRESS_REPLY.taskGone)
     }
+    // "ไม่ใช่การอัปเดตงาน" was pressed on this message's picker: its Task buttons are closed.
+    if (msg.progressDismissedAt) return say('already_answered', PROGRESS_REPLY.pickerClosed)
     const refused = refusal(task, msg.senderLineUserId)
     if (refused) return refused
-    if (task.status === action.targetStatus) return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
+    if (task.status === action.targetStatus) {
+      return say('already_answered', action.targetStatus === 'done' ? PROGRESS_REPLY.taskClosed : PROGRESS_REPLY.alreadyAnswered)
+    }
     if (!canMove(task.status, action.targetStatus)) return say('gone', PROGRESS_REPLY.taskGone)
     // The pick is the person's answer: a card row records it, answered at once.
     const { prompt: created } = await store.createProgressPrompt({
@@ -160,9 +176,17 @@ export async function resolveProgressAction(
   // "ผิดงาน" on a card already closed with No only shows the picker again (no write), so
   // a reopened LIFF link or a second press can still finish choosing the right Task.
   const reopenPicker = action.kind === 'wrong_task' && prompt.answer === 'no'
-  if (prompt.answer !== null && !reopenPicker) return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
+  if (prompt.answer !== null && !reopenPicker) {
+    // A card that already closed its Task says so, rather than only "answered".
+    const closed = prompt.answer === 'yes' && prompt.targetStatus === 'done' && task.status === 'done'
+    return say('already_answered', closed ? PROGRESS_REPLY.taskClosed : PROGRESS_REPLY.alreadyAnswered)
+  }
 
   if (action.kind === 'answer' && action.answer === 'yes') {
+    // Closed meanwhile another way (another card, the LIFF form, a reminder).
+    if (!task.deletedAt && task.status === 'done' && prompt.targetStatus === 'done') {
+      return say('already_answered', PROGRESS_REPLY.taskClosed)
+    }
     if (task.deletedAt || !canMove(task.status, prompt.targetStatus)) return say('gone', PROGRESS_REPLY.taskGone)
     return applyYes(prompt, task)
   }
@@ -181,6 +205,10 @@ export async function resolveProgressAction(
     prompt.subjectLineUserId,
   )
   if (others.length === 0 || !prompt.triggerMessageId) return say('kept', PROGRESS_REPLY.noOtherTask)
+  // A picker for this message that was already closed with "ไม่ใช่การอัปเดตงาน" stays closed.
+  if ((await store.getMessageRef(prompt.triggerMessageId))?.progressDismissedAt) {
+    return say('kept', PROGRESS_REPLY.pickerClosed)
+  }
   return {
     result: 'picker',
     message: pickerCard({ messageId: prompt.triggerMessageId, tasks: others, targetStatus: prompt.targetStatus }),

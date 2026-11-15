@@ -6,6 +6,7 @@ import type {
   CandidateRow,
   CandidateState,
   DashboardGroupRow,
+  UserGroup,
   DashboardMemberRow,
   DashboardMembership,
   DashboardTaskRow,
@@ -33,6 +34,9 @@ import type {
   MemberCheckGroup,
   DriveContext,
   DriveGroup,
+  DashboardFileRow,
+  NewFile,
+  SavedFile,
   DetachedSubGroup,
   CompleteOwnerChangeOutcome,
   OwnerChangeState,
@@ -76,7 +80,10 @@ function membershipOlderThan(row: GroupMemberRecord, at: Date): boolean {
   const last = row.membershipEventAt ?? row.leftAt
   return last === null || last < at
 }
-export type MessageRecord = NewMessage & { id: string }
+export type MessageRecord = NewMessage & {
+  id: string
+  progressDismissedAt?: Date | null; progressDismissedByLineUserId?: string | null // #7 picker dismissed
+}
 export type SummaryRecord = NewSummary & { id: string }
 export type CandidateRecord = CandidateRow & {
   decidedByLineUserId: string | null; decidedAt: Date | null; createdAt: Date
@@ -99,10 +106,13 @@ export type GoogleAccountRecord = {
   updatedAt: Date                     // set on every write, like the table's trigger
   signedInAt?: Date                   // google_accounts.connected_at: the last sign-in (#14)
 }
-/** public.files (#4 writes it; #33 reads it). Seeded with seedFile until #4 lands. */
+/** public.files (#4 writes it; #33 reads it). */
 export type FileRecord = {
   id: string; groupId: string; messageId: string | null; fileName: string; driveLink: string; savedAt: Date
+  senderLineUserId: string | null; driveConnectionId: string; contentSha256: string; driveFileId: string
+  sentAt: Date; sizeBytes: number | null
 }
+export type ImageSetCardRecord = { groupId: string; imageSetId: string; claimedAt: Date }
 export type DriveConnectionRecord = {
   id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
   statusChangedAt?: Date | null   // absent = null; set when the row is retired (#14)
@@ -161,6 +171,7 @@ export type FakeTables = {
   drive_connections: DriveConnectionRecord[]
   owner_prompts: OwnerPromptRecord[]
   files: FileRecord[]
+  image_set_cards: ImageSetCardRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -195,6 +206,7 @@ export class FakeStore implements StorePort {
     drive_connections: [],
     owner_prompts: [],
     files: [],
+    image_set_cards: [],
   }
 
   /** The database's now(), for columns it stamps itself (google_accounts.updated_at).
@@ -581,6 +593,81 @@ export class FakeStore implements StorePort {
     return { deleted: true }
   }
 
+  // ---- #4 file saver ----
+  private toSavedFile(f: FileRecord): SavedFile {
+    return {
+      id: f.id, groupId: f.groupId, messageId: f.messageId, fileName: f.fileName, driveLink: f.driveLink,
+      driveFileId: f.driveFileId, sizeBytes: f.sizeBytes,
+    }
+  }
+
+  async findFileByHash(groupId: string, contentSha256: string): Promise<SavedFile | null> {
+    this.fault('findFileByHash')
+    const f = this.tables.files.find((r) => r.groupId === groupId && r.contentSha256 === contentSha256)
+    return f ? this.toSavedFile(f) : null
+  }
+
+  /** ON CONFLICT (group_id, content_sha256) DO NOTHING, plus the FKs and the
+   *  files_check_drive_connection trigger (the connection is active and of the group's Project). */
+  async insertFile(f: NewFile): Promise<{ inserted: boolean; file: SavedFile }> {
+    this.fault('insertFile')
+    const clash = this.tables.files.find((r) => r.groupId === f.groupId && r.contentSha256 === f.contentSha256)
+    if (clash) return { inserted: false, file: this.toSavedFile(clash) }
+    fk(this.hasGroup(f.groupId), 'files.group_id')
+    fk(this.tables.messages.some((m) => m.id === f.messageId), 'files.message_id')
+    fk(this.hasLineUser(f.senderLineUserId), 'files.sender_line_user_id')
+    const conn = this.tables.drive_connections.find((c) => c.id === f.driveConnectionId)
+    fk(conn !== undefined, 'files.drive_connection_id')
+    if (conn?.projectId !== this.groupOf(f.groupId).projectId) throw new Error('check_violation: file Drive connection must belong to the Project')
+    if (conn?.status !== 'active') throw new Error('check_violation: file Drive connection must be active')
+    const row: FileRecord = { id: randomUUID(), ...f }
+    this.tables.files.push(row)
+    return { inserted: true, file: this.toSavedFile(row) }
+  }
+
+  async linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }> {
+    this.fault('linkFileToMessage')
+    const f = this.tables.files.find((r) => r.id === fileId)
+    if (!f) return { updated: false }
+    fk(this.tables.messages.some((m) => m.id === messageId), 'files.message_id')
+    f.messageId = messageId
+    return { updated: true }
+  }
+
+  async findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null> {
+    this.fault('findActiveDriveConnection')
+    const c = this.tables.drive_connections.find((r) => r.projectId === projectId && r.status === 'active')
+    return c ? { id: c.id, googleAccountId: c.googleAccountId } : null
+  }
+
+  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number }> {
+    this.fault('countImageSet')
+    const ids = this.tables.messages.filter((m) => m.groupId === groupId && m.imageSetId === imageSetId).map((m) => m.id)
+    const saved = ids.filter((id) => this.tables.files.some((f) => f.messageId === id)).length
+    return { messages: ids.length, saved }
+  }
+
+  async claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }> {
+    this.fault('claimImageSetCard')
+    if (this.tables.image_set_cards.some((c) => c.groupId === groupId && c.imageSetId === imageSetId)) return { claimed: false }
+    fk(this.hasGroup(groupId), 'image_set_cards.group_id')
+    this.tables.image_set_cards.push({ groupId, imageSetId, claimedAt: this.clock() })
+    return { claimed: true }
+  }
+
+  async listDashboardFiles(groupIds: string[], limit: number): Promise<DashboardFileRow[]> {
+    this.fault('listDashboardFiles')
+    return groupIds.flatMap((groupId) => this.tables.files
+      .filter((f) => f.groupId === groupId)
+      .sort((a, b) => b.savedAt.getTime() - a.savedAt.getTime() || (a.id < b.id ? 1 : -1))
+      .slice(0, limit)
+      .map((f) => ({
+        id: f.id, groupId: f.groupId, fileName: f.fileName, driveLink: f.driveLink, sizeBytes: f.sizeBytes,
+        savedAt: f.savedAt,
+        senderName: this.tables.line_users.find((u) => u.lineUserId === f.senderLineUserId)?.displayName ?? null,
+      })))
+  }
+
   // ---- #33 file request ----
   async findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup> {
     this.fault('findQuotedFile')
@@ -595,7 +682,19 @@ export class FakeStore implements StorePort {
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
     this.fault('getMessageRef')
     const m = this.tables.messages.find((row) => row.id === messageId)
-    return m ? { id: m.id, groupId: m.groupId, senderLineUserId: m.senderLineUserId, sentAt: m.sentAt } : null
+    return m
+      ? { id: m.id, groupId: m.groupId, senderLineUserId: m.senderLineUserId, sentAt: m.sentAt, progressDismissedAt: m.progressDismissedAt ?? null }
+      : null
+  }
+
+  async dismissProgressPicker(messageId: string, byLineUserId: string, at: Date): Promise<{ updated: boolean }> {
+    this.fault('dismissProgressPicker')
+    const m = this.tables.messages.find((row) => row.id === messageId && !row.progressDismissedAt)
+    if (!m) return { updated: false }
+    fk(this.hasLineUser(byLineUserId), 'messages.progress_dismissed_by_line_user_id')
+    m.progressDismissedAt = at
+    m.progressDismissedByLineUserId = byLineUserId
+    return { updated: true }
   }
 
   async findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null> {
@@ -727,6 +826,19 @@ export class FakeStore implements StorePort {
           isPm: m.isPm === true, left: m.leftAt !== null,
         }]
       })
+  }
+
+  async listUserGroups(lineUserId: string): Promise<UserGroup[]> {
+    this.fault('listUserGroups')
+    return this.tables.group_members
+      .filter((m) => m.lineUserId === lineUserId && m.leftAt === null)
+      .flatMap((m) => {
+        const g = this.tables.groups.find((row) => row.id === m.groupId)
+        const botLeft = this.tables.group_schedules.find((r) => r.groupId === m.groupId)?.leftAt ?? null
+        if (!g || botLeft !== null) return []
+        return [{ groupId: g.id, name: g.name, isOwner: g.ownerConfirmedAt !== null && g.nominatedOwnerLineUserId === lineUserId }]
+      })
+      .sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
   async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {
@@ -1786,7 +1898,8 @@ export class FakeStore implements StorePort {
     fk(p.messageId === null || this.tables.messages.some((m) => m.id === p.messageId), 'files.message_id')
     const row: FileRecord = {
       id: randomUUID(), groupId: p.groupId, messageId: p.messageId, fileName: p.fileName, driveLink: p.driveLink,
-      savedAt: p.savedAt ?? SEED_NOW,
+      savedAt: p.savedAt ?? SEED_NOW, senderLineUserId: null, driveConnectionId: 'seeded-connection',
+      contentSha256: randomUUID(), driveFileId: 'seeded-file', sentAt: p.savedAt ?? SEED_NOW, sizeBytes: null,
     }
     this.tables.files.push(row)
     return { ...row }

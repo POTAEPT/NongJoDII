@@ -12,7 +12,7 @@ function tickSecretMatches(given: string | null, expected: string): boolean {
 }
 
 /** The scheduler tick: Supabase pg_cron calls this every 15 minutes through pg_net
- *  (supabase/migrations/20261112180000_scheduler_ticks.sql). Like the webhook, it
+ *  (supabase/migrations/20261113085308_scheduler_ticks.sql). Like the webhook, it
  *  answers at once and does the work after the response; pg_net does not wait for it.
  *  The body is ignored: the jobs decide what is due from the clock and the database. */
 export async function handleTickRequest(

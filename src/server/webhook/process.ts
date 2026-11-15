@@ -4,6 +4,12 @@ import { log, logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
 import { handleProgressPostback } from '@/server/progress/handle-postback'
 import { handleProgressText } from '@/server/progress/handle-text'
+import { handleMemberLeft } from '@/server/members/left'
+import { handleMemberJoined } from '@/server/members/welcome'
+import { handleReminderCommand, handleReminderPostback } from '@/server/reminders/answer'
+import { parseReminderAction } from '@/server/reminders/postback'
+import { handleJoin } from '@/server/setup/join'
+import { replySettingsCard } from '@/server/settings/card'
 import { runSummaryCommand } from '@/server/summary/run-summary'
 import type { Job } from './ingest'
 
@@ -62,7 +68,7 @@ async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
   // The sender of a group message, or the person who pressed a button in a group.
   const senderLineUserId =
     job.kind === 'group_message' ? job.senderLineUserId : job.kind === 'group_postback' ? job.userId : null
-  if (job.kind === 'user_chat' || !senderLineUserId) return
+  if (job.kind === 'user_chat' || job.kind === 'group_join' || job.kind === 'member_left' || job.kind === 'member_joined' || !senderLineUserId) return
   const { lineGroupId } = job
   try {
     const user = await deps.store.findLineUser(senderLineUserId)
@@ -78,9 +84,22 @@ async function refreshSenderName(deps: Deps, job: Job): Promise<void> {
 async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<void> {
   if (job.kind === 'group_message') {
     const { senderLineUserId, lineGroupId, groupId, replyToken, text } = job
-    if (parseGroupCommand(text) === 'summarize') {
+    const command = parseGroupCommand(text)
+    if (command === 'summarize') {
       await namesReady
       await runSummaryCommand(deps, { groupId, lineGroupId, replyToken, requesterLineUserId: senderLineUserId })
+      return
+    }
+    // Typed fallbacks for the reminder buttons (#45). A command is never read as progress.
+    if (command === 'done' || command === 'need_time') {
+      if (replyToken && senderLineUserId) {
+        await namesReady
+        await handleReminderCommand(deps, { groupId, userId: senderLineUserId, command, replyToken })
+      }
+      return
+    }
+    if (command === 'settings') {
+      if (replyToken) await replySettingsCard(deps, { groupId, replyToken })
       return
     }
     // Any other text line may report progress on a Task (#7). Its card shows the sender's name.
@@ -95,8 +114,27 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
   if (job.kind === 'group_postback') {
     if (job.replyToken) {
       await namesReady
-      await handleProgressPostback(deps, { groupId: job.groupId, userId: job.userId, data: job.data, replyToken: job.replyToken })
+      // Reminder buttons (#45) and progress cards (#7) use different `a` codes.
+      if (parseReminderAction(job.data)) {
+        await handleReminderPostback(deps, {
+          groupId: job.groupId, userId: job.userId, data: job.data, pickedDate: job.pickedDate, replyToken: job.replyToken,
+        })
+      } else {
+        await handleProgressPostback(deps, { groupId: job.groupId, userId: job.userId, data: job.data, replyToken: job.replyToken })
+      }
     }
+    return
+  }
+  if (job.kind === 'group_join') {
+    await handleJoin(deps, job)
+    return
+  }
+  if (job.kind === 'member_left') {
+    await handleMemberLeft(deps, job)
+    return
+  }
+  if (job.kind === 'member_joined') {
+    await handleMemberJoined(deps, job)
     return
   }
   await sendConnectDriveCard(deps, job)

@@ -2,7 +2,7 @@ import type { ProgressLiffBody } from '@/server/progress/liff'
 
 // State of the LIFF progress page (#7), kept pure so it can be tested without a DOM.
 // Rule: once the page shows Task choices, they stay until a press actually finishes
-// (updated / kept / dismissed). A failed or refused pick shows a notice above the same
+// (updated / kept / dismissed, or a reminder's done / postponed / taken, #45). A failed or refused pick shows a notice above the same
 // choices, so the person can retry or pick another Task.
 
 export type ProgressPage = {
@@ -19,7 +19,7 @@ export type SendResult = { ok: true; body: ProgressLiffBody } | { ok: false; mes
 
 export const initialPage: ProgressPage = { sending: true, body: null, notice: null, fatal: null }
 
-const FINAL = new Set(['updated', 'kept', 'dismissed'])
+const FINAL = new Set(['updated', 'kept', 'dismissed', 'done', 'postponed', 'taken'])
 
 export function startSend(page: ProgressPage): ProgressPage {
   return { ...page, sending: true, notice: null }

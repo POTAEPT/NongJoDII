@@ -7,6 +7,8 @@ import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, type ParsedTask } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
+import { setupCard } from '../setup/card'
+import { isSetupOpen, setupState } from '../setup/rules'
 import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
 
@@ -17,10 +19,10 @@ const SUMMARY_MAX_TOKENS = 4000
 const TITLE_MAX = 200
 const DETAILS_MAX = 2000
 
-const REPLY_FEATURE_OFF = 'ฟีเจอร์สรุปแชทปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า'
-const REPLY_NO_OWNER = 'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชทไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน'
+const REPLY_FEATURE_OFF = 'ฟีเจอร์สรุปแชตปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า'
+const REPLY_NO_OWNER = 'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชตไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน'
 const REPLY_NO_MESSAGES = 'ยังไม่มีข้อความให้สรุป'
-const REPLY_FAILED = 'ขอโทษนะ ตอนนี้สรุปแชทไม่สำเร็จ ลองใหม่อีกครั้ง'
+const REPLY_FAILED = 'ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง'
 
 /** "NongJoDII summarize": summarizes recent chat into a Summary with Task candidates
  *  (proposals only; a Task exists only after confirm) and replies in the group that asked. */
@@ -50,7 +52,13 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   if (!group.featureSummarize) return replyText(deps, replyToken, groupId, REPLY_FEATURE_OFF, sent)
   // Owner-backed features run only with a confirmed Owner.
   if (!group.ownerConfirmedAt || !group.nominatedOwnerLineUserId) {
-    return replyText(deps, replyToken, groupId, REPLY_NO_OWNER, sent)
+    const messages: LineMessage[] = [{ type: 'text', text: REPLY_NO_OWNER }]
+    // Setup not finished (no Project yet): the #2a setup card rides on the same reply,
+    // the second way to it after the join reply (#52). It reaches groups whose join reply
+    // failed and groups the bot joined before onboarding existed. A group that has a
+    // Project but no confirmed Owner (the Owner left) needs an Owner change, not setup.
+    if (isSetupOpen(setupState(group))) messages.push(setupCard({ liffId: deps.config.liffId, groupId }))
+    return reply(deps, replyToken, groupId, messages, sent)
   }
   const ownerLineUserId = group.nominatedOwnerLineUserId
 

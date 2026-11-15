@@ -1,4 +1,5 @@
 import { log } from '../log'
+import { releaseIfLeft } from '../members/recheck'
 import type { ApiResult, Deps } from '../ports'
 import { badRequest, field } from '../review/load'
 import { statusFor, validateTaskFields } from './fields'
@@ -21,6 +22,11 @@ export async function updateTaskFromLiff(deps: Deps, body: unknown): Promise<Api
   // Deleted between the gate and the write: nothing was changed.
   if (!updated) return { status: 404, body: { error: 'not_found' } }
   log('task_edited', { taskId: task.id })
+  // #29: the assignee may have left the group after validateTaskFields read them as live.
+  const assignee = v.fields.assigneeLineUserId
+  if (assignee !== null) {
+    await releaseIfLeft(deps, { groupId: task.groupId, lineUserId: assignee, event: 'task_edit_assignee_left', taskId: task.id })
+  }
   const fresh = (await deps.store.getTask(task.id)) ?? task
   return { status: 200, body: await taskView(deps, fresh) }
 }

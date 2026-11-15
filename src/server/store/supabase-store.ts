@@ -3,8 +3,14 @@ import { AdapterError } from '../log'
 import type {
   AiUsageActual,
   AiUsageCap,
+  AnnounceClaim,
   CandidateRow,
+  DailyReminderGroup,
+  DriveContext,
+  DriveGroup,
   GroupRow,
+  GroupSetup,
+  GroupSettingsWrite, GroupSetupWrite,
   Member,
   Membership,
   MessageRef,
@@ -16,10 +22,13 @@ import type {
   NewSummary,
   NewTask,
   NewWebhookEvent,
+  OwnerConfirmOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
   ProgressAnswer,
   ProgressPromptRow,
+  ReminderTask,
+  SetupOutcome,
   StorePort,
   StoredMessage,
   SummaryRow,
@@ -55,6 +64,15 @@ import {
 
 const GROUP_COLS =
   'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind'
+const SETUP_COLS =
+  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at, owner_nominated_at'
+type DbGroupSetup = {
+  id: string; line_group_id: string; name: string | null; project_id: string | null; work_description: string | null
+  feature_summarize: boolean; feature_draft_tasks: boolean; feature_save_files: boolean
+  feature_track_remind: boolean; feature_weekly_summary: boolean
+  daily_reminder_time: string; weekly_summary_weekday: number; weekly_summary_time: string
+  nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null; owner_nominated_at: string | null
+}
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
 const TASK_COLS =
@@ -76,8 +94,9 @@ function toPromptRow(r: DbPrompt): ProgressPromptRow {
   }
 }
 
-/** Page size for listWeeklySummaryGroups; equal to PostgREST max_rows in supabase/config.toml. */
-export const WEEKLY_PAGE = 1000
+/** Page size of every paged list read; equal to PostgREST max_rows in supabase/config.toml,
+ *  which caps each answer. */
+export const PAGE_SIZE = 1000
 
 type PgError = { code: string } | null
 
@@ -85,8 +104,45 @@ function check(method: keyof StorePort, error: PgError): void {
   if (error) throw new AdapterError(`supabase ${method}: ${error.code}`)
 }
 
+/** IN lists go out this many values at a time, so the request URL stays short
+ *  (a LINE user ID or a UUID is 33 to 36 characters). */
+export const IN_CHUNK = 100
+
+function chunks<T>(values: T[]): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < values.length; i += IN_CHUNK) out.push(values.slice(i, i + IN_CHUNK))
+  return out
+}
+
+/** Every row of a list read, PAGE_SIZE rows at a time, so max_rows never hides the rows
+ *  after the first page. `page(from, to)` is the query with .order() on a unique key (id)
+ *  and .range(from, to); a short page is the last one. */
+async function readAllPages<R>(
+  method: keyof StorePort,
+  page: (from: number, to: number) => PromiseLike<{ data: unknown; error: PgError }>,
+): Promise<R[]> {
+  const out: R[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await page(from, from + PAGE_SIZE - 1)
+    check(method, error)
+    const rows = (data ?? []) as R[]
+    out.push(...rows)
+    if (rows.length < PAGE_SIZE) return out
+  }
+}
+
 function iso(d: Date | null): string | null {
   return d === null ? null : d.toISOString()
+}
+
+/** Settings writes this many Members' rows at once (#28). Agent choice. */
+const SETTINGS_MEMBER_WRITES = 10
+
+/** PostgREST filter: the row's last membership event is older than `iso`. A row from before
+ *  membership_event_at existed falls back to left_at (its last applied leave), and a live
+ *  row with neither has seen no event. */
+function membershipOlderThan(iso: string): string {
+  return `membership_event_at.lt."${iso}",and(membership_event_at.is.null,or(left_at.is.null,left_at.lt."${iso}"))`
 }
 
 export class SupabaseStore implements StorePort {
@@ -106,6 +162,16 @@ export class SupabaseStore implements StorePort {
       .select('webhook_event_id')
     check('recordWebhookEvent', error)
     return { inserted: (data ?? []).length === 1 }
+  }
+
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from('webhook_events')
+      .select('webhook_event_id')
+      .eq('webhook_event_id', webhookEventId)
+      .maybeSingle()
+    check('hasWebhookEvent', error)
+    return data !== null
   }
 
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
@@ -190,6 +256,17 @@ export class SupabaseStore implements StorePort {
     check('insertMessage', error)
     const rows = (data ?? []) as { id: string }[]
     return rows.length === 1 ? { inserted: true, id: rows[0].id } : { inserted: false, id: null }
+  }
+
+  // ---- #24 unsend ----
+  async deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }> {
+    const { data, error } = await this.db
+      .from('messages')
+      .delete()
+      .eq('line_message_id', lineMessageId)
+      .select('id')
+    check('deleteMessageByLineId', error)
+    return { deleted: (data ?? []).length > 0 }
   }
 
   // ---- #15 Summary ----
@@ -320,23 +397,87 @@ export class SupabaseStore implements StorePort {
     return data ? toTaskRow(data as unknown as DbTask) : null
   }
 
-  async claimTaskAnnouncements(taskIds: string[], at: Date): Promise<string[]> {
-    if (taskIds.length === 0) return []
-    const { data, error } = await this.db
+  // Several statements, no RPC: each one is atomic, and its WHERE clause is
+  // rechecked against the locked row, so two claims do not both take a batch as long
+  // as they lock rows in a consistent order. A concurrent re-claim can still abort on
+  // a deadlock; the batch then recovers through the stale path.
+  async claimTaskAnnouncements(c: AnnounceClaim): Promise<{ taskId: string; token: string }[]> {
+    if (c.taskIds.length === 0) return []
+    type Held = { id: string; announce_pending_token: string }
+    const held = await this.db
       .from('tasks')
-      .update({ announced_at: at.toISOString() })
-      .in('id', taskIds)
+      .select('id, announce_pending_token')
+      .in('id', c.taskIds)
       .is('announced_at', null)
       .is('deleted_at', null)
+      .not('announce_pending_token', 'is', null)
+    check('claimTaskAnnouncements', held.error)
+    const tokens = [...new Set(((held.data ?? []) as Held[]).map((r) => r.announce_pending_token))]
+    const out: { taskId: string; token: string }[] = []
+    if (tokens.length > 0) {
+      // A released batch (pending_at null), then a stale one; a live claim is left alone.
+      const released = await this.db
+        .from('tasks')
+        .update({ announce_pending_at: c.at.toISOString() })
+        .in('announce_pending_token', tokens)
+        .is('announced_at', null)
+        .is('deleted_at', null)
+        .is('announce_pending_at', null)
+        .select('id, announce_pending_token')
+      check('claimTaskAnnouncements', released.error)
+      const stale = await this.db
+        .from('tasks')
+        .update({ announce_pending_at: c.at.toISOString() })
+        .in('announce_pending_token', tokens)
+        .is('announced_at', null)
+        .is('deleted_at', null)
+        .lt('announce_pending_at', c.staleBefore.toISOString())
+        .select('id, announce_pending_token')
+      check('claimTaskAnnouncements', stale.error)
+      for (const r of [...((released.data ?? []) as Held[]), ...((stale.data ?? []) as Held[])]) {
+        out.push({ taskId: r.id, token: r.announce_pending_token })
+      }
+    }
+    const fresh = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: c.token, announce_pending_at: c.at.toISOString() })
+      .in('id', c.taskIds)
+      .is('announced_at', null)
+      .is('deleted_at', null)
+      .is('announce_pending_token', null)
       .select('id')
-    check('claimTaskAnnouncements', error)
-    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+    check('claimTaskAnnouncements', fresh.error)
+    for (const r of (fresh.data ?? []) as { id: string }[]) out.push({ taskId: r.id, token: c.token })
+    return out
   }
 
-  async releaseTaskAnnouncements(taskIds: string[]): Promise<void> {
-    if (taskIds.length === 0) return
-    const { error } = await this.db.from('tasks').update({ announced_at: null }).in('id', taskIds)
+  async confirmTaskAnnouncements(token: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announced_at: at.toISOString(), announce_pending_token: null, announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .is('announced_at', null)
+    check('confirmTaskAnnouncements', error)
+  }
+
+  async releaseTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
+      .is('announced_at', null)
     check('releaseTaskAnnouncements', error)
+  }
+
+  async abandonTaskAnnouncements(token: string, claimedAt: Date): Promise<void> {
+    const { error } = await this.db
+      .from('tasks')
+      .update({ announce_pending_token: null, announce_pending_at: null })
+      .eq('announce_pending_token', token)
+      .eq('announce_pending_at', claimedAt.toISOString())
+      .is('announced_at', null)
+    check('abandonTaskAnnouncements', error)
   }
 
   async claimPushBudget(c: PushBudgetClaim): Promise<{ pushLogId: string | null }> {
@@ -531,7 +672,7 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #20 weekly insight ----
-  /** Pages of WEEKLY_PAGE rows ordered by id, so PostgREST max_rows (1000) never hides
+  /** Pages of PAGE_SIZE rows ordered by id, so PostgREST max_rows (1000) never hides
    *  the groups after the first page. */
   async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     type Row = {
@@ -539,7 +680,7 @@ export class SupabaseStore implements StorePort {
       weekly_summary_time: string; weekly_summary_last_sent_on: string | null
     }
     const out: WeeklySummaryGroup[] = []
-    for (let from = 0; ; from += WEEKLY_PAGE) {
+    for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from('groups')
         .select('id, line_group_id, weekly_summary_weekday, weekly_summary_time, weekly_summary_last_sent_on')
@@ -548,7 +689,7 @@ export class SupabaseStore implements StorePort {
         .eq('feature_weekly_summary', true)
         .eq('weekly_summary_weekday', weekday)
         .order('id')
-        .range(from, from + WEEKLY_PAGE - 1)
+        .range(from, from + PAGE_SIZE - 1)
       check('listWeeklySummaryGroups', error)
       const rows = (data ?? []) as Row[]
       for (const r of rows) {
@@ -557,7 +698,7 @@ export class SupabaseStore implements StorePort {
           time: r.weekly_summary_time, lastSentOn: r.weekly_summary_last_sent_on,
         })
       }
-      if (rows.length < WEEKLY_PAGE) return out
+      if (rows.length < PAGE_SIZE) return out
     }
   }
 
@@ -639,29 +780,673 @@ export class SupabaseStore implements StorePort {
     return data !== null
   }
 
+  async markWeeklyInsightPosted(groupId: string, weekStart: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('weekly_insights')
+      .update({ posted_at: at.toISOString() })
+      .eq('group_id', groupId)
+      .eq('week_start', weekStart)
+      .is('posted_at', null)
+    check('markWeeklyInsightPosted', error)
+  }
+
+  // ---- #44 daily reminders ----
+  /** Pages of PAGE_SIZE rows ordered by id, as listWeeklySummaryGroups. */
+  async listDailyReminderGroups(): Promise<DailyReminderGroup[]> {
+    type Row = { id: string; line_group_id: string; daily_reminder_time: string; daily_reminder_last_sent_on: string | null }
+    const out: DailyReminderGroup[] = []
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, daily_reminder_time, daily_reminder_last_sent_on')
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .eq('feature_track_remind', true)
+        .order('id')
+        .range(from, from + PAGE_SIZE - 1)
+      check('listDailyReminderGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({ groupId: r.id, lineGroupId: r.line_group_id, time: r.daily_reminder_time, lastSentOn: r.daily_reminder_last_sent_on })
+      }
+      if (rows.length < PAGE_SIZE) return out
+    }
+  }
+
+  async claimDailyReminder(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    // One logic tree, so both conditions hold: the day is not complete, and no live claim.
+    const notSent = `or(daily_reminder_last_sent_on.is.null,daily_reminder_last_sent_on.lt.${todayBkk})`
+    const noLiveClaim = `or(daily_reminder_claimed_at.is.null,daily_reminder_claimed_at.lt."${staleBefore.toISOString()}")`
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_claimed_at: at.toISOString() })
+      .eq('id', groupId)
+      .or(`and(${notSent},${noLiveClaim})`)
+      .select('id')
+    check('claimDailyReminder', error)
+    return { claimed: (data?.length ?? 0) > 0 }
+  }
+
+  async finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_last_sent_on: todayBkk, daily_reminder_claimed_at: null })
+      .eq('id', groupId)
+      .eq('daily_reminder_claimed_at', at.toISOString())
+    check('finishDailyReminder', error)
+  }
+
+  async releaseDailyReminder(groupId: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ daily_reminder_claimed_at: null })
+      .eq('id', groupId)
+      .eq('daily_reminder_claimed_at', at.toISOString())
+    check('releaseDailyReminder', error)
+  }
+
+  // ---- #45 reminder answers ----
+  // Done and Postpone also require `by` to still own the Task, so a reassignment between the
+  // check and the write is never overridden by the former owner.
+  async markTaskDone(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ status: 'done', done_at: at, last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
+      .neq('status', 'done')
+      .select('id')
+    check('markTaskDone', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ due_at: t.dueAt.toISOString(), last_activity_at: t.at.toISOString(), last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('assignee_line_user_id', t.by) // still the owner at write time
+      .neq('status', 'done')
+      .select('id')
+    check('postponeTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ assignee_line_user_id: t.by, status: 'in_process', last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .is('assignee_line_user_id', null)
+      .neq('status', 'done')
+      .select('id')
+    check('takeTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  // ---- #29 member leaves ----
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    // A person with no row yet gets a left row, so a message of theirs that arrives after
+    // the leave (LINE does not guarantee order) cannot add them back: touchGroupMember only
+    // inserts when no row exists. source 'message': seen through a group event.
+    const { data: added, error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'message', left_at: at, membership_event_at: at },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+      .select('line_user_id')
+    check('markMemberLeft', addError)
+    if ((added?.length ?? 0) > 0) return { updated: true }
+    // Only a leave newer than the last leave or join applied to the row. An older one (a late
+    // first delivery after a rejoin) leaves a current Member alone.
+    const { data, error } = await this.db
+      .from('group_members')
+      .update({ left_at: at, membership_event_at: at })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .or(membershipOlderThan(at))
+      .select('line_user_id')
+    check('markMemberLeft', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    const at = t.at.toISOString()
+    const { error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'member_join', membership_event_at: at },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+    check('markMemberJoined', addError)
+    // Only a join newer than the last leave or join applied: a late join never undoes a
+    // later leave.
+    const { error } = await this.db
+      .from('group_members')
+      .update({ left_at: null, membership_event_at: at })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .or(membershipOlderThan(at))
+    check('markMemberJoined', error)
+  }
+
+  async saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }> {
+    // The Owner check is part of the UPDATE, so an Owner change between the page's check and
+    // this write saves nothing.
+    const { data, error } = await this.db
+      .from('groups')
+      .update({
+        work_description: w.workDescription,
+        feature_summarize: w.features.summarize, feature_draft_tasks: w.features.draftTasks,
+        feature_save_files: w.features.saveFiles, feature_track_remind: w.features.trackRemind,
+        feature_weekly_summary: w.features.weeklySummary,
+        daily_reminder_time: w.dailyReminderTime, weekly_summary_weekday: w.weeklySummaryWeekday,
+        weekly_summary_time: w.weeklySummaryTime,
+      })
+      .eq('id', w.groupId)
+      .eq('nominated_owner_line_user_id', w.ownerLineUserId)
+      .not('owner_confirmed_at', 'is', null)
+      .select('id')
+    check('saveGroupSettings', error)
+    if ((data?.length ?? 0) === 0) return { saved: false }
+    // Up to SETTINGS_MEMBER_WRITES at a time, so a save that touches many Members does not
+    // wait through one request after another.
+    for (let i = 0; i < w.members.length; i += SETTINGS_MEMBER_WRITES) {
+      await Promise.all(w.members.slice(i, i + SETTINGS_MEMBER_WRITES).map(async (m) => {
+        const { error: memberError } = await this.db
+          .from('group_members')
+          .update({ nicknames: m.nicknames, role: m.role })
+          .eq('group_id', w.groupId)
+          .eq('line_user_id', m.lineUserId)
+          .is('left_at', null)
+        check('saveGroupSettings', memberError)
+      }))
+    }
+    return { saved: true }
+  }
+
+  async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('group_members')
+      .update({ nicknames: t.nicknames, role: t.role })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .is('left_at', null)
+      .select('line_user_id')
+    check('setMemberProfile', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    // One database step (release_tasks_if_left locks the membership row first), so a newer
+    // join cannot land between the membership check and the release.
+    const { data, error } = await this.db
+      .rpc('release_tasks_if_left', { p_group_id: t.groupId, p_line_user_id: t.lineUserId })
+      .select(TASK_COLS)
+    check('releaseTasksIfLeft', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
+  }
+
+  /** Every open Task, in pages of PAGE_SIZE ordered by created_at then id, so PostgREST
+   *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
+  async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
+    type Row = {
+      id: string; title: string; status: TaskStatus; assignee_line_user_id: string | null
+      due_at: string | null; last_activity_at: string | null; deleted_at: string | null
+    }
+    const out: ReminderTask[] = []
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await this.db
+        .from('tasks')
+        .select('id, title, status, assignee_line_user_id, due_at, last_activity_at, deleted_at')
+        .eq('group_id', groupId)
+        .is('deleted_at', null)
+        .neq('status', 'done')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1)
+      check('listReminderTasks', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        out.push({
+          id: r.id, title: r.title, status: r.status, assigneeLineUserId: r.assignee_line_user_id,
+          dueAt: toDate(r.due_at), lastActivityAt: toDate(r.last_activity_at), deletedAt: toDate(r.deleted_at),
+        })
+      }
+      if (rows.length < PAGE_SIZE) return out
+    }
+  }
+
+  // ---- #52 onboarding ----
+  async setGroupName(groupId: string, name: string): Promise<void> {
+    const { error } = await this.db.from('groups').update({ name }).eq('id', groupId)
+    check('setGroupName', error)
+  }
+
+  async getGroupSetup(groupId: string): Promise<GroupSetup | null> {
+    const { data, error } = await this.db.from('groups').select(SETUP_COLS).eq('id', groupId).maybeSingle()
+    check('getGroupSetup', error)
+    const r = data as DbGroupSetup | null
+    if (!r) return null
+    return {
+      groupId: r.id, lineGroupId: r.line_group_id, name: r.name, projectId: r.project_id,
+      workDescription: r.work_description,
+      features: {
+        summarize: r.feature_summarize, draftTasks: r.feature_draft_tasks, saveFiles: r.feature_save_files,
+        trackRemind: r.feature_track_remind, weeklySummary: r.feature_weekly_summary,
+      },
+      // time columns arrive as 'HH:MM:SS'; the form speaks 'HH:MM'.
+      dailyReminderTime: r.daily_reminder_time.slice(0, 5),
+      weeklySummaryWeekday: r.weekly_summary_weekday,
+      weeklySummaryTime: r.weekly_summary_time.slice(0, 5),
+      nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
+      ownerNominatedAt: toDate(r.owner_nominated_at),
+    }
+  }
+
+  async saveGroupSetup(w: GroupSetupWrite): Promise<{ outcome: SetupOutcome }> {
+    const { data, error } = await this.db.rpc('setup_group', {
+      p_group_id: w.groupId, p_by: w.byLineUserId, p_work_description: w.workDescription,
+      p_feature_summarize: w.features.summarize, p_feature_draft_tasks: w.features.draftTasks,
+      p_feature_save_files: w.features.saveFiles, p_feature_track_remind: w.features.trackRemind,
+      p_feature_weekly_summary: w.features.weeklySummary,
+      p_daily_reminder_time: w.dailyReminderTime, p_weekly_summary_weekday: w.weeklySummaryWeekday,
+      p_weekly_summary_time: w.weeklySummaryTime,
+      p_members: w.members.map((m) => ({ line_user_id: m.lineUserId, nicknames: m.nicknames, role: m.role })),
+      p_owner: w.ownerLineUserId, p_at: w.at.toISOString(),
+    })
+    check('saveGroupSetup', error)
+    if (data !== 'confirmed' && data !== 'pending' && data !== 'closed' && data !== 'owner_not_member') {
+      throw new Error('saveGroupSetup: unexpected result from setup_group')
+    }
+    return { outcome: data }
+  }
+
+  async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {
+    const { data, error } = await this.db.rpc('confirm_group_owner', {
+      p_group_id: groupId, p_line_user_id: lineUserId, p_at: at.toISOString(),
+    })
+    check('confirmGroupOwner', error)
+    const outcomes: OwnerConfirmOutcome[] = ['confirmed', 'already_confirmed', 'not_nominee', 'not_member', 'closed']
+    if (!outcomes.includes(data as OwnerConfirmOutcome)) {
+      throw new Error('confirmGroupOwner: unexpected result from confirm_group_owner')
+    }
+    return { outcome: data as OwnerConfirmOutcome }
+  }
+
   // ---- #12 Google ----
-  async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
+  async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     // refresh_token_ciphertext is text: the sealed 'v1.<iv>.<tag>.<ct>' string as-is.
-    const { error } = await this.db.from('google_accounts').upsert(
+    // connected_at is written on every sign-in (#14): it orders a person's accounts.
+    const { data, error } = await this.db.from('google_accounts').upsert(
       {
         line_user_id: a.lineUserId, google_subject: a.googleSubject, email: a.email,
         granted_scopes: a.grantedScopes, refresh_token_ciphertext: a.refreshTokenCiphertext, token_status: 'valid',
+        connected_at: a.signedInAt.toISOString(),
       },
       { onConflict: 'google_subject' },
-    )
+    ).select('id').maybeSingle()
     check('upsertGoogleAccount', error)
+    const row = data as { id: string } | null
+    if (!row) throw new AdapterError('supabase upsertGoogleAccount: no row')
+    return { id: row.id }
   }
 
-  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
+  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null> {
     const { data, error } = await this.db
       .from('google_accounts')
-      .select('id, token_status')
+      .select('id, token_status, connected_at')
       .eq('line_user_id', lineUserId)
-      .order('updated_at', { ascending: false })
+      .order('connected_at', { ascending: false })
       .limit(1)
       .maybeSingle()
     check('findGoogleAccountByLineUser', error)
-    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired' } | null
-    return row ? { id: row.id, tokenStatus: row.token_status } : null
+    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired'; connected_at: string } | null
+    return row ? { id: row.id, tokenStatus: row.token_status, signedInAt: toDate(row.connected_at) } : null
+  }
+
+  async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
+    const { data, error } = await this.db
+      .from('google_accounts')
+      .update({ token_status: 'revoked', refresh_token_ciphertext: null })
+      .eq('id', googleAccountId)
+      .eq('token_status', 'valid')
+      .eq('refresh_token_ciphertext', refreshTokenCiphertext)
+      .select('id')
+    check('markGoogleAccountRevoked', error)
+    return { revoked: ((data ?? []) as unknown[]).length > 0 }
+  }
+
+  // ---- #13 Drive folders ----
+  async listConfirmedOwnerProjects(lineUserId: string): Promise<string[]> {
+    // A confirmed main group names the Project's owner (check_same_owner), so the
+    // groups row alone answers it.
+    const rows = await readAllPages<{ project_id: string }>('listConfirmedOwnerProjects', (from, to) =>
+      this.db
+        .from('groups')
+        .select('project_id')
+        .eq('is_main', true)
+        .eq('nominated_owner_line_user_id', lineUserId)
+        .not('owner_confirmed_at', 'is', null)
+        .not('project_id', 'is', null)
+        .is('left_at', null)
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.project_id)
+  }
+
+  async getDriveContext(projectId: string): Promise<DriveContext | null> {
+    const { data: p, error } = await this.db
+      .from('projects')
+      .select('id, owner_line_user_id, drive_project_folder_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check('getDriveContext', error)
+    const project = p as { id: string; owner_line_user_id: string; drive_project_folder_id: string | null } | null
+    if (!project) return null
+    type G = { id: string; line_group_id: string; name: string | null; is_main: boolean; drive_folder_id: string | null }
+    const [rows, account, active] = await Promise.all([
+      readAllPages<G>('getDriveContext', (from, to) =>
+        this.db
+          .from('groups')
+          .select('id, line_group_id, name, is_main, drive_folder_id')
+          .eq('project_id', projectId)
+          .not('owner_confirmed_at', 'is', null)
+          .is('left_at', null)
+          .order('id')
+          .range(from, to)),
+      // The Owner's latest account (last sign-in), as findGoogleAccountByLineUser.
+      this.db
+        .from('google_accounts')
+        .select('id, token_status, refresh_token_ciphertext, drive_root_folder_id')
+        .eq('line_user_id', project.owner_line_user_id)
+        .order('connected_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      this.db
+        .from('drive_connections')
+        .select('google_account_id')
+        .eq('project_id', projectId)
+        .eq('status', 'active')
+        .maybeSingle(),
+    ])
+    check('getDriveContext', account.error)
+    check('getDriveContext', active.error)
+    const toDrive = (g: G): DriveGroup => ({
+      groupId: g.id, lineGroupId: g.line_group_id, name: g.name, folderId: g.drive_folder_id,
+    })
+    const main = rows.find((g) => g.is_main)
+    const a = account.data as {
+      id: string; token_status: 'valid' | 'revoked' | 'expired'
+      refresh_token_ciphertext: string | null; drive_root_folder_id: string | null
+    } | null
+    return {
+      projectId, ownerLineUserId: project.owner_line_user_id, projectFolderId: project.drive_project_folder_id,
+      mainGroup: main ? toDrive(main) : null,
+      subGroups: rows.filter((g) => !g.is_main).map(toDrive),
+      account: a
+        ? { id: a.id, tokenStatus: a.token_status, refreshTokenCiphertext: a.refresh_token_ciphertext, rootFolderId: a.drive_root_folder_id }
+        : null,
+      activeAccountId: (active.data as { google_account_id: string } | null)?.google_account_id ?? null,
+    }
+  }
+
+  async setDriveRootFolder(googleAccountId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    return this.setFolder('setDriveRootFolder', 'google_accounts', 'drive_root_folder_id', googleAccountId, from, to)
+  }
+
+  async setProjectDriveFolder(projectId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    return this.setFolder('setProjectDriveFolder', 'projects', 'drive_project_folder_id', projectId, from, to)
+  }
+
+  async setGroupDriveFolder(groupId: string, from: string | null, to: string): Promise<{ folderId: string | null }> {
+    return this.setFolder('setGroupDriveFolder', 'groups', 'drive_folder_id', groupId, from, to)
+  }
+
+  /** One UPDATE ... WHERE id = $1 AND col IS NOT DISTINCT FROM `from`; when it matched no
+   *  row, reads what the column holds now. */
+  private async setFolder(
+    method: keyof StorePort, table: string, column: string, id: string, from: string | null, to: string,
+  ): Promise<{ folderId: string | null }> {
+    const base = this.db.from(table).update({ [column]: to }).eq('id', id)
+    const { data, error } = await (from === null ? base.is(column, null) : base.eq(column, from)).select('id')
+    check(method, error)
+    if (((data ?? []) as unknown[]).length > 0) return { folderId: to }
+    const { data: row, error: readError } = await this.db.from(table).select(column).eq('id', id).maybeSingle()
+    check(method, readError)
+    return { folderId: ((row as Record<string, string | null> | null)?.[column]) ?? null }
+  }
+
+  async claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }> {
+    const holder = async (): Promise<string | null> => {
+      const { data, error } = await this.db
+        .from('drive_connections')
+        .select('google_account_id')
+        .eq('project_id', projectId)
+        .eq('status', 'active')
+        .limit(1)
+      check('claimDriveConnection', error)
+      return ((data ?? []) as { google_account_id: string }[])[0]?.google_account_id ?? null
+    }
+    const held = await holder()
+    if (held !== null) return { created: false, accountId: held }
+    // The partial unique index drive_connections_one_active cannot be an ON CONFLICT
+    // target through PostgREST, so a concurrent claim shows as 23505: that claim holds it.
+    const { error: insertError } = await this.db
+      .from('drive_connections')
+      .insert({ project_id: projectId, google_account_id: googleAccountId, status: 'active' })
+    if (insertError?.code === '23505') {
+      const winner = await holder()
+      if (winner === null) throw new AdapterError('supabase claimDriveConnection: no holder')
+      return { created: false, accountId: winner }
+    }
+    check('claimDriveConnection', insertError)
+    return { created: true, accountId: googleAccountId }
+  }
+
+  async listDriveConnectedProjects(): Promise<string[]> {
+    const rows = await readAllPages<{ project_id: string }>('listDriveConnectedProjects', (from, to) =>
+      this.db
+        .from('drive_connections')
+        .select('project_id')
+        .eq('status', 'active')
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.project_id)
+  }
+
+  async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
+    const m = 'retireDriveConnection'
+    // Separate statements, so what this guarantees is narrow and stated here:
+    //  * Only folder IDs read before the active row was read are cleared (the clears match
+    //    on those IDs). An ID stored after those reads is never cleared by this call.
+    //  * The row is retired last, and only if it is still the active row read at the
+    //    start: re-read after the clears, then an UPDATE that matches id and 'active'.
+    //  * A call that stops part-way leaves the row active; the same call again finishes.
+    // Not guaranteed: a Drive run of the old account that is already under way can still
+    // store a folder ID or claim the Project after this call (that needs a holder check
+    // inside the folder UPDATE, so a database function).
+    const { data: p, error: projectError } = await this.db
+      .from('projects')
+      .select('drive_project_folder_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check(m, projectError)
+    const projectFolderId = (p as { drive_project_folder_id: string | null } | null)?.drive_project_folder_id ?? null
+    const groupFolderIds = (await readAllPages<{ drive_folder_id: string }>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('drive_folder_id')
+        .eq('project_id', projectId)
+        .not('drive_folder_id', 'is', null)
+        .order('id')
+        .range(from, to))).map((g) => g.drive_folder_id)
+    const { data, error } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, error)
+    const active = data as { id: string; google_account_id: string } | null
+    if (!active || active.google_account_id === keepGoogleAccountId) return { retired: false }
+    // Cleared first, retired last: until the last statement the row is still active, so a
+    // run that stops here is seen and repeated by the next sign-in.
+    if (projectFolderId !== null) {
+      const { error: clearError } = await this.db
+        .from('projects')
+        .update({ drive_project_folder_id: null })
+        .eq('id', projectId)
+        .eq('drive_project_folder_id', projectFolderId)
+      check(m, clearError)
+    }
+    for (const chunk of chunks(groupFolderIds)) {
+      const { error: clearError } = await this.db
+        .from('groups')
+        .update({ drive_folder_id: null })
+        .eq('project_id', projectId)
+        .in('drive_folder_id', chunk)
+      check(m, clearError)
+    }
+    const { data: again, error: againError } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, againError)
+    if ((again as { id: string } | null)?.id !== active.id) return { retired: false }
+    const retired = await this.db
+      .from('drive_connections')
+      .update({ status: 'replaced', status_changed_at: at.toISOString() })
+      .eq('id', active.id)
+      .eq('status', 'active')
+      .select('id')
+    check(m, retired.error)
+    return { retired: ((retired.data ?? []) as unknown[]).length > 0 }
+  }
+
+  /** Flat reads joined here, no embedded filters: the Owners with a confirm or a Google
+   *  account write since `from`, then their accounts and main groups, then, for the
+   *  Projects in the window, the empty folder IDs and the active connection holders. Every
+   *  read is paged; every IN list is chunked. */
+  async listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]> {
+    const m = 'listUnfinishedDriveProjects'
+    const since = from.toISOString()
+    const [confirmed, signedIn] = await Promise.all([
+      readAllPages<{ nominated_owner_line_user_id: string }>(m, (a, b) =>
+        this.db
+          .from('groups')
+          .select('nominated_owner_line_user_id')
+          .eq('is_main', true)
+          .not('project_id', 'is', null)
+          .is('left_at', null)
+          .gte('owner_confirmed_at', since)
+          .order('id')
+          .range(a, b)),
+      readAllPages<{ line_user_id: string }>(m, (a, b) =>
+        this.db
+          .from('google_accounts')
+          .select('line_user_id')
+          .gte('updated_at', since)
+          .order('id')
+          .range(a, b)),
+    ])
+    const owners = [...new Set([
+      ...confirmed.map((r) => r.nominated_owner_line_user_id), ...signedIn.map((r) => r.line_user_id),
+    ])]
+
+    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string; connected_at: string }
+    type Main = { project_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
+    const accounts: Account[] = []
+    const mains: Main[] = []
+    for (const chunk of chunks(owners)) {
+      const [a, g] = await Promise.all([
+        readAllPages<Account>(m, (x, y) =>
+          this.db
+            .from('google_accounts')
+            .select('id, line_user_id, token_status, updated_at, connected_at')
+            .in('line_user_id', chunk)
+            .order('id')
+            .range(x, y)),
+        readAllPages<Main>(m, (x, y) =>
+          this.db
+            .from('groups')
+            .select('project_id, nominated_owner_line_user_id, owner_confirmed_at')
+            .eq('is_main', true)
+            .in('nominated_owner_line_user_id', chunk)
+            .not('owner_confirmed_at', 'is', null)
+            .not('project_id', 'is', null)
+            .is('left_at', null)
+            .order('id')
+            .range(x, y)),
+      ])
+      accounts.push(...a)
+      mains.push(...g)
+    }
+
+    // Each Owner's latest account (last sign-in), as getDriveContext reads it. The window
+    // below still runs on updated_at, which also moves when a root folder ID is stored.
+    const latest = new Map<string, Account>()
+    for (const a of accounts) {
+      const seen = latest.get(a.line_user_id)
+      if (!seen || toDate(a.connected_at).getTime() > toDate(seen.connected_at).getTime()) latest.set(a.line_user_id, a)
+    }
+    // Project ID -> the account that would run it: in the window, with a valid latest account.
+    const inWindow = new Map<string, string>()
+    for (const g of mains) {
+      const account = latest.get(g.nominated_owner_line_user_id)
+      if (account?.token_status !== 'valid') continue
+      const last = Math.max(toDate(g.owner_confirmed_at).getTime(), toDate(account.updated_at).getTime())
+      if (last >= from.getTime() && last <= to.getTime()) inWindow.set(g.project_id, account.id)
+    }
+
+    const missing = new Set<string>() // a folder ID is still empty
+    const holders = new Map<string, string>()
+    for (const chunk of chunks([...inWindow.keys()])) {
+      const [noProjectFolder, noGroupFolder, active] = await Promise.all([
+        readAllPages<{ id: string }>(m, (x, y) =>
+          this.db
+            .from('projects')
+            .select('id')
+            .in('id', chunk)
+            .is('drive_project_folder_id', null)
+            .order('id')
+            .range(x, y)),
+        // The groups getDriveContext lists, so a Project is never pending for a group no run makes.
+        readAllPages<{ project_id: string }>(m, (x, y) =>
+          this.db
+            .from('groups')
+            .select('project_id')
+            .in('project_id', chunk)
+            .not('owner_confirmed_at', 'is', null)
+            .is('left_at', null)
+            .is('drive_folder_id', null)
+            .order('id')
+            .range(x, y)),
+        readAllPages<{ project_id: string; google_account_id: string }>(m, (x, y) =>
+          this.db
+            .from('drive_connections')
+            .select('project_id, google_account_id')
+            .eq('status', 'active')
+            .in('project_id', chunk)
+            .order('id')
+            .range(x, y)),
+      ])
+      for (const r of noProjectFolder) missing.add(r.id)
+      for (const r of noGroupFolder) missing.add(r.project_id)
+      for (const r of active) holders.set(r.project_id, r.google_account_id)
+    }
+    return [...inWindow]
+      .filter(([id, accountId]) => missing.has(id) && (holders.get(id) ?? accountId) === accountId)
+      .map(([id]) => id)
+      .sort()
   }
 }

@@ -10,6 +10,28 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-thai: var(--font-plex-thai), var(--font-geist-sans), sans-serif;
+}
+
+/* Figma UI v4 design tokens (file Yi9FCN94TrLPOmfw6f2kuT, variables), used by the LIFF pages.
+   Radii map to Tailwind defaults: radius/sm 8 = rounded-lg, md 12 = rounded-xl, lg 16 = rounded-2xl. */
+@theme {
+  --color-brand: #12294d;
+  --color-primary: #1f5fb0;
+  --color-primary-soft: #dce8f7;
+  --color-ink: #12294d;
+  --color-ink-2: #545454;
+  --color-ink-3: #7a879c;
+  --color-page: #ffffff;
+  --color-subtle: #f4f6f9;
+  --color-line: #d5e2f3;
+  --color-line-strong: #9db8dc;
+  --color-done-bg: #ddf3e8;
+  --color-done: #1b6b47;
+  --color-warn-bg: #fef3c7;
+  --color-warn: #92400e;
+  --color-danger: #b42318;
+  --color-danger-bg: #fdecea;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,4 +45,28 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* LIFF pages: light only (the design has no dark theme), Thai type scale. */
+.liff {
+  color-scheme: light;
+  background: var(--color-subtle);
+  color: var(--color-ink);
+  font-family: var(--font-thai);
+}
+
+/* Date and time fields draw their own icon on the left; the native picker button
+   stays clickable but invisible, stretched over the field. */
+.liff input[type="date"],
+.liff input[type="time"] {
+  position: relative;
+}
+.liff input[type="date"]::-webkit-calendar-picker-indicator,
+.liff input[type="time"]::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  opacity: 0;
+  cursor: pointer;
 }

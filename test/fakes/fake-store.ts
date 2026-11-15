@@ -1417,22 +1417,7 @@ export class FakeStore implements StorePort {
     if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }
     if (!this.isLiveMember(groupId, lineUserId)) return { outcome: 'not_member' }
     if (this.latestGoogleAccount(lineUserId)?.tokenStatus !== 'valid') return { outcome: 'needs_drive' }
-    const now = this.clock()
-    const projectId = g.projectId
-    // change_project_owner
-    const project = this.tables.projects.find((p) => p.id === projectId)
-    if (project) Object.assign(project, { ownerLineUserId: lineUserId, driveProjectFolderId: null })
-    g.ownerConfirmedAt = now
-    g.ownerLeftAt = null // groups_owner_rules: confirming clears owner_left_at
-    this.setupOf(groupId).driveFolderId = null
-    for (const sub of this.tables.groups.filter((r) => r.projectId === projectId && !this.isMainGroup(r.id))) {
-      sub.ownerConfirmedAt = null
-      this.setupOf(sub.id).takeoverAskedAt = now
-    }
-    for (const c of this.tables.drive_connections.filter((r) => r.projectId === projectId && r.status === 'active')) {
-      c.status = 'replaced'
-      c.statusChangedAt = now
-    }
+    this.changeProjectOwnerRows(g.projectId, g, lineUserId)
     for (const r of this.tables.owner_prompts.filter((p) => p.groupId === groupId && p.answer === null)) {
       Object.assign(r, { answer: 'owner_confirmed', answeredByLineUserId: lineUserId, answeredAt: new Date(at.getTime()) })
     }
@@ -1513,20 +1498,46 @@ export class FakeStore implements StorePort {
     const project = this.tables.projects.find((p) => p.id === projectId)
     if (!project) throw new Error('FakeStore: main group without its Project')
     fk(this.hasLineUser(newOwnerLineUserId), 'projects.owner_line_user_id')
-    const now = this.clock()
-    project.ownerLineUserId = newOwnerLineUserId
-    project.driveProjectFolderId = null
-    main.ownerConfirmedAt = now
-    this.setupOf(main.id).driveFolderId = null
-    for (const g of this.tables.groups) {
-      if (g.projectId !== projectId || this.isMainGroup(g.id)) continue
-      this.setupOf(g.id).takeoverAskedAt = now
-      g.ownerConfirmedAt = null
-    }
-    for (const c of this.tables.drive_connections) {
-      if (c.projectId === projectId && c.status === 'active') Object.assign(c, { status: 'replaced', statusChangedAt: now })
-    }
+    this.changeProjectOwnerRows(projectId, main, newOwnerLineUserId)
     return { outcome: 'changed' }
+  }
+
+  /** change_project_owner's writes (20261115150000), shared by changeProjectOwner and
+   *  completeOwnerChange, then the same-Owner rule check_same_owner runs at COMMIT. D1: a
+   *  Sub group is asked (again) only while it waits, or when it does not run on the new
+   *  Owner yet; one already confirmed on them keeps running, folder included. An asked Sub
+   *  group's folder ID is cleared (it points into the old Owner's Drive). */
+  private changeProjectOwnerRows(projectId: string, main: GroupRow, newOwner: string): void {
+    const now = this.clock()
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (project) Object.assign(project, { ownerLineUserId: newOwner, driveProjectFolderId: null })
+    main.ownerConfirmedAt = now
+    main.ownerLeftAt = null // groups_owner_rules: confirming clears owner_left_at
+    this.setupOf(main.id).driveFolderId = null
+    for (const sub of this.tables.groups.filter((r) => r.projectId === projectId && !this.isMainGroup(r.id))) {
+      const runsOnNewOwner = sub.nominatedOwnerLineUserId === newOwner && sub.ownerConfirmedAt !== null
+      if (this.takeoverAskedAt(sub.id) === null && runsOnNewOwner) continue
+      sub.ownerConfirmedAt = null
+      Object.assign(this.setupOf(sub.id), { takeoverAskedAt: now, driveFolderId: null })
+    }
+    for (const c of this.tables.drive_connections.filter((r) => r.projectId === projectId && r.status === 'active')) {
+      c.status = 'replaced'
+      c.statusChangedAt = now
+    }
+    this.checkSameOwner(projectId)
+  }
+
+  /** check_same_owner (initial schema): every group attached to a Project names its owner,
+   *  except an unconfirmed main group nominee and a Sub group waiting on the question. */
+  private checkSameOwner(projectId: string): void {
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) return
+    for (const g of this.tables.groups.filter((r) => r.projectId === projectId)) {
+      if (g.nominatedOwnerLineUserId === project.ownerLineUserId) continue
+      if (this.isMainGroup(g.id) && g.ownerConfirmedAt === null) continue
+      if (this.takeoverAskedAt(g.id) !== null) continue
+      throw new Error(`FakeStore check violation: group Owner must be the Project owner (${g.id})`)
+    }
   }
 
   private takeoverAskedAt(groupId: string): Date | null {
@@ -1562,6 +1573,11 @@ export class FakeStore implements StorePort {
     if (!project) throw new Error(`check violation: unknown Project ${projectId}`)
     const takeover = [...new Set(takeoverGroupIds)]
     const waitingHere = (g: GroupRow) => g.projectId === projectId && this.takeoverAskedAt(g.id) !== null
+    // 20261115150000: a question older than 7 days raises NJ409, nothing written.
+    const cutoff = this.clock().getTime() - 7 * 86_400_000
+    if (this.tables.groups.some((g) => waitingHere(g) && (this.takeoverAskedAt(g.id) as Date).getTime() < cutoff)) {
+      return { outcome: 'expired' }
+    }
     if (takeover.some((id) => { const g = this.tables.groups.find((x) => x.id === id); return !g || !waitingHere(g) })) {
       return { outcome: 'changed' }
     }
@@ -1572,7 +1588,8 @@ export class FakeStore implements StorePort {
       const x = this.setupOf(g.id)
       x.takeoverAskedAt = null
       if (!takeover.includes(g.id)) {
-        g.projectId = null // detach: keeps its old nominee and folder
+        g.projectId = null // detach: keeps its old nominee; the old Owner's folder ID goes
+        x.driveFolderId = null
         continue
       }
       g.nominatedOwnerLineUserId = owner
@@ -1588,11 +1605,28 @@ export class FakeStore implements StorePort {
     for (const g of this.tables.groups) {
       const asked = this.takeoverAskedAt(g.id)
       if (asked === null || asked >= askedBefore) continue
-      this.setupOf(g.id).takeoverAskedAt = null
+      Object.assign(this.setupOf(g.id), { takeoverAskedAt: null, driveFolderId: null })
       g.projectId = null
       out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  /** Same rule as SupabaseStore.listUnsentTakeoverCards. */
+  async listUnsentTakeoverCards(askedAfter: Date): Promise<string[]> {
+    this.fault('listUnsentTakeoverCards')
+    const askedAt = new Map<string, number>()
+    for (const g of this.tables.groups) {
+      const asked = this.takeoverAskedAt(g.id)
+      if (asked === null || asked < askedAfter || g.projectId === null) continue
+      askedAt.set(g.projectId, Math.min(askedAt.get(g.projectId) ?? asked.getTime(), asked.getTime()))
+    }
+    return [...askedAt.keys()].sort().filter((projectId) => {
+      const main = this.tables.groups.find((g) => g.projectId === projectId && this.isMainGroup(g.id))
+      if (!main) return false
+      return !this.tables.push_log.some((p) =>
+        p.purpose === 'owner_takeover' && p.lineTargetId === main.lineGroupId && p.sentAt.getTime() >= (askedAt.get(projectId) as number))
+    })
   }
 
   // ---- #11 removal and recovery ----

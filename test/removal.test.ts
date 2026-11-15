@@ -353,7 +353,7 @@ describe('the daily purge (#11)', () => {
     expect(t.exists()).toBe(false)
   })
 
-  it('the slot is 03:00 to 03:14 Bangkok: 02:59 and 03:15 purge nothing, 03:14 purges', async () => {
+  it('the slot is 03:00 to 03:14 Bangkok: 02:59 purges nothing, 03:14 still purges', async () => {
     const t = setup()
     await t.send(ev.leave({ timestamp: TEST_NOW.getTime() }))
     await t.tickAt(bkk('2026-11-20T02:59:00'))

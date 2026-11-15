@@ -59,8 +59,9 @@ export async function loadTakeover(deps: Deps, body: unknown): Promise<ApiResult
 
 /** POST /api/takeover/answer { idToken, groupId, choice }. The answer covers every Sub
  *  group still waiting when it is saved. 409 nothing_waiting: none waits (answered before,
- *  or detached after 7 days); 409 changed: one detached while this was saved (nothing
- *  written; the page loads again). */
+ *  or detached after 7 days); 409 expired: the 7 days are over and the tick has not
+ *  detached them yet (they detach, the answer is refused); 409 changed: one detached while
+ *  this was saved (nothing written; the page loads again). */
 export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): Promise<ApiResult> {
   // The route's 60 s cover this handler and its after() work.
   const deadline = driveDeadline(deps.now())
@@ -71,9 +72,13 @@ export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): P
   const { change, requester } = gate
   const waiting = change.waiting
   if (waiting.length === 0) return { status: 409, body: { error: 'nothing_waiting' } }
+  const expired = { status: 409, body: { error: 'expired' } }
+  const firstAsked = Math.min(...waiting.map((g) => g.askedAt.getTime()))
+  if (firstAsked < deps.now().getTime() - TAKEOVER_WAIT_MS) return expired
   const ids = choice === 'takeover' ? waiting.map((g) => g.groupId) : []
   const { outcome } = await deps.store.answerSubgroupTakeover(change.projectId, ids)
   if (outcome === 'changed') return { status: 409, body: { error: 'changed' } }
+  if (outcome === 'expired') return expired
   log('subgroup_takeover_answered', { projectId: change.projectId, choice, subGroups: waiting.length })
   const at = deps.now()
   if (choice === 'takeover') {

@@ -111,7 +111,7 @@ describe('SupabaseStore.detachExpiredTakeovers', () => {
     expect(await store.detachExpiredTakeovers(cutoff)).toEqual([{ groupId: 'g2', lineGroupId: 'C2', name: null }])
     expect(chains[0]).toEqual([
       { method: 'from', args: ['groups'] },
-      { method: 'update', args: [{ project_id: null, takeover_asked_at: null }] },
+      { method: 'update', args: [{ project_id: null, takeover_asked_at: null, drive_folder_id: null }] },
       { method: 'lt', args: ['takeover_asked_at', cutoff.toISOString()] },
       { method: 'select', args: ['id, line_group_id, name'] },
     ])

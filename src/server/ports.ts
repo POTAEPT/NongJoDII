@@ -282,7 +282,10 @@ export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: str
 export type OwnerChangeOutcome = 'changed' | 'not_nominee'
 /** 'changed': a chosen Sub group stopped waiting (expired and detached) while the answer
  *  was saved; nothing was written. */
-export type TakeoverAnswerOutcome = 'saved' | 'changed'
+/** 'expired': the Sub groups waited more than 7 days (TAKEOVER_WAIT_MS); the tick detaches
+ *  them, so the answer is refused (answer_subgroup_takeover raises SQLSTATE NJ409 once
+ *  20261115150000 is applied). */
+export type TakeoverAnswerOutcome = 'saved' | 'changed' | 'expired'
 
 export interface StorePort {
   // #1 webhook
@@ -570,18 +573,24 @@ export interface StorePort {
   /** rpc change_project_owner (one transaction): the main group must name `newOwner` as its
    *  nominee. Makes them the Project's owner, confirms the main group, clears the Project's
    *  and main group's folder IDs, retires the active Drive connection ('replaced') and puts
-   *  every Sub group on the take-over question (takeover_asked_at = now(), Owner confirm
-   *  cleared). Repeating it restarts the question, so the caller guards repeats. */
+   *  on the take-over question (takeover_asked_at = now(), Owner confirm and folder ID
+   *  cleared) every Sub group that is still waiting, or does not run on `newOwner` already
+   *  (20261115150000, D1). A Sub group already confirmed on `newOwner` keeps running.
+   *  Production reaches it only through complete_owner_change (completeOwnerChange). */
   changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }>
   /** null when the Project does not exist. */
   getOwnerChange(projectId: string): Promise<OwnerChangeState | null>
   /** rpc answer_subgroup_takeover: the listed waiting Sub groups name the Project's owner and
    *  are confirmed (folder ID cleared); every other waiting Sub group of the Project detaches
-   *  (project_id and takeover_asked_at null; it keeps its old nominee and folder). */
+   *  (project_id, takeover_asked_at and the folder ID null; it keeps its old nominee). */
   answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }>
   /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
    *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. */
   detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]>
+  /** #31 lost take-over card: Projects whose Sub groups wait on a question asked at or after
+   *  `askedAfter` (not expired), and whose main group has no owner_takeover push_log row
+   *  since that ask (a push LINE refused, or one skipped near the quota, left none). */
+  listUnsentTakeoverCards(askedAfter: Date): Promise<string[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
   // groups.joined_at is the time of the latest join event applied (null until the row's
   // first join, not the insert time), so a stale leave is ignored.

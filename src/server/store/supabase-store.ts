@@ -1876,6 +1876,8 @@ export class SupabaseStore implements StorePort {
     // check_violation: a chosen Sub group is no longer waiting (the daily rule detached it).
     // serialization_failure: the groups changed while the answer was saved. Nothing was written.
     if (error?.code === '23514' || error?.code === '40001') return { outcome: 'changed' }
+    // NJ409: the question waited more than 7 days (20261115150000). Nothing was written.
+    if (error?.code === 'NJ409') return { outcome: 'expired' }
     check('answerSubgroupTakeover', error)
     return { outcome: 'saved' }
   }
@@ -1887,13 +1889,59 @@ export class SupabaseStore implements StorePort {
     // project_id and takeover_asked_at change together (groups_takeover_pending_rules).
     const { data, error } = await this.db
       .from('groups')
-      .update({ project_id: null, takeover_asked_at: null })
+      // The folder ID pointed into the old Owner's Drive (#74-4).
+      .update({ project_id: null, takeover_asked_at: null, drive_folder_id: null })
       .lt('takeover_asked_at', askedBefore.toISOString())
       .select('id, line_group_id, name')
     check('detachExpiredTakeovers', error)
     return ((data ?? []) as { id: string; line_group_id: string; name: string | null }[])
       .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name }))
       .sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  async listUnsentTakeoverCards(askedAfter: Date): Promise<string[]> {
+    const m = 'listUnsentTakeoverCards'
+    const waiting = await readAllPages<{ project_id: string; takeover_asked_at: string }>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('project_id, takeover_asked_at')
+        .gte('takeover_asked_at', askedAfter.toISOString())
+        .order('id')
+        .range(from, to))
+    // change_project_owner asks every Sub group at once: the earliest ask names the question.
+    const askedAt = new Map<string, number>()
+    for (const w of waiting) {
+      const t = Date.parse(w.takeover_asked_at)
+      askedAt.set(w.project_id, Math.min(askedAt.get(w.project_id) ?? t, t))
+    }
+    if (askedAt.size === 0) return []
+    const projectIds = [...askedAt.keys()].sort()
+    const mains = await readAllPages<{ project_id: string; line_group_id: string }>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('project_id, line_group_id')
+        .in('project_id', projectIds)
+        .eq('is_main', true)
+        .order('id')
+        .range(from, to))
+    if (mains.length === 0) return []
+    const since = Math.min(...askedAt.values())
+    const pushes = await readAllPages<{ line_target_id: string; sent_at: string }>(m, (from, to) =>
+      this.db
+        .from('push_log')
+        .select('line_target_id, sent_at')
+        .eq('purpose', 'owner_takeover')
+        .in('line_target_id', mains.map((g) => g.line_group_id))
+        .gte('sent_at', new Date(since).toISOString())
+        .order('id')
+        .range(from, to))
+    const mainOf = new Map(mains.map((g) => [g.project_id, g.line_group_id]))
+    return projectIds.filter((id) => {
+      const target = mainOf.get(id)
+      if (target === undefined) return false
+      const asked = askedAt.get(id) as number
+      return !pushes.some((p) => p.line_target_id === target && Date.parse(p.sent_at) >= asked)
+    })
   }
 
   // ---- #11 removal and recovery ----

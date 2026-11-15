@@ -4,6 +4,7 @@ import { weeklyInsightJob } from '@/server/insight/weekly'
 import { log, logError } from '@/server/log'
 import { memberCheckJob } from '@/server/members/daily-check'
 import { takeoverExpiryJob } from '@/server/owner-change/detach'
+import { takeoverCardRetryJob } from '@/server/owner-change/takeover-retry'
 import type { Deps } from '@/server/ports'
 import { dailyRemindersJob } from '@/server/reminders/daily'
 import { purgeJob } from '@/server/removal/purge'
@@ -16,13 +17,15 @@ export type TickJob = { name: string; run(deps: Deps, now: Date): Promise<void> 
 /** The jobs every tick runs, in order: reminders first, as they spend the quota reserve the
  *  others leave; then the weekly insight; then the daily Drive access check (#14), which
  *  works on one tick a day; then the 7-day Sub group take-over rule (#31), whose detach is one
- *  statement and whose cards are best effort; then the daily member check (#32), which goes
+ *  statement and whose cards are best effort, and the lost take-over card's retry (#31);
+ *  then the daily member check (#32), which goes
  *  on over later ticks when one runs short, so it comes after the jobs with no time check of
  *  their own; the daily purge (#11), on its own night slot; the Drive setup finisher (#13)
  *  last, as it sends nothing to LINE. The time-checked jobs stop on their own when the
  *  tick's time runs short. Still to come: the 7-day Owner-left rule (#30). */
 export const TICK_JOBS: TickJob[] = [
-  dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, takeoverExpiryJob, memberCheckJob, purgeJob, driveSetupJob,
+  dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, takeoverExpiryJob, takeoverCardRetryJob, memberCheckJob,
+  purgeJob, driveSetupJob,
 ]
 
 /** Runs each job one after another. One job's failure is logged and never stops the

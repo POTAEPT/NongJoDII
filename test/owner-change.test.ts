@@ -293,7 +293,7 @@ describe('no answer: the 7-day rule (tick)', () => {
     expect(names.indexOf('subgroup_takeover_expiry')).toBeLessThan(names.indexOf('drive_setup'))
   })
 
-  it('the Sub groups wait paused for 7 days, then detach and each gets the setup card', async () => {
+  it('the Sub groups wait paused for 7 days, then detach and each gets the owner_needed card (#30 part B)', async () => {
     const h = makeTestDeps()
     const { projectId, main, subA, subB } = seedProject(h)
     await change(h, projectId)
@@ -305,11 +305,15 @@ describe('no answer: the 7-day rule (tick)', () => {
 
     await tick(h, new Date(TEST_NOW.getTime() + TAKEOVER_WAIT_MS + 15 * MIN))
     for (const sub of [subA, subB]) {
-      expect(groupRow(h, sub.id)).toMatchObject({ projectId: null, nominatedOwnerLineUserId: OLD, ownerConfirmedAt: null })
+      expect(groupRow(h, sub.id)).toMatchObject({
+        projectId: null, nominatedOwnerLineUserId: OLD, ownerConfirmedAt: null,
+        // A fresh 7-day Owner count from the detach (#30 part B).
+        ownerLeftAt: new Date(TEST_NOW.getTime() + TAKEOVER_WAIT_MS + 15 * MIN),
+      })
       expect(setupRow(h, sub.id).takeoverAskedAt).toBeNull()
     }
     expect(h.line.pushes.map((p) => p.to).sort()).toEqual(['CsubA', 'CsubB'])
-    expect(h.store.tables.push_log.map((p) => p.purpose)).toEqual(['owner_takeover', 'subgroup_detached', 'subgroup_detached'])
+    expect(h.store.tables.push_log.map((p) => p.purpose)).toEqual(['owner_takeover', 'owner_needed', 'owner_needed'])
 
     // A later tick finds nothing; a late answer finds nothing waiting.
     await tick(h, new Date(TEST_NOW.getTime() + TAKEOVER_WAIT_MS + 30 * MIN))

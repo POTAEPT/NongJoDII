@@ -1590,7 +1590,7 @@ export class FakeStore implements StorePort {
     return { outcome: 'saved' }
   }
 
-  async detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]> {
+  async detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]> {
     this.fault('detachExpiredTakeovers')
     const out: DetachedSubGroup[] = []
     for (const g of this.tables.groups) {
@@ -1598,7 +1598,8 @@ export class FakeStore implements StorePort {
       if (asked === null || asked >= askedBefore) continue
       this.setupOf(g.id).takeoverAskedAt = null
       g.projectId = null
-      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
+      if (at) g.ownerLeftAt = new Date(at.getTime())
+      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
   }

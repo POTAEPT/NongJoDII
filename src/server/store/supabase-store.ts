@@ -1895,19 +1895,20 @@ export class SupabaseStore implements StorePort {
     return { outcome: 'saved' }
   }
 
-  async detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]> {
+  async detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]> {
     // The documented daily statement (initial schema, change_project_owner):
     //   update groups set project_id = null, takeover_asked_at = null
     //    where takeover_asked_at < <cutoff> returning ...
     // project_id and takeover_asked_at change together (groups_takeover_pending_rules).
     const { data, error } = await this.db
       .from('groups')
-      .update({ project_id: null, takeover_asked_at: null })
+      .update({ project_id: null, takeover_asked_at: null, ...(at ? { owner_left_at: at.toISOString() } : {}) })
       .lt('takeover_asked_at', askedBefore.toISOString())
-      .select('id, line_group_id, name')
+      .select('id, line_group_id, name, nominated_owner_line_user_id')
     check('detachExpiredTakeovers', error)
-    return ((data ?? []) as { id: string; line_group_id: string; name: string | null }[])
-      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name }))
+    type Row = { id: string; line_group_id: string; name: string | null; nominated_owner_line_user_id: string | null }
+    return ((data ?? []) as Row[])
+      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name, nominatedOwnerLineUserId: r.nominated_owner_line_user_id }))
       .sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 

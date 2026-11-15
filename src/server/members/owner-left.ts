@@ -44,7 +44,8 @@ export const OWNER_EXIT_BATCH = 50
 export const OWNER_EXIT_SCAN = 1000
 /** How far the start of the batch moves on each 15-minute tick: the number of slow LINE
  *  calls (10 s timeout) that fit in one tick. So groups that keep failing at the head of the
- *  list cannot starve the rest: every due group heads the batch within ceil(n / 5) ticks. */
+ *  list cannot starve the rest: every due group is inside the batch window within
+ *  ceil(n / 5) ticks. */
 export const OWNER_EXIT_ROTATE_STEP = 5
 const TICK_MS = 15 * 60_000
 

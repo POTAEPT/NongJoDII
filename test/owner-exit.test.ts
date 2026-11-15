@@ -463,4 +463,58 @@ describe('a Sub group with no new Owner after 7 days (#30 part B, decided 2026-1
     expect(t.group(g.id).ownerConfirmedAt).not.toBeNull()
     expect(t.group(g.id).projectId).not.toBeNull()
   })
+
+  it('an open claim holds the detach for at most 24 h after the press', async () => {
+    const t = await subSetup()
+    const press = at(6 * DAY + 23 * HOUR)
+    Object.assign(t.store.tables.group_setups.find((r) => r.groupId === t.subId)!, { ownerNominatedAt: press })
+    await t.tickAt(at(7 * DAY))
+    expect(t.group(t.subId).projectId).toBe(t.projectId)
+    await t.tickAt(new Date(press.getTime() + 24 * HOUR))
+    expect(t.group(t.subId).projectId).toBeNull()
+  })
+
+  it('a Sub group that changed between the list and the detach (a re-invite) is not detached', async () => {
+    const t = await subSetup()
+    const list = t.store.listOwnerlessGroups.bind(t.store)
+    t.store.listOwnerlessGroups = async (before, limit) => {
+      const listed = await list(before, limit)
+      await t.store.markBotJoined({ groupId: t.subId, at: t.deps.now() })
+      return listed
+    }
+    await t.tickAt(at(7 * DAY))
+    expect(t.group(t.subId)).toMatchObject({ projectId: t.projectId, ownerLeftAt: at(7 * DAY) })
+    expect(t.line.pushes).toEqual([])
+  })
+
+  it('#31 take-over expiry first: a backlog Sub group gets a fresh 7 days, one card, and the bot leaves only at day 14', async () => {
+    const t = await subSetup()
+    // Its Owner left long ago, and the Project's Owner changed at TEST_NOW: it waits on the
+    // take-over question, which expires at day 7 in the same tick as the owner exit.
+    t.store.seedSchedule(t.subId, { ownerLeftAt: at(-10 * DAY) })
+    t.store.tables.group_setups.find((r) => r.groupId === t.subId)!.takeoverAskedAt = TEST_NOW
+    const due = at(7 * DAY + 15 * MIN)
+    await t.tickAt(due)
+    expect(t.line.leaveCalls).toEqual([])
+    expect(t.group(t.subId)).toMatchObject({ projectId: null, ownerLeftAt: due })
+    expect(t.line.pushes).toHaveLength(1)
+    expect(isOwnerCard(t.line.pushes[0].messages[0])).toBe(true)
+    await t.tickAt(new Date(due.getTime() + 7 * DAY - 15 * MIN))
+    expect(t.line.leaveCalls).toEqual([])
+    await t.tickAt(new Date(due.getTime() + 7 * DAY))
+    expect(t.line.leaveCalls).toEqual(['Csub'])
+    expect(t.line.pushes).toHaveLength(1)
+  })
+
+  it('a re-invite to a detached group resets owner_left_at and restarts the count', async () => {
+    const t = await subSetup()
+    await t.tickAt(at(7 * DAY))
+    const rejoin = at(10 * DAY)
+    await t.store.markBotJoined({ groupId: t.subId, at: rejoin })
+    expect(t.group(t.subId).ownerLeftAt).toEqual(rejoin)
+    await t.tickAt(at(14 * DAY))
+    expect(t.line.leaveCalls).toEqual([])
+    await t.tickAt(new Date(rejoin.getTime() + 7 * DAY))
+    expect(t.line.leaveCalls).toEqual(['Csub'])
+  })
 })

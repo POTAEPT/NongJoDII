@@ -277,7 +277,11 @@ export type OwnerChangeState = {
   waiting: TakeoverSubGroup[]
 }
 /** A Sub group the daily rule detached from its Project. */
-export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: string | null }
+export type DetachedSubGroup = {
+  groupId: string; lineGroupId: string; name: string | null
+  /** The nominee it keeps (its old Owner), when the store read it (#30 part B). */
+  nominatedOwnerLineUserId?: string | null
+}
 /** #30 part B: a group that has had no Owner since ownerLeftAt. subGroup: attached to a
  *  Project and not its main group (it detaches instead of the bot leaving). */
 export type OwnerlessGroup = {
@@ -597,8 +601,10 @@ export interface StorePort {
    *  (project_id and takeover_asked_at null; it keeps its old nominee and folder). */
   answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }>
   /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
-   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. */
-  detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]>
+   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. With `at` (#30 part
+   *  B), the same UPDATE sets owner_left_at = at: a waiting Sub group has no confirmed Owner,
+   *  so it starts a fresh 7-day Owner count and the owner_needed flow. */
+  detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
   // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
   /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One

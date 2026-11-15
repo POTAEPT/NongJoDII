@@ -1,12 +1,14 @@
 import { checkTime, driveDeadline, DriveTimeUp } from '../google/drive-folders'
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import { log } from '../log'
+import { postOwnerNeededCard } from '../members/owner-left'
 import type { Deps, DetachedSubGroup } from '../ports'
 import type { TickJob } from '../tick/run-tick'
 import { detachedCard } from './card'
 
 // #31 Sub groups that are not taken over detach from the Project and need their own setup
-// and Owner: each gets one card with the setup form's button. A detached group keeps its
+// and Owner: each gets one card, with the setup form's button after the new Owner's answer,
+// and the owner_needed card after the 7-day expiry (#30 part B, see takeoverExpiryJob). A detached group keeps its
 // old nominee unconfirmed and no Project, so the #52 form is open for it again.
 
 /** How long a Sub group waits paused for the take-over answer (decided 2026-11-11). */
@@ -22,7 +24,9 @@ const DETACHED_CARD_CALLS = 2
 /** One card per detached Sub group, by `deadline`. Best effort: the detach is already
  *  saved, and a card skipped (time up, quota, failure) is not sent again; the group's
  *  next Summary request answers with the setup card too. Never throws. */
-export async function announceDetached(deps: Deps, groups: DetachedSubGroup[], deadline: Date, at: Date): Promise<void> {
+export async function announceDetached(
+  deps: Deps, groups: DetachedSubGroup[], deadline: Date, at: Date, card: 'setup' | 'owner_needed' = 'setup',
+): Promise<void> {
   let sent = 0
   for (const [i, g] of groups.entries()) {
     try {
@@ -31,6 +35,16 @@ export async function announceDetached(deps: Deps, groups: DetachedSubGroup[], d
       if (!(err instanceof DriveTimeUp)) throw err
       log('subgroup_detached_cards_incomplete', { skipped: groups.length - i })
       break
+    }
+    if (card === 'owner_needed') {
+      // #30 part B: the owner_needed card (one per detach: its retry key carries `at`).
+      const owner = g.nominatedOwnerLineUserId ?? null
+      const result = owner === null ? 'no_owner' : await postOwnerNeededCard(deps, {
+        groupId: g.groupId, lineGroupId: g.lineGroupId, ownerLineUserId: owner, renewedAt: at,
+      })
+      if (result === 'pushed') sent++
+      log('subgroup_detached_card', { groupId: g.groupId, result })
+      continue
     }
     const result = await pushToGroupWithinBudget(deps, {
       purpose: 'subgroup_detached', groupId: g.groupId, lineGroupId: g.lineGroupId,
@@ -46,12 +60,17 @@ export async function announceDetached(deps: Deps, groups: DetachedSubGroup[], d
 
 /** Tick job: Sub groups whose take-over question waited 7 days detach in one statement
  *  (detachExpiredTakeovers), before any push, so a tick that runs short never leaves a
- *  group half done. The cards follow under the tick's deadline. */
+ *  group half done. The cards follow under the tick's deadline.
+ *  #30 part B: such a group has no confirmed Owner, so the same statement sets owner_left_at
+ *  to the detach time and the card is the owner_needed card: a Member takes the role with
+ *  LINE login and Drive, and with no new Owner 7 days after the detach the bot leaves
+ *  (ownerExitJob). Without the reset, a group whose Owner left long before would be left by
+ *  the bot in the same tick. */
 export const takeoverExpiryJob: TickJob = {
   name: 'subgroup_takeover_expiry',
   async run(deps, now) {
-    const detached = await deps.store.detachExpiredTakeovers(new Date(now.getTime() - TAKEOVER_WAIT_MS))
+    const detached = await deps.store.detachExpiredTakeovers(new Date(now.getTime() - TAKEOVER_WAIT_MS), now)
     if (detached.length === 0) return
-    await announceDetached(deps, detached, driveDeadline(now), now)
+    await announceDetached(deps, detached, driveDeadline(now), now, 'owner_needed')
   },
 }

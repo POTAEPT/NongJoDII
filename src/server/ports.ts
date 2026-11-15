@@ -78,6 +78,13 @@ export type StoredMessage = {
   id: string; senderLineUserId: string | null; senderDisplayName: string | null; text: string; sentAt: Date
   mentions: MessageMention[] | null
 }
+/** #33: what a quote-reply's quotedMessageId leads to in this group. 'no_message': the bot
+ *  has no stored copy (never stored, another group's, or unsent and deleted by #24).
+ *  'no_file': a stored message with no files row. 'file': the newest saved file for it. */
+export type QuotedFileLookup =
+  | { kind: 'no_message' }
+  | { kind: 'no_file' }
+  | { kind: 'file'; fileName: string; driveLink: string }
 export type Member = { lineUserId: string; displayName: string | null; nicknames: string[]; role: string | null }
 export type Membership = 'live' | 'left' | 'none'
 export type NewSummary = {
@@ -252,6 +259,10 @@ export interface StorePort {
    *  (never stored, or already deleted), so a repeat is harmless. Rows that point at it
    *  (task_prompts.trigger_message_id, files.message_id) are kept by ON DELETE SET NULL. */
   deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }>
+  // #33 file request by quote-reply
+  /** The stored message with this LINE message id in this group (never another group's),
+   *  then the newest files row whose message_id points at it. */
+  findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup>
   // #15 Summary
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null

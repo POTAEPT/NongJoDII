@@ -30,6 +30,7 @@ import type {
   DriveGroup,
   ReminderTask,
   MessageRef,
+  QuotedFileLookup,
   ProgressPromptRow,
   SetupOutcome,
   StorePort,
@@ -85,6 +86,10 @@ export type GoogleAccountRecord = {
   updatedAt: Date                     // set on every write, like the table's trigger
   signedInAt?: Date                   // google_accounts.connected_at: the last sign-in (#14)
 }
+/** public.files (#4 writes it; #33 reads it). Seeded with seedFile until #4 lands. */
+export type FileRecord = {
+  id: string; groupId: string; messageId: string | null; fileName: string; driveLink: string; savedAt: Date
+}
 export type DriveConnectionRecord = {
   id: string; projectId: string; googleAccountId: string; status: 'active' | 'replaced'
   statusChangedAt?: Date | null   // absent = null; set when the row is retired (#14)
@@ -128,6 +133,7 @@ export type FakeTables = {
   group_setups: GroupSetupRecord[]
   projects: ProjectRecord[]
   drive_connections: DriveConnectionRecord[]
+  files: FileRecord[]
 }
 
 const SEED_NOW = new Date('2026-11-12T03:00:00Z')
@@ -160,6 +166,7 @@ export class FakeStore implements StorePort {
     group_setups: [],
     projects: [],
     drive_connections: [],
+    files: [],
   }
 
   /** The database's now(), for columns it stamps itself (google_accounts.updated_at).
@@ -534,7 +541,20 @@ export class FakeStore implements StorePort {
     const [gone] = this.tables.messages.splice(i, 1)
     // task_prompts.trigger_message_id is ON DELETE SET NULL.
     for (const p of this.tables.task_prompts) if (p.triggerMessageId === gone.id) p.triggerMessageId = null
+    // files.message_id is ON DELETE SET NULL too: the saved file stays.
+    for (const f of this.tables.files) if (f.messageId === gone.id) f.messageId = null
     return { deleted: true }
+  }
+
+  // ---- #33 file request ----
+  async findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup> {
+    this.fault('findQuotedFile')
+    const m = this.tables.messages.find((row) => row.groupId === groupId && row.lineMessageId === lineMessageId)
+    if (!m) return { kind: 'no_message' }
+    const newest = this.tables.files
+      .filter((f) => f.messageId === m.id)
+      .sort((a, b) => b.savedAt.getTime() - a.savedAt.getTime() || (a.id < b.id ? 1 : -1))[0]
+    return newest ? { kind: 'file', fileName: newest.fileName, driveLink: newest.driveLink } : { kind: 'no_file' }
   }
 
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
@@ -1330,6 +1350,18 @@ export class FakeStore implements StorePort {
     const i = this.tables.group_members.findIndex((m) => m.groupId === p.groupId && m.lineUserId === p.lineUserId)
     if (i === -1) this.tables.group_members.push(record)
     else this.tables.group_members[i] = record
+  }
+
+  /** A files row as #4 will write it (#33 reads it). messageId is messages.id or null. */
+  seedFile(p: { groupId: string; messageId: string | null; fileName: string; driveLink: string; savedAt?: Date }): FileRecord {
+    fk(this.hasGroup(p.groupId), 'files.group_id')
+    fk(p.messageId === null || this.tables.messages.some((m) => m.id === p.messageId), 'files.message_id')
+    const row: FileRecord = {
+      id: randomUUID(), groupId: p.groupId, messageId: p.messageId, fileName: p.fileName, driveLink: p.driveLink,
+      savedAt: p.savedAt ?? SEED_NOW,
+    }
+    this.tables.files.push(row)
+    return { ...row }
   }
 
   /** A Project row owned by `ownerLineUserId` (creates the line_users row); attach groups with seedGroup({ projectId }). */

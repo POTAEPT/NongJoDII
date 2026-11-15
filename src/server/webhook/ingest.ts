@@ -6,6 +6,7 @@ export type Job =
       kind: 'group_message'; groupId: string; lineGroupId: string; messageId: string
       storedMessageId: string; sentAt: Date   // messages.id and send time (#7 progress cards)
       senderLineUserId: string | null; text: string | null; replyToken: string | null
+      quotedMessageId: string | null   // LINE message id this text quotes (#33); null when none
     }
   | {
       // A button press in a group (#7 progress cards, #45 reminder cards). userId is optional on
@@ -56,6 +57,9 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
       eventTimestamp, isRedelivery,
     })
     const text = message.type === 'text' && typeof message.text === 'string' ? message.text : null
+    // Only text (and sticker) messages carry quotedMessageId; the bot reads it on text only.
+    const quoted = message.type === 'text' ? (message as { quotedMessageId?: unknown }).quotedMessageId : undefined
+    const quotedMessageId = typeof quoted === 'string' && quoted !== '' ? quoted : null
     const imageSet = message.type === 'image' ? (message.imageSet as { id: string; index?: number; total?: number } | undefined) : undefined
     const { inserted, id: storedMessageId } = await store.insertMessage({
       groupId: group.id, webhookEventId: event.webhookEventId, lineMessageId: message.id,
@@ -69,7 +73,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     return {
       kind: 'group_message', groupId: group.id, lineGroupId: source.groupId, messageId: message.id,
       storedMessageId, sentAt: eventTimestamp,
-      senderLineUserId: userId, text, replyToken: event.replyToken ?? null,
+      senderLineUserId: userId, text, replyToken: event.replyToken ?? null, quotedMessageId,
     }
   }
 

@@ -140,7 +140,9 @@ export type NewAiUsage = {
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 /** What a push is for; stored in push_log.purpose (free text in the schema). */
-export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
+export type PushPurpose =
+  | 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
+  | 'owner_takeover' | 'subgroup_detached'   // #31
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -247,6 +249,27 @@ export type DriveContext = {
   } | null
   activeAccountId: string | null
 }
+
+// #31 Project Owner change: the Sub group take-over question.
+/** A Sub group whose take-over question is unanswered (groups.takeover_asked_at set). */
+export type TakeoverSubGroup = { groupId: string; lineGroupId: string; name: string | null; askedAt: Date }
+/** A Project as the take-over question reads it. mainGroup null: no main group row. */
+export type OwnerChangeState = {
+  projectId: string; ownerLineUserId: string
+  mainGroup: {
+    groupId: string; lineGroupId: string; name: string | null
+    nominatedOwnerLineUserId: string | null; ownerConfirmedAt: Date | null
+  } | null
+  /** Waiting Sub groups, by id. */
+  waiting: TakeoverSubGroup[]
+}
+/** A Sub group the daily rule detached from its Project. */
+export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: string | null }
+/** 'not_nominee': the main group does not name this person (change_project_owner raised). */
+export type OwnerChangeOutcome = 'changed' | 'not_nominee'
+/** 'changed': a chosen Sub group stopped waiting (expired and detached) while the answer
+ *  was saved; nothing was written. */
+export type TakeoverAnswerOutcome = 'saved' | 'changed'
 
 export interface StorePort {
   // #1 webhook
@@ -501,6 +524,22 @@ export interface StorePort {
    *  (owner_confirmed_at) and that account's updated_at lies in [from, to]. updated_at
    *  moves on every sign-in, and also when the root folder ID is stored. */
   listUnfinishedDriveProjects(from: Date, to: Date): Promise<string[]>
+  // #31 Project Owner change
+  /** rpc change_project_owner (one transaction): the main group must name `newOwner` as its
+   *  nominee. Makes them the Project's owner, confirms the main group, clears the Project's
+   *  and main group's folder IDs, retires the active Drive connection ('replaced') and puts
+   *  every Sub group on the take-over question (takeover_asked_at = now(), Owner confirm
+   *  cleared). Repeating it restarts the question, so the caller guards repeats. */
+  changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }>
+  /** null when the Project does not exist. */
+  getOwnerChange(projectId: string): Promise<OwnerChangeState | null>
+  /** rpc answer_subgroup_takeover: the listed waiting Sub groups name the Project's owner and
+   *  are confirmed (folder ID cleared); every other waiting Sub group of the Project detaches
+   *  (project_id and takeover_asked_at null; it keeps its old nominee and folder). */
+  answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }>
+  /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
+   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. */
+  detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
   // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
   /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One

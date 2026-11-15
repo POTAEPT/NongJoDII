@@ -2,6 +2,7 @@ import { driveAccessCheckJob } from '@/server/google/access-check'
 import { driveSetupJob } from '@/server/google/drive-folders'
 import { weeklyInsightJob } from '@/server/insight/weekly'
 import { log, logError } from '@/server/log'
+import { memberCheckJob } from '@/server/members/daily-check'
 import type { Deps } from '@/server/ports'
 import { dailyRemindersJob } from '@/server/reminders/daily'
 
@@ -12,10 +13,12 @@ export type TickJob = { name: string; run(deps: Deps, now: Date): Promise<void> 
 
 /** The jobs every tick runs, in order: reminders first, as they spend the quota reserve the
  *  others leave; then the weekly insight; then the daily Drive access check (#14), which
- *  works on one tick a day; the Drive setup finisher (#13) last, as it sends nothing to
- *  LINE and stops on its own when the tick's time runs short. Still to come:
- *  the purge and the 7-day Owner rules (#11, #30, #31) and the daily member check (#32). */
-export const TICK_JOBS: TickJob[] = [dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, driveSetupJob]
+ *  works on one tick a day; then the daily member check (#32), which goes on over later
+ *  ticks when one runs short, so it comes after the jobs with no time check of their own;
+ *  the Drive setup finisher (#13) last, as it sends nothing to LINE. The last three stop on
+ *  their own when the tick's time runs short. Still to come: the purge and the 7-day Owner
+ *  rules (#11, #30, #31). */
+export const TICK_JOBS: TickJob[] = [dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, memberCheckJob, driveSetupJob]
 
 /** Runs each job one after another. One job's failure is logged and never stops the
  *  ones after it. */

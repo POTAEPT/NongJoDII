@@ -140,6 +140,9 @@ export type AnnounceClaim = { taskIds: string[]; token: string; at: Date; staleB
 /** A set-up group (attached to a Project, bot still in it) with reminders on, and its
  *  daily slot: Bangkok time 'HH:MM:SS' and the Bangkok date it was last sent. */
 export type DailyReminderGroup = { groupId: string; lineGroupId: string; time: string; lastSentOn: string | null }
+/** #32: a set-up group (attached to a Project, bot still in it) for the daily member check,
+ *  with the Bangkok date its check last completed. */
+export type MemberCheckGroup = { groupId: string; lineGroupId: string; lastCheckedOn: string | null }
 /** A live Task as the daily reminder reads it (#44). */
 export type ReminderTask = {
   id: string; title: string; status: TaskStatus
@@ -340,6 +343,17 @@ export interface StorePort {
   finishDailyReminder(groupId: string, todayBkk: string, at: Date): Promise<void>
   /** Clears the claim made `at` without completing the day, so the next tick retries. */
   releaseDailyReminder(groupId: string, at: Date): Promise<void>
+  // #32 daily member check: the same claim, finish and release as the daily reminder.
+  /** groups where project_id is not null and left_at is null. Every page, by id. */
+  listMemberCheckGroups(): Promise<MemberCheckGroup[]>
+  /** One statement: sets member_check_claimed_at = at where member_check_on is null or before
+   *  todayBkk and no claim younger than `staleBefore` holds the group. */
+  claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }>
+  /** Marks the day checked (member_check_on = todayBkk) and clears the claim, only while the
+   *  claim made `at` still holds the group. */
+  finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void>
+  /** Clears the claim made `at` without completing the day, so the next tick goes on. */
+  releaseMemberCheck(groupId: string, at: Date): Promise<void>
   /** The group's live Tasks that are not Done, oldest first. */
   listReminderTasks(groupId: string): Promise<ReminderTask[]>
   // #45 answers to reminder cards. Each is one UPDATE whose WHERE holds the precondition,

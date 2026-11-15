@@ -84,3 +84,18 @@ describe('SupabaseStore.listReminderTasks (#44)', () => {
     expect(calls).toContainEqual({ method: 'is', args: ['deleted_at', null] })
   })
 })
+
+describe('SupabaseStore.listMemberCheckGroups (#32)', () => {
+  const groupRows = (n: number, offset = 0) =>
+    Array.from({ length: n }, (_, i) => ({ id: `g-${offset + i}`, line_group_id: `C${offset + i}`, member_check_on: null }))
+
+  it('reads every page, and asks only for set-up groups the bot is still in', async () => {
+    const { store, calls } = stubDb([groupRows(PAGE_SIZE), groupRows(2, PAGE_SIZE)])
+    const groups = await store.listMemberCheckGroups()
+    expect(groups).toHaveLength(PAGE_SIZE + 2)
+    expect(groups[PAGE_SIZE + 1]).toEqual({ groupId: `g-${PAGE_SIZE + 1}`, lineGroupId: `C${PAGE_SIZE + 1}`, lastCheckedOn: null })
+    expect(calls).toContainEqual({ method: 'not', args: ['project_id', 'is', null] })
+    expect(calls).toContainEqual({ method: 'is', args: ['left_at', null] })
+    expect(calls.filter((c) => c.method === 'range')).toHaveLength(2)
+  })
+})

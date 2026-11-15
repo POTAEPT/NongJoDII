@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, ROLE_MAX, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
+import { formatThaiDateLong } from '@/server/time/bangkok'
 import type { SettingsLoad } from '@/server/settings/types'
 import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
@@ -12,7 +13,9 @@ import { addNickname, removeNickname, setNickname, setRole, type SetupForm } fro
 
 // #28 Settings, opened from the "น้องจดดี ตั้งค่า" card. `id` is groups.id. Two tabs:
 // the group's settings (the confirmed Owner edits, everyone else looks) and a static plan
-// mock with no payment. Changing the Owner (#30, #31) and Stop using (#11) come later.
+// mock with no payment. The Owner can also Stop using (#11): after a confirm step the bot
+// leaves the group, and its data is deleted 7 days later unless the bot is invited back.
+// Changing the Owner (#30, #31) comes later.
 
 const ERR_403 = 'คุณไม่ได้อยู่ในกลุ่มนี้'
 const ERR_NOT_OWNER = 'เฉพาะเจ้าของบอทของกลุ่มนี้เท่านั้นที่แก้การตั้งค่าได้'
@@ -20,6 +23,7 @@ const ERR_404 = 'ไม่พบกลุ่มนี้'
 const ERR_400 = 'ข้อมูลไม่ถูกต้อง กรุณาตรวจอีกครั้ง'
 const ERR_LOAD = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
 const ERR_SAVE = 'บันทึกไม่สำเร็จ กรุณาลองใหม่'
+const ERR_STOP = 'น้องจดดียังออกจากกลุ่มไม่ได้ กรุณาลองใหม่'
 
 function errorCopy(status: number, json: unknown, fallback: string): string {
   if (status === 401) return ERR_401
@@ -31,6 +35,8 @@ function errorCopy(status: number, json: unknown, fallback: string): string {
 
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SettingsLoad }
 type Tab = 'settings' | 'plans'
+/** Stop using: idle, the confirm step, the call in flight, or done with the delete date. */
+type Stop = { kind: 'idle' } | { kind: 'confirm' } | { kind: 'leaving' } | { kind: 'done'; deleteAfter: string | null }
 
 export function SettingsView({ liff, idToken, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
@@ -39,6 +45,8 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [stop, setStop] = useState<Stop>({ kind: 'idle' })
+  const [stopError, setStopError] = useState<string | null>(null)
   const started = useRef(false)
   const inFlight = useRef(false)
 
@@ -81,6 +89,24 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
     }
   }
 
+  const stopUsing = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setStopError(null)
+    setStop({ kind: 'leaving' })
+    try {
+      const { status, json } = await post('/api/settings/stop-using', { idToken, groupId: id, confirm: true })
+      if (status === 200) return setStop({ kind: 'done', deleteAfter: (json as { deleteAfter: string | null }).deleteAfter })
+      setStopError(errorCopy(status, json, ERR_STOP))
+      setStop({ kind: 'confirm' })
+    } catch {
+      setStopError(ERR_STOP)
+      setStop({ kind: 'confirm' })
+    } finally {
+      inFlight.current = false
+    }
+  }
+
   const close = () => liff.closeWindow()
   const TITLE = 'ตั้งค่า'
   if (load.kind === 'loading') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังโหลด..." />
@@ -91,6 +117,14 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
     )
   }
   const { data } = load
+  if (stop.kind === 'done') {
+    const date = stop.deleteAfter ? formatThaiDateLong(new Date(stop.deleteAfter)) : null
+    return (
+      <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="น้องจดดีออกจากกลุ่มแล้ว"
+        message={`ข้อมูลของกลุ่มนี้จะถูกลบ${date ? `วันที่ ${date}` : 'ใน 7 วัน'} ถ้าเชิญน้องจดดีกลับเข้ากลุ่มก่อนวันนั้น ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่ ไม่ถูกลบ`}
+        onClose={close} />
+    )
+  }
   if (data.state === 'not_set_up') {
     return (
       <StatusScreen kind="forbidden" appTitle={TITLE} onBack={close} title="กลุ่มนี้ยังตั้งค่าไม่เสร็จ"
@@ -274,6 +308,42 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
           <p className="text-xs text-ink-3">
             เวลาเป็นเวลาประเทศไทย เปลี่ยนแล้วมีผลในรอบถัดไป ถ้าวันนี้เตือนไปแล้ว เวลาใหม่จะเริ่มพรุ่งนี้
           </p>
+
+          {data.canEdit && (
+            <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
+              <span className="block text-sm font-semibold">เลิกใช้น้องจดดีในกลุ่มนี้</span>
+              <p className="text-xs text-ink-3">
+                น้องจดดีจะออกจากกลุ่ม และลบข้อมูลของกลุ่มนี้ (แชตที่เก็บไว้ งาน และสรุป) ใน 7 วัน
+                ถ้าเชิญกลับภายใน 7 วัน ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ไม่ถูกลบ
+              </p>
+              {stop.kind === 'idle' ? (
+                <button
+                  type="button"
+                  className="flex min-h-12 w-full items-center justify-center rounded-xl border border-danger bg-page px-4 text-base font-semibold text-danger disabled:opacity-50"
+                  disabled={saving}
+                  onClick={() => setStop({ kind: 'confirm' })}
+                >
+                  เลิกใช้
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <Notice>ยืนยันให้น้องจดดีออกจากกลุ่มนี้ใช่ไหม</Notice>
+                  {stopError && <Notice>{stopError}</Notice>}
+                  <button
+                    type="button"
+                    className="flex min-h-12 w-full items-center justify-center rounded-xl bg-danger px-4 text-base font-semibold text-white disabled:opacity-50"
+                    disabled={stop.kind === 'leaving'}
+                    onClick={() => void stopUsing()}
+                  >
+                    {stop.kind === 'leaving' ? 'กำลังออกจากกลุ่ม...' : 'ยืนยัน เลิกใช้'}
+                  </button>
+                  <Button variant="ghost" disabled={stop.kind === 'leaving'} onClick={() => { setStopError(null); setStop({ kind: 'idle' }) }}>
+                    ยกเลิก
+                  </Button>
+                </div>
+              )}
+            </section>
+          )}
         </div>
       )}
     </Page>

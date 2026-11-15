@@ -1,6 +1,6 @@
 import { syncDriveForOwner } from '../google/drive-folders'
 import { log } from '../log'
-import type { ApiResult, Defer, Deps, GroupSetup, OwnerChangeOutcome } from '../ports'
+import type { ApiResult, CompleteOwnerChangeOutcome, Defer, Deps, GroupSetup } from '../ports'
 import type { OwnerConfirmResult } from './types'
 
 // #30 part A: a new Owner after the Owner left the main group (members/owner-left.ts).
@@ -37,7 +37,7 @@ export async function takeOverOwner(
   return answer(outcome)
 }
 
-function answer(outcome: OwnerChangeOutcome): ApiResult {
+function answer(outcome: CompleteOwnerChangeOutcome): ApiResult {
   const ok = (body: OwnerConfirmResult): ApiResult => ({ status: 200, body })
   switch (outcome) {
     case 'changed': return ok({ state: 'confirmed', alreadyConfirmed: false })
@@ -51,7 +51,7 @@ function answer(outcome: OwnerChangeOutcome): ApiResult {
 
 /** Step 2 for one main group. On 'changed' it calls onMainGroupOwnerChanged. The caller
  *  defers the Drive run. Throws on a store failure. */
-export async function applyOwnerChange(deps: Deps, groupId: string, lineUserId: string, defer: Defer): Promise<OwnerChangeOutcome> {
+export async function applyOwnerChange(deps: Deps, groupId: string, lineUserId: string, defer: Defer): Promise<CompleteOwnerChangeOutcome> {
   const { outcome } = await deps.store.completeOwnerChange(groupId, lineUserId, deps.now())
   log('owner_change', { groupId, outcome })
   if (outcome === 'changed') {

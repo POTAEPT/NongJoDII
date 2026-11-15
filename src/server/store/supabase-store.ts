@@ -1,11 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { AdapterError } from '../log'
+import { BOT_DELETE_AFTER_MS } from '../removal/leave'
 import type {
   AiUsageActual,
   AiUsageCap,
   AnnounceClaim,
   CandidateRow,
+  CompleteOwnerChangeOutcome,
   DailyReminderGroup,
+  DetachedSubGroup,
+  MemberCheckGroup,
   DriveContext,
   DriveGroup,
   DashboardGroupRow,
@@ -28,8 +32,10 @@ import type {
   NewTask,
   NewWebhookEvent,
   OwnerChangeOutcome,
+  OwnerChangeState,
   OwnerClaimOutcome,
   OwnerConfirmOutcome,
+  TakeoverAnswerOutcome,
   PushBudgetClaim,
   NewWeeklyInsight,
   ProgressAnswer,
@@ -279,14 +285,12 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #24 unsend ----
-  async deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }> {
-    const { data, error } = await this.db
-      .from('messages')
-      .delete()
-      .eq('line_message_id', lineMessageId)
-      .select('id')
-    check('deleteMessageByLineId', error)
-    return { deleted: (data ?? []).length > 0 }
+  async unsendMessage(lineMessageId: string): Promise<{ deleted: boolean }> {
+    // rpc unsend_message: the tombstone and the delete in one transaction, under the same
+    // lock the messages insert trigger takes, so a late delivery is never stored again.
+    const { data, error } = await this.db.rpc('unsend_message', { p_line_message_id: lineMessageId })
+    check('unsendMessage', error)
+    return { deleted: data === true }
   }
 
   // ---- #33 file request ----
@@ -891,6 +895,79 @@ export class SupabaseStore implements StorePort {
     check('releaseDailyReminder', error)
   }
 
+  // ---- #32 daily member check ----
+  /** Pages of PAGE_SIZE rows ordered by id, as listDailyReminderGroups. */
+  async listMemberCheckGroups(): Promise<MemberCheckGroup[]> {
+    type Row = { id: string; line_group_id: string; member_check_on: string | null }
+    const out: MemberCheckGroup[] = []
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, member_check_on')
+        .is('left_at', null)
+        .order('id')
+        .range(from, from + PAGE_SIZE - 1)
+      check('listMemberCheckGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) out.push({ groupId: r.id, lineGroupId: r.line_group_id, lastCheckedOn: r.member_check_on })
+      if (rows.length < PAGE_SIZE) return out
+    }
+  }
+
+  async claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    // One logic tree, as claimDailyReminder: the day is not checked, and no live claim.
+    const notChecked = `or(member_check_on.is.null,member_check_on.lt.${todayBkk})`
+    const noLiveClaim = `or(member_check_claimed_at.is.null,member_check_claimed_at.lt."${staleBefore.toISOString()}")`
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ member_check_claimed_at: at.toISOString() })
+      .eq('id', groupId)
+      .or(`and(${notChecked},${noLiveClaim})`)
+      .select('id')
+    check('claimMemberCheck', error)
+    return { claimed: (data?.length ?? 0) > 0 }
+  }
+
+  async finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ member_check_on: todayBkk, member_check_claimed_at: null })
+      .eq('id', groupId)
+      .eq('member_check_claimed_at', at.toISOString())
+    check('finishMemberCheck', error)
+  }
+
+  async releaseMemberCheck(groupId: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ member_check_claimed_at: null })
+      .eq('id', groupId)
+      .eq('member_check_claimed_at', at.toISOString())
+    check('releaseMemberCheck', error)
+  }
+
+  /** Live rows of one group: at most a LINE group's 500 members, inside one PostgREST page. */
+  async listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]> {
+    const { data, error } = await this.db
+      .from('group_members')
+      .select('line_user_id')
+      .eq('group_id', groupId)
+      .is('left_at', null)
+      .or(`member_checked_on.is.null,member_checked_on.lt.${todayBkk}`)
+      .order('line_user_id')
+    check('listMembersToCheck', error)
+    return ((data ?? []) as { line_user_id: string }[]).map((r) => r.line_user_id)
+  }
+
+  async markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void> {
+    const { error } = await this.db
+      .from('group_members')
+      .update({ member_checked_on: todayBkk })
+      .eq('group_id', groupId)
+      .eq('line_user_id', lineUserId)
+    check('markMemberChecked', error)
+  }
+
   // ---- #45 reminder answers ----
   // Done and Postpone also require `by` to still own the Task, so a reassignment between the
   // check and the write is never overridden by the former owner.
@@ -1193,16 +1270,16 @@ export class SupabaseStore implements StorePort {
     return { outcome: (won ?? []).length === 1 ? 'claimed' : 'taken' }
   }
 
-  async completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerChangeOutcome }> {
+  async completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: CompleteOwnerChangeOutcome }> {
     const { data, error } = await this.db.rpc('complete_owner_change', {
       p_group_id: groupId, p_line_user_id: lineUserId, p_at: at.toISOString(),
     })
     check('completeOwnerChange', error)
-    const outcomes: OwnerChangeOutcome[] = ['changed', 'already_owner', 'not_pending', 'not_nominee', 'not_member', 'needs_drive']
-    if (!outcomes.includes(data as OwnerChangeOutcome)) {
+    const outcomes: CompleteOwnerChangeOutcome[] = ['changed', 'already_owner', 'not_pending', 'not_nominee', 'not_member', 'needs_drive']
+    if (!outcomes.includes(data as CompleteOwnerChangeOutcome)) {
       throw new Error('completeOwnerChange: unexpected result from complete_owner_change')
     }
-    return { outcome: data as OwnerChangeOutcome }
+    return { outcome: data as CompleteOwnerChangeOutcome }
   }
 
   async listPendingOwnerChanges(lineUserId: string): Promise<string[]> {
@@ -1719,5 +1796,147 @@ export class SupabaseStore implements StorePort {
       .filter(([id, accountId]) => missing.has(id) && (holders.get(id) ?? accountId) === accountId)
       .map(([id]) => id)
       .sort()
+  }
+
+  // ---- #31 Project Owner change ----
+  async changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }> {
+    const { error } = await this.db.rpc('change_project_owner', { p_project_id: projectId, p_new_owner: newOwnerLineUserId })
+    // check_violation: the main group does not name this person as its nominee.
+    if (error?.code === '23514') return { outcome: 'not_nominee' }
+    check('changeProjectOwner', error)
+    return { outcome: 'changed' }
+  }
+
+  async getOwnerChange(projectId: string): Promise<OwnerChangeState | null> {
+    const m = 'getOwnerChange'
+    const { data: p, error } = await this.db
+      .from('projects')
+      .select('id, owner_line_user_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check(m, error)
+    const project = p as { id: string; owner_line_user_id: string } | null
+    if (!project) return null
+    type Row = {
+      id: string; line_group_id: string; name: string | null; is_main: boolean
+      nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null; takeover_asked_at: string | null
+    }
+    const rows = await readAllPages<Row>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('id, line_group_id, name, is_main, nominated_owner_line_user_id, owner_confirmed_at, takeover_asked_at')
+        .eq('project_id', projectId)
+        .order('id')
+        .range(from, to))
+    const main = rows.find((r) => r.is_main)
+    return {
+      projectId: project.id,
+      ownerLineUserId: project.owner_line_user_id,
+      mainGroup: main
+        ? {
+            groupId: main.id, lineGroupId: main.line_group_id, name: main.name,
+            nominatedOwnerLineUserId: main.nominated_owner_line_user_id, ownerConfirmedAt: toDate(main.owner_confirmed_at),
+          }
+        : null,
+      waiting: rows
+        .filter((r) => !r.is_main && r.takeover_asked_at !== null)
+        .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name, askedAt: toDate(r.takeover_asked_at) as Date })),
+    }
+  }
+
+  async answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }> {
+    const { error } = await this.db.rpc('answer_subgroup_takeover', {
+      p_project_id: projectId, p_takeover_group_ids: takeoverGroupIds,
+    })
+    // check_violation: a chosen Sub group is no longer waiting (the daily rule detached it).
+    // serialization_failure: the groups changed while the answer was saved. Nothing was written.
+    if (error?.code === '23514' || error?.code === '40001') return { outcome: 'changed' }
+    check('answerSubgroupTakeover', error)
+    return { outcome: 'saved' }
+  }
+
+  async detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]> {
+    // The documented daily statement (initial schema, change_project_owner):
+    //   update groups set project_id = null, takeover_asked_at = null
+    //    where takeover_asked_at < <cutoff> returning ...
+    // project_id and takeover_asked_at change together (groups_takeover_pending_rules).
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ project_id: null, takeover_asked_at: null })
+      .lt('takeover_asked_at', askedBefore.toISOString())
+      .select('id, line_group_id, name')
+    check('detachExpiredTakeovers', error)
+    return ((data ?? []) as { id: string; line_group_id: string; name: string | null }[])
+      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name }))
+      .sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  // ---- #11 removal and recovery ----
+  async markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }> {
+    const at = m.at.toISOString()
+    // Only an unmarked group, and only a leave newer than the latest join applied.
+    const { error } = await this.db
+      .from('groups')
+      .update({ left_at: at, delete_after: new Date(m.at.getTime() + BOT_DELETE_AFTER_MS).toISOString() })
+      .eq('line_group_id', m.lineGroupId)
+      .is('left_at', null)
+      .lte('joined_at', at)
+    check('markBotLeft', error)
+    const read = await this.db.from('groups').select('delete_after').eq('line_group_id', m.lineGroupId).maybeSingle()
+    check('markBotLeft', read.error)
+    const row = read.data as { delete_after: string | null } | null
+    return { deleteAfter: row ? toDate(row.delete_after) : null }
+  }
+
+  async getGroupDeleteAfter(groupId: string): Promise<Date | null> {
+    const { data, error } = await this.db.from('groups').select('delete_after').eq('id', groupId).maybeSingle()
+    check('getGroupDeleteAfter', error)
+    const row = data as { delete_after: string | null } | null
+    return row ? toDate(row.delete_after) : null
+  }
+
+  async markBotJoined(j: { groupId: string; at: Date }): Promise<void> {
+    const at = j.at.toISOString()
+    // The 7-day Owner count starts again while no Owner is confirmed (#30). First, so a
+    // redelivery after a half-failure still reaches it.
+    const owner = await this.db
+      .from('groups')
+      .update({ owner_left_at: at })
+      .eq('id', j.groupId)
+      .is('owner_confirmed_at', null)
+      .lt('owner_left_at', at)
+    check('markBotJoined', owner.error)
+    const joined = await this.db.from('groups').update({ joined_at: at }).eq('id', j.groupId).lt('joined_at', at)
+    check('markBotJoined', joined.error)
+    const cleared = await this.db
+      .from('groups')
+      .update({ left_at: null, delete_after: null })
+      .eq('id', j.groupId)
+      .lte('left_at', at)
+    check('markBotJoined', cleared.error)
+  }
+
+  async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
+    const { data, error } = await this.db
+      .from('groups')
+      .select('id')
+      .lte('delete_after', now.toISOString())
+      .order('delete_after', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(limit)
+    check('listPurgeDueGroups', error)
+    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+
+  async purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }> {
+    // The due check is part of the DELETE: a group re-invited since it was listed stays.
+    const { data, error } = await this.db
+      .from('groups')
+      .delete()
+      .eq('id', groupId)
+      .lte('delete_after', now.toISOString())
+      .select('id')
+    check('purgeGroup', error)
+    return { purged: (data ?? []).length > 0 }
   }
 }

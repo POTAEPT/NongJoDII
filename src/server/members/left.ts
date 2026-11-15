@@ -42,3 +42,26 @@ export async function handleMemberLeft(
   log('member_left_card', { groupId, result })
   return result
 }
+
+/** The leave's writes, shared by the memberLeft webhook (webhook/ingest.ts) and the daily
+ *  member check (#32, members/daily-check.ts). For each person: the LINE user row (the
+ *  group_members FK), the leave mark at `at`, then the release of their open Tasks. Returns
+ *  the people whose Tasks were released, with those Tasks, for handleMemberLeft's card.
+ *  Every write is idempotent, so a repeat releases nothing and makes no card. */
+export async function recordMemberLeft(
+  deps: Deps,
+  p: { groupId: string; lineUserIds: string[]; at: Date },
+): Promise<{ lineUserId: string; tasks: TaskRow[] }[]> {
+  const released: { lineUserId: string; tasks: TaskRow[] }[] = []
+  for (const lineUserId of p.lineUserIds) {
+    await deps.store.upsertLineUser({ lineUserId, displayName: null })
+    await deps.store.markMemberLeft({ groupId: p.groupId, lineUserId, at: p.at })
+    // A leave older than a rejoin already applied changed nothing: the person is a current
+    // Member, so the release finds them live and keeps their Tasks. It checks and releases
+    // in one database step, so a newer join cannot slip between the two; and it does not
+    // trust `updated`, so a redelivery after the write but before the release still releases.
+    const tasks = await deps.store.releaseTasksIfLeft({ groupId: p.groupId, lineUserId })
+    if (tasks.length > 0) released.push({ lineUserId, tasks })
+  }
+  return released
+}

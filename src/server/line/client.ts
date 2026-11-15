@@ -4,7 +4,7 @@ import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
 
-/** LINE Messaging API (reply, push, quota, group member profile, group summary) and LINE Login ID token verify.
+/** LINE Messaging API (reply, push, quota, group member profile, group summary, leave group) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
 export class LineHttpClient implements LinePort {
   private readonly token: string
@@ -104,6 +104,16 @@ export class LineHttpClient implements LinePort {
     if (q.type === 'none') return { limit: null, used: u.totalUsage }
     if (q.type !== 'limited' || typeof q.value !== 'number') throw new AdapterError('line quota 200')
     return { limit: q.value, used: u.totalUsage }
+  }
+
+  /** POST /v2/bot/group/{groupId}/leave (LINE answers 200, 400 or 404). 404: the bot is
+   *  not in the group. */
+  async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
+    const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/leave`
+    const res = await this.fetchImpl(url, { method: 'POST', headers: { Authorization: `Bearer ${this.token}` } })
+    if (res.status === 404) return 'not_in_group'
+    if (res.status !== 200) throw new AdapterError(`line leave ${res.status}`)
+    return 'left'
   }
 
   /** LINE checks the signature, aud (= the LINE Login channel ID) and exp. */

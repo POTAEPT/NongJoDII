@@ -2,7 +2,8 @@
 // 'setup' (the setup form) and 'owner' (the Owner confirm) take groups.id (#52).
 // 'me' (a Member's own nicknames and role, from the welcome reply) takes groups.id (#29).
 // 'settings' (Settings, from the "NongJoDII ตั้งค่า" command) takes groups.id (#28).
-export type LiffView = 'google' | 'review' | 'task' | 'progress' | 'dashboard' | 'setup' | 'owner' | 'me' | 'settings'
+// 'takeover' (the Sub group take-over question after an Owner change) takes the main group's groups.id (#31).
+export type LiffView = 'google' | 'review' | 'task' | 'progress' | 'dashboard' | 'setup' | 'owner' | 'me' | 'settings' | 'takeover'
 /** The ids the Google OAuth callback page links back to the LIFF google view with: `done`
  *  after a sign-in that finished, `back` after one that did not (cancelled, expired,
  *  failed). Neither starts a new sign-in by itself. */

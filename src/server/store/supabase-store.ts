@@ -582,12 +582,30 @@ export class SupabaseStore implements StorePort {
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
     const { data, error } = await this.db
       .from('messages')
-      .select('id, group_id, sender_line_user_id, sent_at')
+      .select('id, group_id, sender_line_user_id, sent_at, progress_dismissed_at')
       .eq('id', messageId)
       .maybeSingle()
     check('getMessageRef', error)
-    const row = data as { id: string; group_id: string; sender_line_user_id: string | null; sent_at: string } | null
-    return row ? { id: row.id, groupId: row.group_id, senderLineUserId: row.sender_line_user_id, sentAt: toDate(row.sent_at) } : null
+    const row = data as {
+      id: string; group_id: string; sender_line_user_id: string | null; sent_at: string; progress_dismissed_at: string | null
+    } | null
+    return row
+      ? {
+          id: row.id, groupId: row.group_id, senderLineUserId: row.sender_line_user_id, sentAt: toDate(row.sent_at),
+          progressDismissedAt: toDate(row.progress_dismissed_at),
+        }
+      : null
+  }
+
+  async dismissProgressPicker(messageId: string, byLineUserId: string, at: Date): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('messages')
+      .update({ progress_dismissed_at: at.toISOString(), progress_dismissed_by_line_user_id: byLineUserId })
+      .eq('id', messageId)
+      .is('progress_dismissed_at', null)
+      .select('id')
+    check('dismissProgressPicker', error)
+    return { updated: (data ?? []).length === 1 }
   }
 
   async findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null> {

@@ -605,6 +605,11 @@ export interface StorePort {
    *  B), the same UPDATE sets owner_left_at = at: a waiting Sub group has no confirmed Owner,
    *  so it starts a fresh 7-day Owner count and the owner_needed flow. */
   detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]>
+  /** #30 part B, after the new Owner's "detach" answer (answer_subgroup_takeover): one UPDATE
+   *  sets owner_left_at = at on those of `groupIds` that have no Project and no confirmed
+   *  Owner and whose owner_left_at is null or older than `at`, returning them (with their
+   *  nominee). A repeat with the same `at` changes and returns nothing. */
+  startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
   // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
   /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One

@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { driveDeadline } from '@/server/google/drive-folders'
 import type { LineMessage } from '@/server/line/types'
 import { answerTakeover, loadTakeover } from '@/server/owner-change/answer'
-import { DETACHED_CARD_TEXT, TAKEOVER_CARD_TEXT } from '@/server/owner-change/card'
+import { OWNER_NEEDED_TEXT, ownerExitJob } from '@/server/members/owner-left'
+import { TAKEOVER_CARD_TEXT } from '@/server/owner-change/card'
+import { submitSetup } from '@/server/setup/submit'
 import { announceDetached, TAKEOVER_WAIT_MS, takeoverExpiryJob } from '@/server/owner-change/detach'
 import { startProjectOwnerChange } from '@/server/owner-change/start'
 import { handleTickRequest } from '@/server/tick/handle-request'
@@ -252,7 +254,7 @@ describe('the take-over answer (#31 step 2, LIFF view takeover)', () => {
     expect(h.store.tables.drive_connections.map((c) => c.status).sort()).toEqual(['active', 'replaced'])
   })
 
-  it('detach: the Sub groups leave the Project, keep their old nominee unconfirmed and each gets the setup card', async () => {
+  it('detach: the Sub groups leave the Project, keep their old nominee unconfirmed and each gets the owner_needed card (#30 part B)', async () => {
     const h = makeTestDeps()
     const { projectId, main, subA, subB } = seedProject(h)
     await change(h, projectId)
@@ -264,14 +266,16 @@ describe('the take-over answer (#31 step 2, LIFF view takeover)', () => {
       expect(setupRow(h, sub.id).takeoverAskedAt).toBeNull()
       expect(setupRow(h, sub.id).driveFolderId).toBe(`fold-${sub.lineGroupId}`)
     }
+    for (const sub of [subA, subB]) expect(groupRow(h, sub.id).ownerLeftAt).toEqual(TEST_NOW) // a fresh 7-day count
     expect(h.line.pushes.map((p) => p.to).sort()).toEqual(['CsubA', 'CsubB'])
     for (const p of h.line.pushes) {
       const sub = p.to === 'CsubA' ? subA : subB
-      expect(altTexts(p.messages)[0]).toContain(DETACHED_CARD_TEXT.title)
-      expect(uriOf(p.messages[0])).toBe(`https://liff.line.me/2000000000-abcdefgh?view=setup&id=${sub.id}`)
+      expect(altTexts(p.messages)[0]).toContain(OWNER_NEEDED_TEXT.title)
+      expect(uriOf(p.messages[0])).toBe(`https://liff.line.me/2000000000-abcdefgh?view=owner&id=${sub.id}`)
     }
-    // They need their own setup: a Summary request there answers with the setup card.
-    expect((await summarize(h, 'CsubA')).some((t) => t.includes('ตั้งค่ากลุ่ม'))).toBe(true)
+    expect(h.store.tables.push_log.filter((p) => p.purpose === 'owner_needed')).toHaveLength(2)
+    // They need a new Owner: a Summary request there answers with the owner_needed card.
+    expect((await summarize(h, 'CsubA')).some((t) => t.includes(OWNER_NEEDED_TEXT.title))).toBe(true)
     expect(h.llm.requests).toHaveLength(0)
     // The main group keeps working with the new Owner.
     expect(groupRow(h, main.id)).toMatchObject({ projectId, nominatedOwnerLineUserId: NEW })
@@ -388,5 +392,62 @@ describe('a pending Owner while the change is pending', () => {
     expect(await answer(h, main.id, NEW, 'takeover')).toEqual({ status: 403, body: { error: 'not_owner' } })
     expect((await answer(h, main.id, PENDING, 'takeover')).status).toBe(200)
     expect(groupRow(h, subA.id).nominatedOwnerLineUserId).toBe(PENDING)
+  })
+})
+
+describe('a manual "detach" answer (#30 part B): the owner_needed flow, as for every detach', () => {
+  const DAY = 86_400_000
+  const form = (groupId: string, who: string) => ({
+    idToken: `tok-${who}`, groupId, workDescription: 'งาน',
+    features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
+    dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
+    members: [{ lineUserId: who, nicknames: [], role: '' }], ownerLineUserId: who,
+  })
+
+  it('sets owner_left_at, posts one card, and the setup form then needs Drive', async () => {
+    const h = makeTestDeps()
+    h.store.pushClock = () => h.deps.now()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    h.line.pushes.length = 0
+    await answer(h, main.id, NEW, 'detach')
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerConfirmedAt: null, ownerLeftAt: TEST_NOW })
+    expect(h.line.pushes.filter((p) => p.to === 'CsubA')).toHaveLength(1)
+    // The old Owner, still its nominee, has left it; a Member names themselves in the setup
+    // form: no confirm without Drive.
+    await h.store.markMemberLeft({ groupId: subA.id, lineUserId: OLD, at: TEST_NOW })
+    const res = await submitSetup(h.deps, form(subA.id, MEMBER), h.defer)
+    await h.runDeferred()
+    expect(res).toEqual({ status: 200, body: { state: 'needs_drive' } })
+    expect(groupRow(h, subA.id)).toMatchObject({ nominatedOwnerLineUserId: MEMBER, ownerConfirmedAt: null, projectId: null })
+  })
+
+  it('a repeated answer posts no second card', async () => {
+    const h = makeTestDeps()
+    const { projectId, main } = seedProject(h)
+    await change(h, projectId)
+    h.line.pushes.length = 0
+    await answer(h, main.id, NEW, 'detach')
+    expect(await answer(h, main.id, NEW, 'detach')).toEqual({ status: 409, body: { error: 'nothing_waiting' } })
+    expect(h.line.pushes).toHaveLength(2) // one per Sub group, from the first answer
+    // The store step itself is idempotent too.
+    expect(await h.store.startDetachedOwnerCount([main.id], TEST_NOW)).toEqual([])
+  })
+
+  it('with no new Owner 7 days later, the bot leaves', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    await answer(h, main.id, NEW, 'detach')
+    const run = async (at: Date) => {
+      h.setNow(at)
+      expect((await handleTickRequest(tickRequest(), h.deps, h.defer, [ownerExitJob])).status).toBe(200)
+      await h.runDeferred()
+    }
+    await run(new Date(TEST_NOW.getTime() + 7 * DAY - 15 * MIN))
+    expect(h.line.leaveCalls).toEqual([])
+    await run(new Date(TEST_NOW.getTime() + 7 * DAY))
+    expect(new Set(h.line.leaveCalls)).toEqual(new Set(['CsubA', 'CsubB']))
+    expect(h.store.tables.group_schedules.find((r) => r.groupId === subA.id)?.leftAt).toEqual(new Date(TEST_NOW.getTime() + 7 * DAY))
   })
 })

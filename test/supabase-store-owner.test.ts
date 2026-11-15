@@ -226,3 +226,25 @@ describe('SupabaseStore.answerOwnerNeededPrompt (#30 part B)', () => {
     ]))
   })
 })
+
+describe('SupabaseStore.startDetachedOwnerCount (#30 part B)', () => {
+  it('starts the Owner count on detached groups with no confirmed Owner, never moving it back', async () => {
+    const { store, calls } = stubDb([{ data: [{ id: 'g1', line_group_id: 'C1', name: null, nominated_owner_line_user_id: 'Uold' }], error: null }])
+    expect(await store.startDetachedOwnerCount(['g1'], AT)).toEqual([
+      { groupId: 'g1', lineGroupId: 'C1', name: null, nominatedOwnerLineUserId: 'Uold' },
+    ])
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'update', args: [{ owner_left_at: AT.toISOString() }] },
+      { method: 'in', args: ['id', ['g1']] },
+      { method: 'is', args: ['project_id', null] },
+      { method: 'is', args: ['owner_confirmed_at', null] },
+      { method: 'or', args: [`owner_left_at.is.null,owner_left_at.lt.${AT.toISOString()}`] },
+    ]))
+  })
+
+  it('does nothing for no groups', async () => {
+    const { store, calls } = stubDb([])
+    expect(await store.startDetachedOwnerCount([], AT)).toEqual([])
+    expect(calls).toEqual([])
+  })
+})

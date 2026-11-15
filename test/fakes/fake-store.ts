@@ -1604,6 +1604,18 @@ export class FakeStore implements StorePort {
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
+  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]> {
+    this.fault('startDetachedOwnerCount')
+    const out: DetachedSubGroup[] = []
+    for (const g of this.tables.groups) {
+      if (!groupIds.includes(g.id) || g.projectId !== null || g.ownerConfirmedAt !== null) continue
+      if (g.ownerLeftAt !== null && g.ownerLeftAt >= at) continue
+      g.ownerLeftAt = new Date(at.getTime())
+      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
+    }
+    return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
   // ---- #11 removal and recovery ----
   async markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }> {
     this.fault('markBotLeft')

@@ -7,8 +7,9 @@ import type { TickJob } from '../tick/run-tick'
 import { detachedCard } from './card'
 
 // #31 Sub groups that are not taken over detach from the Project and need their own setup
-// and Owner: each gets one card, with the setup form's button after the new Owner's answer,
-// and the owner_needed card after the 7-day expiry (#30 part B, see takeoverExpiryJob). A detached group keeps its
+// and Owner. #30 part B: either way (the new Owner's "detach" answer or the 7-day expiry) a
+// detached group has no confirmed Owner, so its owner_left_at starts a fresh 7-day count and
+// it gets the owner_needed card (a Drive-gated Owner, then the bot leaves after 7 days). A detached group keeps its
 // old nominee unconfirmed and no Project, so the #52 form is open for it again.
 
 /** How long a Sub group waits paused for the take-over answer (decided 2026-11-11). */

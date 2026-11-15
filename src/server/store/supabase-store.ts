@@ -1912,6 +1912,24 @@ export class SupabaseStore implements StorePort {
       .sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
+  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]> {
+    if (groupIds.length === 0) return []
+    const when = at.toISOString()
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ owner_left_at: when })
+      .in('id', groupIds)
+      .is('project_id', null)
+      .is('owner_confirmed_at', null)
+      .or(`owner_left_at.is.null,owner_left_at.lt.${when}`)
+      .select('id, line_group_id, name, nominated_owner_line_user_id')
+    check('startDetachedOwnerCount', error)
+    type Row = { id: string; line_group_id: string; name: string | null; nominated_owner_line_user_id: string | null }
+    return ((data ?? []) as Row[])
+      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name, nominatedOwnerLineUserId: r.nominated_owner_line_user_id }))
+      .sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
   // ---- #11 removal and recovery ----
   async markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }> {
     const at = m.at.toISOString()

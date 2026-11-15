@@ -913,6 +913,28 @@ export class SupabaseStore implements StorePort {
     check('releaseMemberCheck', error)
   }
 
+  /** Live rows of one group: at most a LINE group's 500 members, inside one PostgREST page. */
+  async listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]> {
+    const { data, error } = await this.db
+      .from('group_members')
+      .select('line_user_id')
+      .eq('group_id', groupId)
+      .is('left_at', null)
+      .or(`member_checked_on.is.null,member_checked_on.lt.${todayBkk}`)
+      .order('line_user_id')
+    check('listMembersToCheck', error)
+    return ((data ?? []) as { line_user_id: string }[]).map((r) => r.line_user_id)
+  }
+
+  async markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void> {
+    const { error } = await this.db
+      .from('group_members')
+      .update({ member_checked_on: todayBkk })
+      .eq('group_id', groupId)
+      .eq('line_user_id', lineUserId)
+    check('markMemberChecked', error)
+  }
+
   // ---- #45 reminder answers ----
   // Done and Postpone also require `by` to still own the Task, so a reassignment between the
   // check and the write is never overridden by the former owner.

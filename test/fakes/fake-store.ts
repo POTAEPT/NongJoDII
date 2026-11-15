@@ -58,6 +58,8 @@ export type GroupMemberRecord = {
   isPm?: boolean // group_members.is_pm; absent = false
   /** Time of the latest memberLeft or memberJoined event applied; absent or null when none. */
   membershipEventAt?: Date | null
+  /** group_members.member_checked_on (#32): Bangkok date of the last daily check; absent = null. */
+  memberCheckedOn?: string | null
 }
 
 /** Same rule as SupabaseStore's membershipOlderThan. */
@@ -1109,6 +1111,20 @@ export class FakeStore implements StorePort {
     this.fault('releaseMemberCheck')
     const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
     if (s && s.memberCheckClaimedAt?.getTime() === at.getTime()) s.memberCheckClaimedAt = null
+  }
+
+  async listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]> {
+    this.fault('listMembersToCheck')
+    return this.tables.group_members
+      .filter((m) => m.groupId === groupId && m.leftAt === null && (m.memberCheckedOn == null || m.memberCheckedOn < todayBkk))
+      .map((m) => m.lineUserId)
+      .sort()
+  }
+
+  async markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void> {
+    this.fault('markMemberChecked')
+    const row = this.tables.group_members.find((m) => m.groupId === groupId && m.lineUserId === lineUserId)
+    if (row) row.memberCheckedOn = todayBkk
   }
 
   /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */

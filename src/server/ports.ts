@@ -354,6 +354,11 @@ export interface StorePort {
   finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void>
   /** Clears the claim made `at` without completing the day, so the next tick goes on. */
   releaseMemberCheck(groupId: string, at: Date): Promise<void>
+  /** The group's live Members not yet checked on todayBkk (group_members.member_checked_on
+   *  null or earlier), by line_user_id, so a tick that ran short resumes where it stopped. */
+  listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]>
+  /** Sets member_checked_on = todayBkk on the person's membership row. */
+  markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void>
   /** The group's live Tasks that are not Done, oldest first. */
   listReminderTasks(groupId: string): Promise<ReminderTask[]>
   // #45 answers to reminder cards. Each is one UPDATE whose WHERE holds the precondition,

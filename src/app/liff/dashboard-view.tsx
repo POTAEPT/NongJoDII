@@ -7,7 +7,7 @@ import { post } from './api'
 import {
   FALLBACK_MEMBER, FILES_TEXT, FILTERS, INSIGHT_TEXT, fileLine, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
   errorCopy, filterTasks, groupName, hhmm, initialOf, initialScope, insightTiles, isOverdue, memberCards, memberName,
-  overviewLine, scopeAfterRefresh, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
+  overviewGroups, overviewLine, scopeAfterRefresh, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
   type DashboardData, type DashboardFile, type DashboardGroup, type DashboardInsight, type DashboardTab, type DashboardTask, type GroupSummary,
   type Scope, type StatusCounts, type TaskFilter,
 } from './dashboard-model'
@@ -145,6 +145,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
     setSheet(false)
   }
   const summaries = summarizeGroups(data.groups)
+  const compared = summarizeGroups(overviewGroups(data)) // #90: only groups seen whole
   const current = summaries.find((s) => s.groupId === scope)
 
   return (
@@ -161,14 +162,14 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
               {comparing ? 'ภาพรวมทั้งหมด' : groupName(group!)}
             </span>
             <span className="block text-xs text-[#8A94A6]">
-              {comparing ? `มีทั้งหมด ${data.groups.length} กลุ่ม` : `${current?.memberCount ?? 0} สมาชิก · ${current?.taskCount ?? 0} งาน`}
+              {comparing ? `มีทั้งหมด ${compared.length} กลุ่ม` : current ? summaryLine(current) : ''}
             </span>
           </span>
           <Chevron />
         </button>
 
         {comparing ? (
-          <Compare summaries={summaries} onOpen={(gid) => { pick(gid); setTab('tasks') }} />
+          <Compare summaries={compared} onOpen={(gid) => { pick(gid); setTab('tasks') }} />
         ) : (
           <>
             <Tabs tab={tab} onChange={(t) => { setTab(t); setMemberId(null) }} />
@@ -177,6 +178,8 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
             ) : tab === 'overview' ? (
               memberId ? (
                 <MemberDetail group={group!} memberId={memberId} now={now} onBack={() => setMemberId(null)} onOpen={openTask} />
+              ) : group!.access === 'mine' ? (
+                <MineOverview group={group!} now={now} onOpen={openTask} />
               ) : (
                 <Overview group={group!} now={now} onMember={setMemberId} onOpen={openTask} />
               )
@@ -194,7 +197,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
 
       {sheet && (
         <GroupSheet
-          groups={data.groups} summaries={summaries} scope={scope} compare={compare}
+          compareCount={compared.length} summaries={summaries} scope={scope} compare={compare}
           onPick={pick} onClose={() => setSheet(false)}
         />
       )}
@@ -352,6 +355,50 @@ function Notice({ tone, title, text, children }: { tone: 'doc' | 'user' | 'refre
 }
 
 // ---------- Overview tab ----------
+
+/** "4 สมาชิก · 9 งาน"; in a 'mine' group the count is the requester's own Tasks (#90). */
+function summaryLine(s: GroupSummary): string {
+  return s.access === 'mine'
+    ? `${s.memberCount} สมาชิก · งานของฉัน ${s.taskCount} งาน`
+    : `${s.memberCount} สมาชิก · ${s.taskCount} งาน`
+}
+
+/** #90: a Member's overview of a group ("งานของฉัน"). Their payload holds only their own
+ *  Tasks and no insight, so it shows those Tasks, the saved files and who is in the group,
+ *  never the per-Member status cards (everyone else would look idle). */
+function MineOverview({ group, now, onOpen }: { group: DashboardGroup; now: Date; onOpen: (taskId: string) => void }) {
+  const open = filterTasks(group.tasks, 'all')
+  return (
+    <>
+      <div>
+        <h2 className="text-base font-bold">งานของฉัน {open.length} งาน</h2>
+        <p className="text-xs text-[#8A94A6]">เจ้าของบอทเห็นภาพรวมงานของทั้งกลุ่ม</p>
+      </div>
+      {open.length === 0 ? (
+        <p className="rounded-2xl bg-white p-4 text-sm text-[#8A94A6] ring-1 ring-[#E6EAF0]">ยังไม่มีงานที่มอบให้คุณในกลุ่มนี้</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {open.map((t) => <TaskRow key={t.taskId} task={t} now={now} onOpen={onOpen} />)}
+        </div>
+      )}
+      <FilesCard files={group.files} />
+      <div>
+        <h2 className="text-base font-bold">สมาชิก {group.members.length} คน</h2>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {group.members.map((m) => (
+            <span key={m.lineUserId} className="flex items-center gap-2 rounded-full bg-white py-1 pl-1 pr-3 text-sm ring-1 ring-[#E6EAF0]">
+              <Avatar name={memberName(m)} size="sm" />
+              {memberName(m)}
+              {m.lineUserId === group.ownerLineUserId && (
+                <span className="rounded-full bg-[#DCE8F7] px-2 text-[11px] font-bold text-[#1F5BAD]">เจ้าของบอท</span>
+              )}
+            </span>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
 
 function Overview({ group, now, onMember, onOpen }: {
   group: DashboardGroup; now: Date; onMember: (id: string) => void; onOpen: (taskId: string) => void
@@ -637,8 +684,8 @@ function Ring({ counts, percent }: { counts: StatusCounts; percent: number }) {
 
 // ---------- Group picker sheet ----------
 
-function GroupSheet({ groups, summaries, scope, compare, onPick, onClose }: {
-  groups: DashboardGroup[]; summaries: GroupSummary[]; scope: Scope; compare: boolean
+function GroupSheet({ compareCount, summaries, scope, compare, onPick, onClose }: {
+  compareCount: number; summaries: GroupSummary[]; scope: Scope; compare: boolean
   onPick: (s: Scope) => void; onClose: () => void
 }) {
   const row = (on: boolean, key: string, avatar: string, title: string, sub: string, dark: boolean) => (
@@ -662,9 +709,9 @@ function GroupSheet({ groups, summaries, scope, compare, onPick, onClose }: {
           <button type="button" aria-label="ปิด" onClick={onClose} className="px-2 text-xl text-[#6B7690]">×</button>
         </div>
         <div className="flex flex-col gap-2">
-          {compare && row(scope === 'all', 'all', 'ทั้ง', 'ภาพรวมกลุ่มทั้งหมด', `${groups.length} กลุ่ม`, true)}
+          {compare && row(scope === 'all', 'all', 'ทั้ง', 'ภาพรวมกลุ่มทั้งหมด', `${compareCount} กลุ่ม`, true)}
           {compare && <p className="mt-1 text-[11px] text-[#8A94A6]">กลุ่มทั้งหมด</p>}
-          {summaries.map((s) => row(scope === s.groupId, s.groupId, s.name, s.name, `${s.memberCount} สมาชิก · ${s.taskCount} งาน`, false))}
+          {summaries.map((s) => row(scope === s.groupId, s.groupId, s.name, s.name, summaryLine(s), false))}
         </div>
       </div>
     </div>

@@ -5,6 +5,9 @@ import { BKK_OFFSET_MS, bangkokParts, bangkokTodayLabel, bangkokWeekStartLabel, 
 // The data is the Dashboard read (#17, server/dashboard/load.ts): POST /api/dashboard/load answers with DashboardData,
 // already limited to what the requester may see (a PM sees every group of the Project, a
 // Member only their own groups; an outsider gets 403). This file never decides access.
+// #90: each group carries access. 'overview' groups hold every Task and the insight; 'mine'
+// groups hold only the requester's own Tasks, so they never count as a group's progress
+// and never enter the PM's comparison.
 // Names are LINE names, never nicknames (decided 2026-11-11).
 
 export type { DashboardData, DashboardFile, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
@@ -85,7 +88,7 @@ export function progressPercent(counts: StatusCounts): number {
 }
 
 export type GroupSummary = {
-  groupId: string; name: string; memberCount: number; taskCount: number
+  groupId: string; name: string; access: DashboardGroup['access']; memberCount: number; taskCount: number
   counts: StatusCounts; percent: number
   nextDue: DashboardTask | null // earliest due date among Tasks not Done
 }
@@ -95,7 +98,7 @@ export function summarizeGroups(groups: DashboardGroup[]): GroupSummary[] {
   return groups.map((g) => {
     const counts = countByStatus(g.tasks)
     return {
-      groupId: g.groupId, name: groupName(g), memberCount: g.members.length, taskCount: g.tasks.length,
+      groupId: g.groupId, name: groupName(g), access: g.access, memberCount: g.members.length, taskCount: g.tasks.length,
       counts, percent: progressPercent(counts), nextDue: nextDueTask(g.tasks),
     }
   })
@@ -250,9 +253,15 @@ export const TABS: { key: DashboardTab; label: string }[] = [
 /** 'all' is the PM's comparison across groups; otherwise one group's id. */
 export type Scope = 'all' | string
 
-/** The PM's comparison needs a PM and at least two groups to compare. */
+/** #90: the groups the requester sees whole (as a PM of their Project). Only these are
+ *  compared: a 'mine' group's Tasks are only the requester's own. */
+export function overviewGroups(data: DashboardData): DashboardGroup[] {
+  return data.groups.filter((g) => g.access === 'overview')
+}
+
+/** The PM's comparison needs at least two overview groups to compare. */
 export function canCompare(data: DashboardData): boolean {
-  return data.role === 'pm' && data.groups.length > 1
+  return data.role === 'pm' && overviewGroups(data).length > 1
 }
 
 /** Where the screen starts: the group named by the link (the weekly insight's button

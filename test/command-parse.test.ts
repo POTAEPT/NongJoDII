@@ -25,7 +25,11 @@ describe('parseGroupCommand', () => {
     expect(parseGroupCommand(text)).toBe('settings')
   })
 
-  it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'NongJoDII ขอไฟล์', 'น้องจดดี สรุปหน่อยนะ', 'จดดี สรุปหน่อย', 'ตั้งค่า', null])('does not match %j', (text) => {
+  it.each(['NongJoDII ขอไฟล์', '@NongJoDII ขอไฟล์', 'nongjodii   ขอไฟล์ ', 'น้องจดดี ขอไฟล์', 'NongJoDIIขอไฟล์'])('matches %j as request_file (#33)', (text) => {
+    expect(parseGroupCommand(text)).toBe('request_file')
+  })
+
+  it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'ขอไฟล์', 'NongJoDII ขอไฟล์หน่อย', 'น้องจดดี สรุปหน่อยนะ', 'จดดี สรุปหน่อย', 'ตั้งค่า', null])('does not match %j', (text) => {
     expect(parseGroupCommand(text)).toBeNull()
   })
 })

@@ -231,6 +231,13 @@ export function initialScope(data: DashboardData, linkedGroupId: string | null):
   return data.groups[0]?.groupId ?? 'all'
 }
 
+/** The scope to keep after a refresh: the one on screen while it is still visible (a group
+ *  the requester has since left falls back to where the screen would start). */
+export function scopeAfterRefresh(data: DashboardData, current: Scope, linkedGroupId: string | null): Scope {
+  if (current === 'all' ? canCompare(data) : data.groups.some((g) => g.groupId === current)) return current
+  return initialScope(data, linkedGroupId)
+}
+
 export function errorCopy(status: number): string {
   if (status === 401) return 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
   if (status === 403) return 'ขอให้สมาชิกเชิญคุณเข้ากลุ่มใน LINE ก่อน จึงจะดูงานได้'

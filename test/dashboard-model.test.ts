@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   calendarWeek, canCompare, countByStatus, dueLabel, filterTasks, initialScope, memberCards, nextDueTask,
-  progressPercent, summarizeGroups, tasksDueOn, unownedTasks,
+  progressPercent, scopeAfterRefresh, summarizeGroups, tasksDueOn, unownedTasks,
   type DashboardData, type DashboardGroup, type DashboardTask,
 } from '@/app/liff/dashboard-model'
 import { readLiffParams } from '@/app/liff/params'
@@ -100,6 +100,16 @@ describe('Dashboard model (#18)', () => {
     expect(initialScope(pm, null)).toBe('all')
     expect(initialScope(member, null)).toBe('g1')
     expect(initialScope(member, 'g-not-mine')).toBe('g1') // a group the server did not send is never selected
+  })
+
+  it('keeps the selected group or comparison after a refresh while it is still visible', () => {
+    const pm: DashboardData = { role: 'pm', groups: [dii, design] }
+    expect(scopeAfterRefresh(pm, 'g2', null)).toBe('g2')
+    expect(scopeAfterRefresh(pm, 'all', 'g2')).toBe('all')
+    // The person left g2 since: fall back to where the screen would start.
+    expect(scopeAfterRefresh({ role: 'pm', groups: [dii] }, 'g2', null)).toBe('g1')
+    // No longer two groups to compare: the comparison is gone.
+    expect(scopeAfterRefresh({ role: 'pm', groups: [dii] }, 'all', null)).toBe('g1')
   })
 
   it('opens from the weekly insight link (view=dashboard)', () => {

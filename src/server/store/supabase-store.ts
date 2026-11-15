@@ -1103,17 +1103,28 @@ export class SupabaseStore implements StorePort {
       group_id: string; is_pm: boolean; left_at: string | null
       groups: { project_id: string; projects: { owner_line_user_id: string } }
     }
-    const { data, error } = await this.db
-      .from('group_members')
-      .select('group_id, is_pm, left_at, groups!inner(project_id, left_at, projects!inner(owner_line_user_id))')
-      .eq('line_user_id', lineUserId)
-      .not('groups.project_id', 'is', null)
-      .is('groups.left_at', null)
-    check('listDashboardMemberships', error)
-    return ((data ?? []) as unknown as Row[]).map((r) => ({
-      groupId: r.group_id, projectId: r.groups.project_id,
-      projectOwnerLineUserId: r.groups.projects.owner_line_user_id, isPm: r.is_pm, left: r.left_at !== null,
-    }))
+    // Every page, in a stable order: PostgREST answers at most max_rows (1000) per request,
+    // and a left membership missing from the read would let visibleGroups show that group.
+    const out: DashboardMembership[] = []
+    for (let from = 0; ; from += DASHBOARD_PAGE) {
+      const { data, error } = await this.db
+        .from('group_members')
+        .select('group_id, is_pm, left_at, groups!inner(project_id, left_at, projects!inner(owner_line_user_id))')
+        .eq('line_user_id', lineUserId)
+        .not('groups.project_id', 'is', null)
+        .is('groups.left_at', null)
+        .order('group_id', { ascending: true })
+        .range(from, from + DASHBOARD_PAGE - 1)
+      check('listDashboardMemberships', error)
+      const rows = (data ?? []) as unknown as Row[]
+      for (const r of rows) {
+        out.push({
+          groupId: r.group_id, projectId: r.groups.project_id,
+          projectOwnerLineUserId: r.groups.projects.owner_line_user_id, isPm: r.is_pm, left: r.left_at !== null,
+        })
+      }
+      if (rows.length < DASHBOARD_PAGE) return out
+    }
   }
 
   async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {

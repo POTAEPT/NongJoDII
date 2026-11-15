@@ -7,7 +7,7 @@ import { post } from './api'
 import {
   FALLBACK_MEMBER, FILTERS, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
   errorCopy, filterTasks, groupName, hhmm, initialOf, initialScope, isOverdue, memberCards, memberName,
-  overviewLine, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
+  overviewLine, scopeAfterRefresh, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
   type DashboardData, type DashboardGroup, type DashboardTab, type DashboardTask, type GroupSummary,
   type Scope, type StatusCounts, type TaskFilter,
 } from './dashboard-model'
@@ -45,6 +45,8 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
   const [sheet, setSheet] = useState(false)
   const started = useRef(false)
 
+  const refreshing = useRef(false)
+
   const fetchData = useCallback(async () => {
     setLoad({ kind: 'loading' })
     try {
@@ -58,11 +60,42 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
     }
   }, [idToken, id])
 
+  // A Task opens in another window; on return the data may have changed. Reload quietly:
+  // the screen keeps showing the old data, and the selected group, tab and filters stay.
+  // A failed or refused reload keeps the old data too, except a 403 (the person left).
+  const refresh = useCallback(async () => {
+    if (refreshing.current || document.visibilityState !== 'visible') return
+    refreshing.current = true
+    try {
+      const { status, json } = await post('/api/dashboard/load', { idToken, groupId: id })
+      if (status === 403) return setLoad({ kind: 'error', status })
+      if (status !== 200) return
+      const data = json as DashboardData
+      setScope((current) => scopeAfterRefresh(data, current, id))
+      setLoad({ kind: 'ready', data })
+    } catch {
+      // keep what is on screen
+    } finally {
+      refreshing.current = false
+    }
+  }, [idToken, id])
+
   useEffect(() => {
     if (started.current) return // StrictMode double mount must not load twice
     started.current = true
     void fetchData()
   }, [fetchData])
+
+  useEffect(() => {
+    if (load.kind !== 'ready') return
+    const onReturn = () => void refresh()
+    document.addEventListener('visibilitychange', onReturn)
+    window.addEventListener('focus', onReturn)
+    return () => {
+      document.removeEventListener('visibilitychange', onReturn)
+      window.removeEventListener('focus', onReturn)
+    }
+  }, [load.kind, refresh])
 
   const back = () => liff.closeWindow()
   const openTask = (taskId: string) => liff.openWindow({ url: liffUrl(liffId, 'task', taskId), external: false })

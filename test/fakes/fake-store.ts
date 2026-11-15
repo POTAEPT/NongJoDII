@@ -1090,6 +1090,15 @@ export class FakeStore implements StorePort {
     if (row.leftAt !== null && row.leftAt < t.at) row.leftAt = null
   }
 
+  async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {
+    this.fault('setMemberProfile')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId && m.leftAt === null)
+    if (!row) return { updated: false }
+    row.nicknames = [...t.nicknames]
+    row.role = t.role
+    return { updated: true }
+  }
+
   async releaseTasksOf(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
     this.fault('releaseTasksOf')
     const rows = this.tables.tasks.filter((x) =>

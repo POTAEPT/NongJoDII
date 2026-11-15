@@ -21,9 +21,9 @@ export type Job =
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
-  // #29: people who joined a group, already saved as Members at ingest; the Job fetches their
-  // LINE names so pickers can tell several new Members apart.
-  | { kind: 'member_joined'; lineGroupId: string; lineUserIds: string[] }
+  // #29: people who joined a group, already saved as Members at ingest. The Job answers with
+  // the welcome reply and fetches their LINE names so pickers can tell new Members apart.
+  | { kind: 'member_joined'; groupId: string; lineGroupId: string; lineUserIds: string[]; replyToken: string | null }
 
 /** Stops at the first event that throws and returns the jobs collected before it,
  *  plus that error. Never throws itself. */
@@ -150,7 +150,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (source.type === 'group' && event.type === 'memberJoined') {
     // #29: a person who joins is a Member at once, and a rejoin clears left_at, so they get
     // LIFF access back. Writes first, the ledger row last (as for a leave); both are
-    // idempotent. The Job only fetches LINE names. The welcome reply comes later.
+    // idempotent. The Job sends the welcome reply and fetches LINE names.
     // A redelivered join cannot undo a later leave: it only clears a left_at older than itself.
     const group = await store.ensureGroup(source.groupId)
     const lineUserIds: string[] = []
@@ -164,7 +164,9 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
       webhookEventId: event.webhookEventId, eventType: 'memberJoined', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
     })
-    return inserted && lineUserIds.length > 0 ? { kind: 'member_joined', lineGroupId: source.groupId, lineUserIds } : null
+    return inserted && lineUserIds.length > 0 ? {
+      kind: 'member_joined', groupId: group.id, lineGroupId: source.groupId, lineUserIds, replyToken: event.replyToken ?? null,
+    } : null
   }
 
   const { inserted } = await store.recordWebhookEvent({

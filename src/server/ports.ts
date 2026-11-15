@@ -335,6 +335,8 @@ export interface StorePort {
   /** A person joined (or rejoined) the group: adds a live row (source member_join), or clears
    *  left_at when it is earlier than `at`, so an older join arriving after a leave cannot undo it. */
   markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void>
+  // #29: a live Member's own nicknames and role (the "my info" screen); updated false when they are not live
+  setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>

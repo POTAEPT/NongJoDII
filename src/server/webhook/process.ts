@@ -9,6 +9,7 @@ import { handleMemberJoined } from '@/server/members/welcome'
 import { handleReminderCommand, handleReminderPostback } from '@/server/reminders/answer'
 import { parseReminderAction } from '@/server/reminders/postback'
 import { handleJoin } from '@/server/setup/join'
+import { replySettingsCard } from '@/server/settings/card'
 import { runSummaryCommand } from '@/server/summary/run-summary'
 import type { Job } from './ingest'
 
@@ -95,6 +96,10 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
         await namesReady
         await handleReminderCommand(deps, { groupId, userId: senderLineUserId, command, replyToken })
       }
+      return
+    }
+    if (command === 'settings') {
+      if (replyToken) await replySettingsCard(deps, { groupId, replyToken })
       return
     }
     // Any other text line may report progress on a Task (#7). Its card shows the sender's name.

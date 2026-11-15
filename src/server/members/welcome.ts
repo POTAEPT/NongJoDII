@@ -17,9 +17,34 @@ export const WELCOME_TEXT = {
   altText: 'ยินดีต้อนรับเข้ากลุ่มนะ แตะ "ข้อมูลของฉัน" เพื่อบอกชื่อเล่นและหน้าที่',
 } as const
 
-/** `groupId` is groups.id; the button opens the "my info" screen of that group. */
-export function welcomeCard(p: { liffId: string; groupId: string }): LineMessage {
+/** #83: a Member who left and was invited back. Their nicknames and role were kept (the
+ *  membership row stays with left_at); the Tasks released when they left stay released. */
+export const WELCOME_BACK_TEXT = {
+  title: 'ยินดีต้อนรับกลับนะ',
+  body: 'ชื่อเล่นและหน้าที่เดิมของคุณยังอยู่ แก้ได้ที่ปุ่มด้านล่าง',
+  tasks: 'งานที่เคยรับไว้ถูกคืนให้กลุ่มตอนออกไปแล้ว ถ้าจะทำต่อ กดฉันรับเองที่การ์ดงานได้เลย',
+  altText: 'ยินดีต้อนรับกลับนะ ชื่อเล่นและหน้าที่เดิมของคุณยังอยู่',
+} as const
+
+/** `groupId` is groups.id; the button opens the "my info" screen of that group. `returning`:
+ *  every joiner had left this group before (#83), so the card welcomes them back. */
+export function welcomeCard(p: { liffId: string; groupId: string; returning?: boolean }): LineMessage {
   const open = uri(WELCOME_TEXT.button, liffUrl(p.liffId, 'me', p.groupId))
+  const footer = [button('primary', open), caption(WELCOME_TEXT.footnote, { size: 'xxs', align: 'center' })]
+  if (p.returning) {
+    return {
+      type: 'flex',
+      altText: WELCOME_BACK_TEXT.altText,
+      contents: bubble(
+        [
+          header('info', WELCOME_BACK_TEXT.title),
+          text(WELCOME_BACK_TEXT.body, { color: '#545454' }),
+          text(WELCOME_BACK_TEXT.tasks, { color: '#545454' }),
+        ],
+        footer,
+      ),
+    }
+  }
   return {
     type: 'flex',
     altText: WELCOME_TEXT.altText,
@@ -29,7 +54,7 @@ export function welcomeCard(p: { liffId: string; groupId: string }): LineMessage
         text(WELCOME_TEXT.intro, { color: '#545454' }),
         text(WELCOME_TEXT.ask, { color: '#545454' }),
       ],
-      [button('primary', open), caption(WELCOME_TEXT.footnote, { size: 'xxs', align: 'center' })],
+      footer,
     ),
   }
 }
@@ -40,15 +65,15 @@ export function welcomeCard(p: { liffId: string; groupId: string }): LineMessage
  *  until the person's first message, button press or LIFF login. */
 export async function handleMemberJoined(
   deps: Deps,
-  job: { groupId: string; lineGroupId: string; lineUserIds: string[]; replyToken: string | null },
+  job: { groupId: string; lineGroupId: string; lineUserIds: string[]; replyToken: string | null; returning?: boolean },
 ): Promise<void> {
-  const { groupId, lineGroupId, lineUserIds, replyToken } = job
+  const { groupId, lineGroupId, lineUserIds, replyToken, returning } = job
   await Promise.all([
     (async () => {
       if (!replyToken) return
       try {
-        await deps.line.reply(replyToken, [welcomeCard({ liffId: deps.config.liffId, groupId })])
-        log('member_welcome_replied', { groupId })
+        await deps.line.reply(replyToken, [welcomeCard({ liffId: deps.config.liffId, groupId, returning })])
+        log('member_welcome_replied', { groupId, returning: returning === true })
       } catch (err) {
         logError('member_welcome_failed', { groupId }, err)
       }

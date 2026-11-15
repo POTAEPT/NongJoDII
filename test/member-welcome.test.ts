@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent } from '@/server/line/types'
 import { liffUrl } from '@/server/liff-links'
 import { loadMyProfile, saveMyProfile } from '@/server/members/profile'
-import { WELCOME_TEXT } from '@/server/members/welcome'
+import { WELCOME_BACK_TEXT, WELCOME_TEXT } from '@/server/members/welcome'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
-import { TEST_LIFF_ID, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
+import { TEST_LIFF_ID, TEST_NOW, ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 // #29 (join part): the welcome reply to a memberJoined event, and the "my info" screen
 // where a Member sets their own nicknames and role.
@@ -68,6 +68,37 @@ describe('welcome reply to a join (#29)', () => {
     t.line.profiles.set('Cgroup1:Unew', 'มายด์')
     await t.send(ev.memberJoined({ userIds: ['Unew'] }))
     expect(t.store.tables.line_users.find((u) => u.lineUserId === 'Unew')?.displayName).toBe('มายด์')
+  })
+})
+
+describe('welcome back (#83)', () => {
+  it('a Member who left and is invited back gets the welcome-back reply, with the same my-info button', async () => {
+    const t = setup()
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: TEST_NOW.getTime() }))
+    await t.send(ev.memberJoined({ userIds: [BIW], timestamp: TEST_NOW.getTime() + 60_000 }))
+    expect(t.line.replies).toHaveLength(1)
+    const body = JSON.stringify(t.line.replies[0].messages)
+    expect(body).toContain(WELCOME_BACK_TEXT.title)
+    expect(body).not.toContain(WELCOME_TEXT.title)
+    expect(body).toContain(JSON.stringify(liffUrl(TEST_LIFF_ID, 'me', t.group.id)))
+    // Their nicknames and role were kept.
+    expect(t.row(BIW)).toMatchObject({ nicknames: ['บิว'], role: 'ออกแบบ', leftAt: null })
+  })
+
+  it('a first join still gets the first welcome', async () => {
+    const t = setup()
+    await t.send(ev.memberJoined({ userIds: ['Unew'] }))
+    const body = JSON.stringify(t.line.replies[0].messages)
+    expect(body).toContain(WELCOME_TEXT.title)
+    expect(body).not.toContain(WELCOME_BACK_TEXT.title)
+  })
+
+  it('a join of someone new together with someone coming back gets the first welcome', async () => {
+    const t = setup()
+    await t.send(ev.memberLeft({ userIds: [BIW], timestamp: TEST_NOW.getTime() }))
+    await t.send(ev.memberJoined({ userIds: [BIW, 'Unew'], timestamp: TEST_NOW.getTime() + 60_000 }))
+    expect(t.line.replies).toHaveLength(1)
+    expect(JSON.stringify(t.line.replies[0].messages)).toContain(WELCOME_TEXT.title)
   })
 })
 

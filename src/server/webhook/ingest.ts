@@ -37,7 +37,8 @@ export type Job =
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
   // #29: people who joined a group, already saved as Members at ingest. The Job answers with
   // the welcome reply and fetches their LINE names so pickers can tell new Members apart.
-  | { kind: 'member_joined'; groupId: string; lineGroupId: string; lineUserIds: string[]; replyToken: string | null }
+  // returning (#83): every joiner had left this group before, so the reply welcomes them back.
+  | { kind: 'member_joined'; groupId: string; lineGroupId: string; lineUserIds: string[]; replyToken: string | null; returning: boolean }
 
 /** Stops at the first event that throws and returns the jobs collected before it,
  *  plus that error. Never throws itself. */
@@ -198,9 +199,12 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
     // A redelivered join cannot undo a later leave: it only clears a left_at older than itself.
     const group = await store.ensureGroup(source.groupId)
     const lineUserIds: string[] = []
+    let returning = true
     for (const m of event.joined?.members ?? []) {
       if (m.type !== 'user' || typeof m.userId !== 'string') continue
       await store.upsertLineUser({ lineUserId: m.userId, displayName: null })
+      // Read before the join is written: a person who left this group before is coming back.
+      if ((await store.getMembership(group.id, m.userId)) !== 'left') returning = false
       await store.markMemberJoined({ groupId: group.id, lineUserId: m.userId, at: eventTimestamp })
       lineUserIds.push(m.userId)
     }
@@ -210,6 +214,7 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
     })
     return inserted && lineUserIds.length > 0 ? {
       kind: 'member_joined', groupId: group.id, lineGroupId: source.groupId, lineUserIds, replyToken: event.replyToken ?? null,
+      returning,
     } : null
   }
 

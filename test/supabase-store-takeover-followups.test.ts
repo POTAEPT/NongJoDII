@@ -55,7 +55,7 @@ describe('SupabaseStore.listUnsentTakeoverCards', () => {
       // p2's card went out after the ask; an older push for p1 belongs to an earlier question.
       ok([{ line_target_id: 'Cm2', sent_at: '2026-11-12T03:00:05+00:00' }, { line_target_id: 'Cm1', sent_at: '2026-11-12T02:00:00+00:00' }]),
     ])
-    expect(await store.listUnsentTakeoverCards(after)).toEqual(['p1'])
+    expect(await store.listUnsentTakeoverCards(after)).toEqual([{ projectId: 'p1', askedAt: new Date(asked) }])
     expect(chains[0]).toEqual([
       { method: 'from', args: ['groups'] },
       { method: 'select', args: ['project_id, takeover_asked_at'] },

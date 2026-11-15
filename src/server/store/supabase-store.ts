@@ -36,6 +36,7 @@ import type {
   NewTask,
   NewWebhookEvent,
   OwnerChangeOutcome,
+  PausedOwnerCard,
   OwnerChangeState,
   OwnerClaimOutcome,
   OwnerlessGroup,
@@ -1402,28 +1403,43 @@ export class SupabaseStore implements StorePort {
   }
 
   async listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[]> {
-    type Row = {
-      group_id: string; line_user_id: string; left_at: string
-      groups: { line_group_id: string; nominated_owner_line_user_id: string | null; owner_confirmed_at: string }
-    }
-    // Left memberships of groups with a confirmed Owner the bot is still in; the Owner's own
-    // row is picked out below (PostgREST cannot compare two columns).
-    const rows = await readAllPages<Row>('listConfirmedOwnersWhoLeft', (from, to) =>
+    const m = 'listConfirmedOwnersWhoLeft'
+    // Groups with a confirmed Owner the bot is still in first (groups_admin_idx), then only
+    // their nominees' membership rows: never a scan of every left membership.
+    type G = { id: string; line_group_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
+    const groups = await readAllPages<G>(m, (from, to) =>
       this.db
-        .from('group_members')
-        .select('group_id, line_user_id, left_at, groups!inner(line_group_id, nominated_owner_line_user_id, owner_confirmed_at)')
-        .not('left_at', 'is', null)
-        .not('groups.owner_confirmed_at', 'is', null)
-        .is('groups.left_at', null)
-        .order('group_id')
-        .order('line_user_id')
+        .from('groups')
+        .select('id, line_group_id, nominated_owner_line_user_id, owner_confirmed_at')
+        .not('owner_confirmed_at', 'is', null)
+        .not('nominated_owner_line_user_id', 'is', null)
+        .is('left_at', null)
+        .order('id')
         .range(from, to))
-    return rows
-      // Only a leave at or after the confirm: an Owner confirmed later (a Sub group taken over
-      // by someone who had left it before) has not left since.
-      .filter((r) => r.line_user_id === r.groups.nominated_owner_line_user_id &&
-        Date.parse(r.left_at) >= Date.parse(r.groups.owner_confirmed_at))
-      .map((r) => ({ groupId: r.group_id, lineGroupId: r.groups.line_group_id, lineUserId: r.line_user_id, leftAt: new Date(r.left_at) }))
+    const out: { groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[] = []
+    for (let i = 0; i < groups.length; i += IN_CHUNK) {
+      const chunk = groups.slice(i, i + IN_CHUNK)
+      const byGroup = new Map(chunk.map((g) => [g.id, g]))
+      const rows = await readAllPages<{ group_id: string; line_user_id: string; left_at: string }>(m, (from, to) =>
+        this.db
+          .from('group_members')
+          .select('group_id, line_user_id, left_at')
+          .in('group_id', chunk.map((g) => g.id))
+          .in('line_user_id', [...new Set(chunk.map((g) => g.nominated_owner_line_user_id))])
+          .not('left_at', 'is', null)
+          .order('group_id')
+          .order('line_user_id')
+          .range(from, to))
+      for (const r of rows) {
+        const g = byGroup.get(r.group_id)
+        // The group's own Owner, and only a leave at or after the confirm: an Owner confirmed
+        // later (a Sub group taken over by someone who had left it before) has not left since.
+        if (!g || g.nominated_owner_line_user_id !== r.line_user_id) continue
+        if (Date.parse(r.left_at) < Date.parse(g.owner_confirmed_at)) continue
+        out.push({ groupId: g.id, lineGroupId: g.line_group_id, lineUserId: r.line_user_id, leftAt: new Date(r.left_at) })
+      }
+    }
+    return out
   }
 
   async claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }> {
@@ -1572,6 +1588,9 @@ export class SupabaseStore implements StorePort {
         .is('left_at', null)
         .order('is_main', { ascending: false })
         .order('joined_at', { ascending: true })
+        // joined_at is null until a row's first join (review-followups migration): those
+        // sort last, by when the row was stored.
+        .order('created_at', { ascending: true })
         .order('id', { ascending: true })
         .range(from, from + DASHBOARD_PAGE - 1)
       check('listProjectGroups', error)
@@ -2129,7 +2148,7 @@ export class SupabaseStore implements StorePort {
       .sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
-  async listUnsentTakeoverCards(askedAfter: Date): Promise<string[]> {
+  async listUnsentTakeoverCards(askedAfter: Date): Promise<{ projectId: string; askedAt: Date }[]> {
     const m = 'listUnsentTakeoverCards'
     const waiting = await readAllPages<{ project_id: string; takeover_asked_at: string }>(m, (from, to) =>
       this.db
@@ -2166,12 +2185,67 @@ export class SupabaseStore implements StorePort {
         .order('id')
         .range(from, to))
     const mainOf = new Map(mains.map((g) => [g.project_id, g.line_group_id]))
-    return projectIds.filter((id) => {
-      const target = mainOf.get(id)
-      if (target === undefined) return false
-      const asked = askedAt.get(id) as number
-      return !pushes.some((p) => p.line_target_id === target && Date.parse(p.sent_at) >= asked)
-    })
+    return projectIds
+      .filter((id) => {
+        const target = mainOf.get(id)
+        if (target === undefined) return false
+        const asked = askedAt.get(id) as number
+        return !pushes.some((p) => p.line_target_id === target && Date.parse(p.sent_at) >= asked)
+      })
+      .map((id) => ({ projectId: id, askedAt: new Date(askedAt.get(id) as number) }))
+  }
+
+  async listPausedOwnerCards(): Promise<PausedOwnerCard[]> {
+    const m = 'listPausedOwnerCards'
+    // groups_owner_left_idx serves this filter.
+    type G = { id: string; line_group_id: string; nominated_owner_line_user_id: string | null }
+    const groups = await readAllPages<G>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('id, line_group_id, nominated_owner_line_user_id')
+        .not('owner_left_at', 'is', null)
+        .is('owner_confirmed_at', null)
+        .is('left_at', null)
+        .order('id')
+        .range(from, to))
+    const out: PausedOwnerCard[] = []
+    for (let i = 0; i < groups.length; i += IN_CHUNK) {
+      const chunk = groups.slice(i, i + IN_CHUNK)
+      const prompts = await readAllPages<{ id: string; group_id: string; asked_at: string }>(m, (from, to) =>
+        this.db
+          .from('task_prompts')
+          .select('id, group_id, asked_at')
+          .eq('kind', 'owner_needed')
+          .is('answer', null)
+          .in('group_id', chunk.map((g) => g.id))
+          .order('id')
+          .range(from, to))
+      const promptOf = new Map(prompts.map((p) => [p.group_id, p]))
+      const opened = prompts.map((p) => Date.parse(p.asked_at))
+      const pushes = opened.length === 0 ? [] : await readAllPages<{ line_target_id: string; sent_at: string }>(m, (from, to) =>
+        this.db
+          .from('push_log')
+          .select('line_target_id, sent_at')
+          .eq('purpose', 'owner_needed')
+          .in('line_target_id', chunk.filter((g) => promptOf.has(g.id)).map((g) => g.line_group_id))
+          .gte('sent_at', new Date(Math.min(...opened)).toISOString())
+          .order('id')
+          .range(from, to))
+      for (const g of chunk) {
+        const p = promptOf.get(g.id)
+        const askedAt = p ? Date.parse(p.asked_at) : 0
+        out.push({
+          groupId: g.id, lineGroupId: g.line_group_id, ownerLineUserId: g.nominated_owner_line_user_id,
+          card: p
+            ? {
+                promptId: p.id, askedAt: new Date(askedAt),
+                pushed: pushes.some((x) => x.line_target_id === g.line_group_id && Date.parse(x.sent_at) >= askedAt),
+              }
+            : null,
+        })
+      }
+    }
+    return out
   }
 
   // ---- #11 removal and recovery ----

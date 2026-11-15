@@ -307,6 +307,10 @@ export type OwnerChangeState = {
   waiting: TakeoverSubGroup[]
 }
 /** A Sub group the daily rule detached from its Project. */
+export type PausedOwnerCard = {
+  groupId: string; lineGroupId: string; ownerLineUserId: string | null
+  card: { promptId: string; askedAt: Date; pushed: boolean } | null
+}
 export type DetachedSubGroup = {
   groupId: string; lineGroupId: string; name: string | null
   /** The nominee it keeps (its old Owner), when the store read it (#30 part B). */
@@ -563,6 +567,11 @@ export interface StorePort {
    *  left at or after the confirm, with the leave time. A leave whose Owner mark failed after
    *  the membership write. */
   listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[]>
+  /** #30 reconcile (#74): groups the bot is in that are paused by an Owner leave
+   *  (owner_left_at set, no confirmed Owner), with their open owner_needed card: null when
+   *  none is open; `pushed` when an owner_needed push_log row for the group exists since the
+   *  card was opened. ownerLineUserId is the nominee column (null after a detach). */
+  listPausedOwnerCards(): Promise<PausedOwnerCard[]>
   /** The presser becomes the nominee of a main group whose Owner left, or of a group with no
    *  Project whose Owner left (a Sub group detached by #30 part B), unless another live
    *  Member already holds the nomination. Compare-and-set on the nominee read first, so of two
@@ -677,7 +686,7 @@ export interface StorePort {
   /** #31 lost take-over card: Projects whose Sub groups wait on a question asked at or after
    *  `askedAfter` (not expired), and whose main group has no owner_takeover push_log row
    *  since that ask (a push LINE refused, or one skipped near the quota, left none). */
-  listUnsentTakeoverCards(askedAfter: Date): Promise<string[]>
+  listUnsentTakeoverCards(askedAfter: Date): Promise<{ projectId: string; askedAt: Date }[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
   // groups.joined_at is the time of the latest join event applied (null until the row's
   // first join, not the insert time), so a stale leave is ignored.

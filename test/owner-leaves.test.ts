@@ -462,4 +462,41 @@ describe('review follow-ups (#74)', () => {
     expect(group(t, t.groupId)).toMatchObject({ nominatedOwnerLineUserId: PIM, ownerConfirmedAt: TEST_NOW, ownerLeftAt: null })
     expect(t.line.pushes.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(0)
   })
+
+  it('a paused group whose owner_needed card never opened (the member_left job was lost) gets it from the tick, once', async () => {
+    const t = await setup()
+    Object.assign(group(t, t.groupId), { ownerLeftAt: TEST_NOW, ownerConfirmedAt: null })
+    t.store.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === OWNER)!.leftAt = TEST_NOW
+    await tickAt(t, bkk('2026-11-12T11:00:00'))
+    expect(ownerCards(t)).toHaveLength(1)
+    expect(ownerCards(t)[0].to).toBe(MAIN)
+    expect(prompts(t, t.groupId)).toEqual([expect.objectContaining({ subjectLineUserId: OWNER, answer: null })])
+    await tickAt(t, bkk('2026-11-12T11:15:00'))
+    await tickAt(t, bkk('2026-11-12T13:00:00'))
+    expect(ownerCards(t)).toHaveLength(1)
+  })
+
+  it('an owner_needed card skipped near the quota is pushed again on a retry tick, under its own key', async () => {
+    const t = await setup()
+    t.line.quota = { limit: 10, used: 10 }
+    await send(t, ev.memberLeft({ userIds: [OWNER], groupId: MAIN }))
+    expect(t.line.delivered.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(0)
+    t.line.quota = { limit: null, used: 0 }
+    await tickAt(t, new Date(TEST_NOW.getTime() + 10 * 60_000)) // not a retry tick yet
+    expect(t.line.delivered.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(0)
+    await tickAt(t, new Date(TEST_NOW.getTime() + 15 * 60_000))
+    const sent = t.line.delivered.filter((p) => p.messages.some(isOwnerCard))
+    expect(sent).toHaveLength(1)
+    expect(sent[0].retryKey).toBe(retryKeyFrom(`owner_needed:${prompts(t, t.groupId)[0].id}`))
+    await tickAt(t, new Date(TEST_NOW.getTime() + 120 * 60_000))
+    expect(t.line.delivered.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(1)
+  })
+
+  it('an owner_needed card LINE keeps refusing (4xx) is tried three more times, then not again', async () => {
+    const t = await setup()
+    t.line.rejectPush = true
+    await send(t, ev.memberLeft({ userIds: [OWNER], groupId: MAIN }))
+    for (let m = 15; m <= 3 * 24 * 60; m += 15) await tickAt(t, new Date(TEST_NOW.getTime() + m * 60_000))
+    expect(ownerCards(t)).toHaveLength(1 + 3)
+  })
 })

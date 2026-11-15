@@ -24,6 +24,7 @@ import type {
   NewProgressPrompt,
   NewWebhookEvent,
   OwnerChangeOutcome,
+  PausedOwnerCard,
   OwnerClaimOutcome,
   OwnerlessGroup,
   OwnerExitState,
@@ -1763,7 +1764,7 @@ export class FakeStore implements StorePort {
   }
 
   /** Same rule as SupabaseStore.listUnsentTakeoverCards. */
-  async listUnsentTakeoverCards(askedAfter: Date): Promise<string[]> {
+  async listUnsentTakeoverCards(askedAfter: Date): Promise<{ projectId: string; askedAt: Date }[]> {
     this.fault('listUnsentTakeoverCards')
     const askedAt = new Map<string, number>()
     for (const g of this.tables.groups) {
@@ -1776,7 +1777,28 @@ export class FakeStore implements StorePort {
       if (!main) return false
       return !this.tables.push_log.some((p) =>
         p.purpose === 'owner_takeover' && p.lineTargetId === main.lineGroupId && p.sentAt.getTime() >= (askedAt.get(projectId) as number))
-    })
+    }).map((projectId) => ({ projectId, askedAt: new Date(askedAt.get(projectId) as number) }))
+  }
+
+  /** Same rule as SupabaseStore.listPausedOwnerCards. */
+  async listPausedOwnerCards(): Promise<PausedOwnerCard[]> {
+    this.fault('listPausedOwnerCards')
+    return [...this.tables.groups]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .filter((g) => g.ownerLeftAt != null && g.ownerConfirmedAt === null && !this.isLeft(g.id))
+      .map((g) => {
+        const p = this.tables.owner_prompts.find((x) => x.groupId === g.id && x.answer === null)
+        return {
+          groupId: g.id, lineGroupId: g.lineGroupId, ownerLineUserId: g.nominatedOwnerLineUserId,
+          card: p
+            ? {
+                promptId: p.id, askedAt: new Date(p.askedAt.getTime()),
+                pushed: this.tables.push_log.some((x) =>
+                  x.purpose === 'owner_needed' && x.lineTargetId === g.lineGroupId && x.sentAt >= p.askedAt),
+              }
+            : null,
+        }
+      })
   }
 
   // ---- #11 removal and recovery ----

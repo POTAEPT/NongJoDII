@@ -492,13 +492,15 @@ describe('review follow-ups (#72)', () => {
       expect((await handleTickRequest(tickRequest(), h.deps, h.defer, [takeoverCardRetryJob])).status).toBe(200)
       await h.runDeferred()
     }
-    await retry(new Date(TEST_NOW.getTime() + 15 * MIN)) // still no quota
+    await retry(new Date(TEST_NOW.getTime() + 15 * MIN)) // first retry tick: still no quota
     expect(h.line.delivered).toHaveLength(0)
     h.line.quota = { limit: null, used: 0 }
-    await retry(new Date(TEST_NOW.getTime() + 30 * MIN))
+    await retry(new Date(TEST_NOW.getTime() + 30 * MIN)) // not a retry tick
+    expect(h.line.delivered).toHaveLength(0)
+    await retry(new Date(TEST_NOW.getTime() + 120 * MIN)) // second retry tick
     expect(h.line.delivered.map((p) => p.to)).toEqual(['Cmain'])
     expect(altTexts(h.line.delivered[0].messages)[0]).toContain(TAKEOVER_CARD_TEXT.paused(2))
-    await retry(new Date(TEST_NOW.getTime() + 45 * MIN))
+    await retry(new Date(TEST_NOW.getTime() + 24 * 60 * MIN)) // third retry tick: already sent
     await retry(new Date(TEST_NOW.getTime() + 2 * 86_400_000))
     // Skipped tries never reached LINE; the dedupe keeps it to one card.
     expect(h.line.pushes.filter((p) => p.to === 'Cmain')).toHaveLength(1)
@@ -600,5 +602,21 @@ describe('take-over card retry: what it does not cover', () => {
     await h.runDeferred()
     // LINE may have delivered it, so the claim stands for it: no second push.
     expect(h.line.pushes.filter((p) => p.to === 'Cmain')).toHaveLength(1)
+  })
+})
+
+describe('take-over card retry: a card LINE keeps refusing', () => {
+  it('a 4xx is tried three more times (15 min, 2 h, 24 h after the ask), not every tick', async () => {
+    const h = makeTestDeps()
+    const { projectId } = seedProject(h)
+    h.line.rejectPush = true
+    await change(h, projectId)
+    for (let t = 15 * MIN; t <= 3 * 86_400_000; t += 15 * MIN) {
+      h.setNow(new Date(TEST_NOW.getTime() + t))
+      expect((await handleTickRequest(tickRequest(), h.deps, h.defer, [takeoverCardRetryJob])).status).toBe(200)
+      await h.runDeferred()
+    }
+    expect(h.line.pushes.filter((p) => p.to === 'Cmain')).toHaveLength(1 + 3)
+    expect(h.line.delivered).toHaveLength(0)
   })
 })

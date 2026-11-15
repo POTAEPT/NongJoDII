@@ -1,5 +1,6 @@
 import { log, logError } from '../log'
-import type { LineMessage, LineUriAction } from '../line/types'
+import { bubble, button, caption, header, text, uri } from '../line/flex-ui'
+import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
 import type { Deps } from '../ports'
 
@@ -7,45 +8,29 @@ import type { Deps } from '../ports'
 // with a short welcome and a button to the "my info" screen for nicknames and role.
 // Same look as the setup card (setup/card.ts).
 
-const C = { text: '#14213D', muted: '#8A94A6', primary: '#1F5BAD' } as const
-
 export const WELCOME_TEXT = {
-  title: 'ยินดีต้อนรับเข้ากลุ่มนะ 👋',
+  title: 'ยินดีต้อนรับเข้ากลุ่มนะ',
   intro: 'น้องจดดีช่วยสรุปงานจากแชต ติดตามงาน และเตือนงานของกลุ่มนี้',
   ask: 'บอกชื่อเล่นและหน้าที่ของคุณหน่อย น้องจะได้รู้ว่าแชตพูดถึงใคร',
   button: 'ข้อมูลของฉัน',
   footnote: 'ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น ทุกหน้าจอแสดงชื่อ LINE',
-  altText: 'ยินดีต้อนรับเข้ากลุ่มนะ 👋 แตะ "ข้อมูลของฉัน" เพื่อบอกชื่อเล่นและหน้าที่',
+  altText: 'ยินดีต้อนรับเข้ากลุ่มนะ แตะ "ข้อมูลของฉัน" เพื่อบอกชื่อเล่นและหน้าที่',
 } as const
-
-function text(t: string, extra: Record<string, unknown> = {}) {
-  return { type: 'text', text: t, wrap: true, color: C.text, size: 'sm', ...extra }
-}
 
 /** `groupId` is groups.id; the button opens the "my info" screen of that group. */
 export function welcomeCard(p: { liffId: string; groupId: string }): LineMessage {
-  const open: LineUriAction = { type: 'uri', label: WELCOME_TEXT.button, uri: liffUrl(p.liffId, 'me', p.groupId) }
+  const open = uri(WELCOME_TEXT.button, liffUrl(p.liffId, 'me', p.groupId))
   return {
     type: 'flex',
     altText: WELCOME_TEXT.altText,
-    contents: {
-      type: 'bubble', size: 'kilo',
-      body: {
-        type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg',
-        contents: [
-          text(WELCOME_TEXT.title, { weight: 'bold', size: 'md' }),
-          text(WELCOME_TEXT.intro),
-          text(WELCOME_TEXT.ask),
-        ],
-      },
-      footer: {
-        type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: 'md',
-        contents: [
-          { type: 'button', style: 'primary', color: C.primary, height: 'sm', action: open },
-          text(WELCOME_TEXT.footnote, { size: 'xxs', color: C.muted, align: 'center' }),
-        ],
-      },
-    },
+    contents: bubble(
+      [
+        header('info', WELCOME_TEXT.title),
+        text(WELCOME_TEXT.intro, { color: '#545454' }),
+        text(WELCOME_TEXT.ask, { color: '#545454' }),
+      ],
+      [button('primary', open), caption(WELCOME_TEXT.footnote, { size: 'xxs', align: 'center' })],
+    ),
   }
 }
 

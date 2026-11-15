@@ -105,8 +105,8 @@ describe('#2a join', () => {
     const { messages } = t.line.replies[0]
     expect(messages[0].type).toBe('flex')
     const json = flexJson(messages)
-    for (const s of ['สวัสดี น้องจดดีมาแล้วนะ 👋', 'ใช้เวลาประมาณ 1 นาที 4 ข้อ:', 'กลุ่มนี้ทำเรื่องอะไร', 'ใครทำหน้าที่อะไร',
-      'อยากให้ NongJoDII ช่วยอะไร', 'ให้เตือนตอนไหน', 'ตั้งค่ากลุ่ม', 'แตะแล้วเปิดแบบฟอร์มในแอป LINE']) {
+    for (const s of ['สวัสดี น้องจดดีมาแล้วนะ', 'ใช้เวลาประมาณ 1 นาที · 4 ข้อ', 'กลุ่มนี้ทำเรื่องอะไร', 'ใครทำหน้าที่อะไร',
+      'อยากให้น้องจดดีช่วยอะไร', 'ให้เตือนตอนไหน', 'ตั้งค่ากลุ่ม', 'แตะแล้วเปิดแบบฟอร์มในแอป LINE']) {
       expect(json).toContain(s)
     }
     expect(uris(messages)).toEqual([liffUrl(TEST_LIFF_ID, 'setup', t.group.id)])
@@ -206,7 +206,7 @@ describe('setup send, self as Owner', () => {
     // #2e, pushed within the budget, with no Owner confirm button.
     expect(t.line.delivered).toHaveLength(1)
     const json = flexJson(t.line.delivered[0].messages)
-    for (const s of ['ตั้งค่าเสร็จแล้ว ✓', 'NongJoDII รู้จักกลุ่มและทีมแล้ว', 'จากนี้น้องจดดีจะอ่านแชตและร่างงานให้กดยืนยันนะ', 'เปลี่ยนการตั้งค่าได้ทุกเมื่อ']) {
+    for (const s of ['ตั้งค่าเสร็จแล้ว', 'น้องจดดีรู้จักกลุ่มและทีมแล้ว', 'จากนี้น้องจดดีจะอ่านแชตและร่างงานให้กดยืนยันนะ', 'เปลี่ยนการตั้งค่าได้ทุกเมื่อ']) {
       expect(json).toContain(s)
     }
     expect(json).not.toContain('ยืนยันเจ้าของบอท')
@@ -663,7 +663,7 @@ describe('second way to the setup card: the no-Owner Summary reply', () => {
     const [text, card] = messages
     expect(text.type === 'text' && text.text).toContain('กรุณาตั้งค่ากลุ่มให้เสร็จก่อน')
     expect(card.type).toBe('flex')
-    expect(flexJson([card])).toContain('สวัสดี น้องจดดีมาแล้วนะ 👋')
+    expect(flexJson([card])).toContain('สวัสดี น้องจดดีมาแล้วนะ')
     expect(uris([card])).toEqual([liffUrl(TEST_LIFF_ID, 'setup', groupId)])
   }
 

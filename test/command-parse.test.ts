@@ -9,7 +9,19 @@ describe('parseGroupCommand', () => {
     },
   )
 
-  it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'NongJoDII ขอไฟล์', null])('does not match %j', (text) => {
+  it.each(['น้องจดดี สรุปหน่อย', '@น้องจดดี สรุปหน่อย', 'น้องจดดีสรุปหน่อย', 'น้องจดดี summarize'])(
+    'matches the Thai name %j (Figma UI v4 #3)',
+    (text) => {
+      expect(parseGroupCommand(text)).toBe('summarize')
+    },
+  )
+
+  it('reads the typed reminder fallbacks under the Thai name too', () => {
+    expect(parseGroupCommand('น้องจดดี done')).toBe('done')
+    expect(parseGroupCommand('น้องจดดี need time')).toBe('need_time')
+  })
+
+  it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'NongJoDII ขอไฟล์', 'น้องจดดี สรุปหน่อยนะ', 'จดดี สรุปหน่อย', null])('does not match %j', (text) => {
     expect(parseGroupCommand(text)).toBeNull()
   })
 })

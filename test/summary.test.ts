@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { buttonActions, messageText, messagesText } from './flex-text'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent, LineMessage } from '@/server/line/types'
 import { AdapterError } from '@/server/log'
@@ -72,10 +73,11 @@ function addDays(isoDate: string | null, days: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+/** The reply's words: the summary text, plus the Task card's text when there is one. */
 function textOf(messages: LineMessage[]): string {
   const m = messages[0]
   if (m.type !== 'text') throw new Error('first message is not text')
-  return m.text
+  return messagesText(messages)
 }
 
 describe('Summary command', () => {
@@ -163,7 +165,7 @@ describe('Summary command', () => {
     expect(text).toContain('ผู้รับ: Pim Sirin · กำหนด: 20 พ.ย. 17:00')
     expect(text).toContain('ยังไม่มีผู้รับ · กำหนด: ไม่ระบุ')
     expect(text).toContain('จาก Bank T. เวลา 12 พ.ย. 09:01')
-    expect(text).toContain('งานที่พบ (2)')
+    expect(text).toContain('สรุปจากแชต · พบ 2 งาน')
     expect(text).not.toContain('{m')
     expect(text).not.toContain('พิม')
     expect(text).not.toContain('แบงค์')
@@ -219,12 +221,13 @@ describe('Summary command', () => {
     await t.command()
     const msgs = t.line.replies[0].messages
     expect(msgs).toHaveLength(2)
-    const button = msgs[1]
-    if (button.type !== 'template') throw new Error('second message is not a template')
-    expect(button.altText).toBe('สรุปแชท: พบ 2 งาน')
-    expect(button.template.text).toBe('พบ 2 งาน กดเพื่อเลือก แก้ไข และยืนยันก่อนสร้างงาน')
-    expect(button.template.actions[0].label).toBe('ตรวจและยืนยันงาน')
-    expect(button.template.actions[0].uri).toBe(
+    const card = msgs[1]
+    if (card.type !== 'flex') throw new Error('second message is not a Flex card')
+    expect(card.altText).toBe('สรุปแชต: พบ 2 งาน')
+    expect(messageText(card)).toContain('สรุปจากแชต · พบ 2 งาน')
+    const [review] = buttonActions(card.contents)
+    expect(review.label).toBe('ตรวจและยืนยันงาน')
+    expect(review.uri).toBe(
       `https://liff.line.me/${TEST_LIFF_ID}?view=review&id=${t.store.tables.summaries[0].id}`,
     )
   })
@@ -293,7 +296,7 @@ describe('Summary command', () => {
     for (let i = 0; i < 5; i++) t.store.failNext('settleAiUsage')
     await t.command()
     expect(t.line.replies).toHaveLength(1)
-    expect(textOf(t.line.replies[0].messages)).toContain('สรุปแชทล่าสุด')
+    expect(textOf(t.line.replies[0].messages)).toContain('สรุปแชตล่าสุด')
     expect(t.store.tables.summaries).toHaveLength(1)
     expect(t.store.tables.ai_usage).toHaveLength(1)
     // The open estimate row stays: output counted at the full maxTokens, not the reported 300.
@@ -307,7 +310,7 @@ describe('Summary command', () => {
     await t.command()
     expect(t.llm.requests).toHaveLength(0)
     expect(textOf(t.line.replies[0].messages)).toBe(
-      'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชทไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน',
+      'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชตไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน',
     )
   })
 
@@ -316,7 +319,7 @@ describe('Summary command', () => {
     await seedChat(t)
     t.llm.respond({ content: 'not json', model: TEXT_MODEL, usage: USAGE })
     await t.command()
-    expect(textOf(t.line.replies[0].messages)).toBe('ขอโทษนะ ตอนนี้สรุปแชทไม่สำเร็จ ลองใหม่อีกครั้ง')
+    expect(textOf(t.line.replies[0].messages)).toBe('ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง')
     expect(t.store.tables.ai_usage).toHaveLength(1)
     expect(t.store.tables.summaries).toHaveLength(0)
   })
@@ -328,7 +331,7 @@ describe('Summary command', () => {
     await t.command()
     const msgs = t.line.replies[0].messages
     expect(msgs).toHaveLength(1)
-    expect(textOf(msgs)).toBe('สรุปแชทล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชทช่วงนี้')
+    expect(textOf(msgs)).toBe('สรุปแชตล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชตช่วงนี้')
   })
 
   it('15. with Summary off it explains and calls no AI (L4)', async () => {
@@ -336,7 +339,7 @@ describe('Summary command', () => {
     t.store.tables.groups[0].featureSummarize = false
     await seedChat(t)
     await t.command()
-    expect(textOf(t.line.replies[0].messages)).toBe('ฟีเจอร์สรุปแชทปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า')
+    expect(textOf(t.line.replies[0].messages)).toBe('ฟีเจอร์สรุปแชตปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า')
     expect(t.llm.requests).toHaveLength(0)
     expect(t.store.tables.summaries).toHaveLength(0)
   })
@@ -351,7 +354,7 @@ describe('Summary command', () => {
     expect(t.store.tables.task_candidates).toHaveLength(0)
     const msgs = t.line.replies[0].messages
     expect(msgs).toHaveLength(1)
-    expect(textOf(msgs)).toBe('สรุปแชทล่าสุด\nPim Sirin จะทำสไลด์ ส่วน Bank T. ดูเรื่องห้อง')
+    expect(textOf(msgs)).toBe('สรุปแชตล่าสุด\nPim Sirin จะทำสไลด์ ส่วน Bank T. ดูเรื่องห้อง')
   })
 
   it('17. a missing group row does nothing (L4)', async () => {
@@ -380,7 +383,7 @@ describe('Summary command', () => {
     t.llm.fail(err)
     await t.command()
     expect(t.line.replies).toHaveLength(1)
-    expect(textOf(t.line.replies[0].messages)).toBe('ขอโทษนะ ตอนนี้สรุปแชทไม่สำเร็จ ลองใหม่อีกครั้ง')
+    expect(textOf(t.line.replies[0].messages)).toBe('ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง')
     expect(t.store.tables.ai_usage).toHaveLength(0)
     expect(t.store.tables.summaries).toHaveLength(0)
   })
@@ -503,8 +506,8 @@ describe('Summary commands in one webhook', () => {
     )
     expect(t.line.replies).toHaveLength(2)
     expect(t.line.replies.map((r) => textOf(r.messages)).sort()).toEqual([
-      'ขอโทษนะ ตอนนี้สรุปแชทไม่สำเร็จ ลองใหม่อีกครั้ง',
-      'สรุปแชทล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชทช่วงนี้',
+      'ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง',
+      'สรุปแชตล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชตช่วงนี้',
     ])
     expect(t.store.tables.summaries).toHaveLength(1)
   })

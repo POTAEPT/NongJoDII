@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { messageText } from './flex-text'
 import { capMessage, getFairUseStatus, warnMessage } from '@/server/usage/fair-use'
 import { makeTestDeps } from './harness'
 
@@ -89,10 +90,13 @@ describe('messages', () => {
       tokens: 6_100_000, costMicroUsd: 200_000, fraction: 1.02, level: 'capped',
       resetAt: new Date('2026-11-30T17:00:00Z'), monthStartBkk: '2026-11-01',
     })
-    if (m.type !== 'text') throw new Error('not text')
-    expect(m.text).toContain('1 ธันวาคม 2569 เวลา 00:00 น.')
-    expect(m.text).toContain('6,000,000')
-    expect(m.text).toContain('6,100,000 / 6,000,000 โทเคน และ $0.2000 / $0.50')
+    if (m.type !== 'flex') throw new Error('not a Flex card')
+    const text = messageText(m)
+    expect(m.altText).toContain('ครบโควตา')
+    expect(text).toContain('1 ธันวาคม 2569 เวลา 00:00 น.')
+    expect(text).toContain('6,000,000')
+    expect(text).toContain('6,100,000 / 6,000,000 โทเคน และ $0.2000 / $0.50')
+    expect(text).toContain('100%')
   })
 
   it('warnMessage floors the percent', () => {
@@ -100,8 +104,11 @@ describe('messages', () => {
       tokens: 100, costMicroUsd: 410_000, fraction: 0.82, level: 'warn',
       resetAt: new Date('2026-11-30T17:00:00Z'), monthStartBkk: '2026-11-01',
     })
-    if (m.type !== 'text') throw new Error('not text')
-    expect(m.text).toContain('แจ้งเตือน: ใช้ AI ไปแล้ว 82% ของโควตาฟรีเดือนนี้')
-    expect(m.text).toContain('โควตาจะเริ่มใหม่วันที่ 1 ธันวาคม 2569 เวลา 00:00 น.')
+    if (m.type !== 'flex') throw new Error('not a Flex card')
+    expect(m.altText).toBe('แจ้งเตือน: ใช้ AI ไปแล้ว 82% ของโควตาฟรีเดือนนี้')
+    const text = messageText(m)
+    expect(text).toContain('ใกล้ถึงขีดจำกัดแผนฟรี')
+    expect(text).toContain('82%')
+    expect(text).toContain('โควตาจะเริ่มใหม่วันที่ 1 ธันวาคม 2569 เวลา 00:00 น.')
   })
 })

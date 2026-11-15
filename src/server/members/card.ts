@@ -1,15 +1,15 @@
+import { badge, bubble, button, buttonRow, caption, header, postback, text, title, uri } from '../line/flex-ui'
 import { liffUrl } from '../liff-links'
-import type { LineMessage, LinePostbackAction, LineUriAction } from '../line/types'
+import type { LineMessage } from '../line/types'
 import type { TaskRow } from '../ports'
 import { encodeReminderAction } from '../reminders/postback'
 import { bangkokParts } from '../time/bangkok'
 
 // #29 The card posted when people leave a group: their open Tasks went back to Not Assigned,
 // each with Assign (the LIFF Task page, #23) and "ฉันรับเอง" (the same button and rules as the
-// reminder cards, #45). One Flex carousel, so one push. Same look as the reminder cards.
-// Cards show LINE names, never nicknames (decided 2026-11-11).
+// reminder cards, #45). One Flex carousel, so one push. Same look as the reminder cards
+// (Figma UI v4 design system). Cards show LINE names, never nicknames (decided 2026-11-11).
 
-const C = { text: '#14213D', muted: '#8A94A6', primary: '#1F5BAD', primarySoft: '#DCE8F7' } as const
 const TITLE_MAX = 60
 /** LINE allows 12 bubbles in a carousel: the summary plus 11 Tasks. */
 export const MEMBER_LEFT_MAX_TASKS = 11
@@ -23,43 +23,22 @@ export const MEMBER_LEFT_TEXT = {
     const p = bangkokParts(d)
     return `กำหนด ${p.d}/${p.m} ${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}`
   },
-  assign: 'มอบหมาย',
+  assign: 'มอบหมายงาน',
   take: 'ฉันรับเอง',
 } as const
 
-function text(t: string, extra: Record<string, unknown> = {}) {
-  return { type: 'text', text: t, wrap: true, color: C.text, size: 'sm', ...extra }
-}
-
-function bubble(body: unknown[], footer?: unknown[]) {
-  return {
-    type: 'bubble', size: 'kilo',
-    body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg', contents: body },
-    ...(footer ? { footer: { type: 'box', layout: 'horizontal', spacing: 'sm', paddingAll: 'md', contents: footer } } : {}),
-  }
-}
-
 function taskBubble(task: TaskRow, liffId: string) {
-  const title = task.title.length > TITLE_MAX ? `${task.title.slice(0, TITLE_MAX - 1)}…` : task.title
-  const assign: LineUriAction = { type: 'uri', label: MEMBER_LEFT_TEXT.assign, uri: liffUrl(liffId, 'task', task.id) }
-  const take: LinePostbackAction = {
-    type: 'postback', label: MEMBER_LEFT_TEXT.take, data: encodeReminderAction({ kind: 'take', taskId: task.id }),
-    displayText: MEMBER_LEFT_TEXT.take,
-  }
+  const name = task.title.length > TITLE_MAX ? `${task.title.slice(0, TITLE_MAX - 1)}…` : task.title
   return bubble(
     [
-      text(title, { weight: 'bold', size: 'md' }),
-      {
-        type: 'box', layout: 'horizontal', flex: 0, backgroundColor: '#FCEFC7', cornerRadius: 'xxl',
-        paddingStart: 'md', paddingEnd: 'md', paddingTop: 'xs', paddingBottom: 'xs',
-        contents: [text(`● ${MEMBER_LEFT_TEXT.noOwner}`, { flex: 0, size: 'xs', color: '#7A4B00', weight: 'bold' })],
-      },
-      ...(task.dueAt ? [text(MEMBER_LEFT_TEXT.due(task.dueAt), { size: 'xs', color: C.muted })] : []),
+      title(name),
+      { type: 'box', layout: 'horizontal', contents: [badge('not_assigned'), { type: 'filler' }] },
+      ...(task.dueAt ? [caption(MEMBER_LEFT_TEXT.due(task.dueAt))] : []),
     ],
-    [
-      { type: 'button', style: 'secondary', color: C.primarySoft, height: 'sm', action: assign },
-      { type: 'button', style: 'primary', color: C.primary, height: 'sm', action: take },
-    ],
+    [buttonRow(
+      button('secondary', uri(MEMBER_LEFT_TEXT.assign, liffUrl(liffId, 'task', task.id))),
+      button('primary', postback(MEMBER_LEFT_TEXT.take, encodeReminderAction({ kind: 'take', taskId: task.id }))),
+    )],
   )
 }
 
@@ -69,9 +48,9 @@ export function memberLeftCard(p: { names: string[]; tasks: TaskRow[]; liffId: s
   if (tasks.length === 0) throw new Error('memberLeftCard needs at least one Task')
   const shown = tasks.slice(0, MEMBER_LEFT_MAX_TASKS)
   const summary = bubble([
-    text(MEMBER_LEFT_TEXT.title(names), { weight: 'bold', size: 'md' }),
-    text(MEMBER_LEFT_TEXT.body(tasks.length)),
-    ...(tasks.length > shown.length ? [text(MEMBER_LEFT_TEXT.more(tasks.length - shown.length), { size: 'xs', color: C.muted })] : []),
+    header('warning', MEMBER_LEFT_TEXT.title(names)),
+    text(MEMBER_LEFT_TEXT.body(tasks.length), { color: '#545454' }),
+    ...(tasks.length > shown.length ? [caption(MEMBER_LEFT_TEXT.more(tasks.length - shown.length))] : []),
   ])
   return {
     type: 'flex',

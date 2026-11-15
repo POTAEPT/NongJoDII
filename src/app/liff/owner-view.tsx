@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SetupLoad } from '@/server/setup/types'
-import { post } from './api'
+import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
+import { Button, IconLock, Notice, Page, StatusScreen } from './ui'
 
 // #52 Owner confirm, opened from the #2e card. `id` is groups.id. The server takes the
 // person from the verified LIFF ID token; only the nominee may confirm.
 
-const ERR_401 = 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
 const ERR_403 = 'คุณไม่ได้อยู่ในกลุ่มนี้ จึงยืนยันไม่ได้'
 const ERR_404 = 'ไม่พบกลุ่มนี้'
 const ERR_NOT_NOMINEE = 'เฉพาะคนที่ถูกเลือกเป็นเจ้าของบอทเท่านั้นที่กดยืนยันได้'
@@ -69,45 +69,45 @@ export function OwnerView({ liff, idToken, id }: LiffViewProps) {
     }
   }
 
-  if (load.kind === 'loading') return <p className="p-4 text-base">กำลังโหลด...</p>
+  const close = () => liff.closeWindow()
+  const TITLE = 'ยืนยันเจ้าของบอท'
+  if (load.kind === 'loading') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังโหลด..." />
   if (load.kind === 'error') {
     return (
-      <div className="p-4 text-base">
-        <p>{load.message}</p>
-        <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => void fetchGroup()}>
-          ลองอีกครั้ง
-        </button>
-      </div>
+      <StatusScreen kind="error" appTitle={TITLE} onBack={close} title="โหลดข้อมูลไม่สำเร็จ" message={load.message}
+        onRetry={() => void fetchGroup()} onClose={close} />
     )
   }
   const { data } = load
-  const close = (
-    <button type="button" className="mt-4 w-full rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
-      กลับไปที่แชท
-    </button>
-  )
   const isNominee = data.nominee?.lineUserId === data.requesterLineUserId
   if (confirmed || (data.state === 'confirmed' && isNominee)) {
-    return <div className="p-4 text-base"><p className="font-bold">คุณเป็นเจ้าของบอทของกลุ่มนี้แล้ว ✓</p>{close}</div>
+    return <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="คุณเป็นเจ้าของบอทแล้ว" message={`ของกลุ่ม ${data.groupName ?? 'นี้'}`} onClose={close} />
   }
-  if (data.state === 'confirmed' || data.state === 'in_project') return <div className="p-4 text-base"><p>{ERR_CLOSED}</p>{close}</div>
-  if (!isNominee) return <div className="p-4 text-base"><p>{ERR_NOT_NOMINEE}</p>{close}</div>
+  if (data.state === 'confirmed' || data.state === 'in_project') {
+    return <StatusScreen kind="forbidden" appTitle={TITLE} onBack={close} title="ยืนยันไม่ได้" message={ERR_CLOSED} onClose={close} />
+  }
+  if (!isNominee) {
+    return <StatusScreen kind="forbidden" appTitle={TITLE} onBack={close} title="ยืนยันไม่ได้" message={ERR_NOT_NOMINEE} onClose={close} />
+  }
 
   return (
-    <div className="p-4 text-base">
-      <h1 className="text-lg font-bold">ยืนยันเป็นเจ้าของบอทของกลุ่ม {data.groupName ?? 'นี้'}</h1>
-      <p className="mt-2 text-sm text-gray-600">
-        เจ้าของบอทดูแลการตั้งค่าของกลุ่ม และเชื่อม Google Drive ของตัวเองเพื่อเก็บไฟล์ของกลุ่ม
-      </p>
-      {error && <p role="alert" className="mt-4">{error}</p>}
-      <button
-        type="button"
-        className="mt-4 w-full rounded border px-4 py-2 font-bold"
-        disabled={submitting}
-        onClick={() => void confirm()}
-      >
-        {submitting ? 'กำลังยืนยัน...' : 'ยืนยัน'}
-      </button>
-    </div>
+    <Page
+      title={TITLE}
+      onBack={close}
+      bottom={
+        <div className="space-y-2">
+          {error && <Notice>{error}</Notice>}
+          <Button disabled={submitting} onClick={() => void confirm()}>{submitting ? 'กำลังยืนยัน...' : 'ยืนยันเป็นเจ้าของบอท'}</Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col items-center pt-6 text-center">
+        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-soft text-primary"><IconLock className="h-7 w-7" /></span>
+        <h2 className="mt-4 text-[22px] font-semibold leading-snug">ยืนยันเป็นเจ้าของบอทของกลุ่ม {data.groupName ?? 'นี้'}</h2>
+        <p className="mt-2 text-sm text-ink-2">
+          เจ้าของบอทดูแลการตั้งค่าของกลุ่ม และเชื่อม Google Drive ของตัวเองเพื่อเก็บไฟล์ของกลุ่ม
+        </p>
+      </div>
+    </Page>
   )
 }

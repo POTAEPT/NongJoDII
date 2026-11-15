@@ -47,8 +47,9 @@ function seedTask(store: FakeStore, p: Partial<TaskRow> & { groupId: string; tit
 /** The Task titles in a reminder carousel (the first text of each bubble after the summary). */
 function titlesIn(push: { messages: { type: string }[] }): string[] {
   const msg = push.messages[0] as { type: string; contents?: { contents?: unknown[] } }
-  const bubbles = (msg.contents?.contents ?? []).slice(1) as Array<{ body: { contents: Array<{ text?: string }> } }>
-  return bubbles.map((b) => b.body.contents[0].text ?? '')
+  // A Task bubble starts with its reason header; the title is the first bold large text after it.
+  const bubbles = (msg.contents?.contents ?? []).slice(1) as Array<{ body: { contents: Array<{ text?: string; size?: string }> } }>
+  return bubbles.map((b) => b.body.contents.find((c) => c.size === 'lg')?.text ?? '')
 }
 
 const claimedOn = (store: FakeStore, groupId: string) =>

@@ -1,4 +1,5 @@
 import type { LineEvent } from '@/server/line/types'
+import { recordMemberLeft } from '@/server/members/left'
 import type { Deps, MessageMention, TaskRow } from '@/server/ports'
 
 export type Job =
@@ -132,17 +133,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     // waits for the job, gated by the ledger row so a redelivered leave posts once. (A
     // redelivery after the writes but before the ledger row finds nothing left to release
     // and posts no card; the Tasks still show in the daily reminders.)
-    const released: { lineUserId: string; tasks: TaskRow[] }[] = []
-    for (const lineUserId of lineUserIds) {
-      await store.upsertLineUser({ lineUserId, displayName: null }) // group_members.line_user_id FK
-      await store.markMemberLeft({ groupId: group.id, lineUserId, at: eventTimestamp })
-      // A leave older than a rejoin already applied changed nothing: the person is a current
-      // Member, so the release finds them live and keeps their Tasks. It checks and releases
-      // in one database step, so a newer join cannot slip between the two; and it does not
-      // trust `updated`, so a redelivery after the write but before the release still releases.
-      const tasks = await store.releaseTasksIfLeft({ groupId: group.id, lineUserId })
-      if (tasks.length > 0) released.push({ lineUserId, tasks })
-    }
+    const released = await recordMemberLeft(deps, { groupId: group.id, lineUserIds, at: eventTimestamp })
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'memberLeft', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,

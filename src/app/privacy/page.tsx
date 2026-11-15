@@ -11,6 +11,8 @@ import { ADD_FRIEND_URL } from "../fonts";
 // which is #11 and not built yet (2026-11-15). Unsend (#24) has landed. Do not link this
 // page from the consent screen until #11 has landed. "Stop using" in Settings also waits on
 // #11, so this page does not offer it yet.
+// The Clarity line follows src/app/clarity.tsx, which skips every /liff page; update it if
+// #19 (Clarity funnel) changes that.
 
 export const metadata: Metadata = {
   title: "นโยบายความเป็นส่วนตัว · น้องจดดี",
@@ -122,7 +124,7 @@ export default function Privacy() {
             "Vercel: โฮสต์เว็บและเซิร์ฟเวอร์",
             "OpenRouter: ส่งข้อความไปยังโมเดล AI",
             "Google Drive: เก็บไฟล์ของกลุ่มใน Drive ของเจ้าของกลุ่ม",
-            "Microsoft Clarity: สถิติการใช้หน้า LIFF โดยซ่อนข้อความทั้งหมดบนหน้า และลิงก์ของหน้ามีแต่รหัส ไม่มีชื่องานหรือข้อความแชต",
+            "Microsoft Clarity: สถิติการใช้หน้าเว็บของน้องจดดี เช่น หน้านี้และหน้าแรก โดยซ่อนข้อความทั้งหมดบนหน้า ไม่บันทึกหน้าที่เปิดในแอป LINE (LIFF) เพราะลิงก์ของหน้าเหล่านั้นมีรหัสยืนยันตัวตนของ LINE",
           ]} />
         </Section>
 

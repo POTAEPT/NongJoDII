@@ -2,6 +2,7 @@ import { openState, seal } from '../crypto/secretbox'
 import { log, logError } from '../log'
 import { GOOGLE_RETURN, liffUrl } from '../liff-links'
 import type { Defer, Deps } from '../ports'
+import { completePendingOwnerChanges } from '../setup/owner-change'
 import { retireOtherAccountConnections } from './change-account'
 import { DRIVE_FILE_SCOPE } from './client'
 import { driveDeadline, syncDriveForOwner } from './drive-folders'
@@ -65,6 +66,9 @@ async function decide(deps: Deps, params: URLSearchParams, defer: Defer, deadlin
     // Projects now. Done before the page is answered, so a failure shows as 'failed' and
     // the Owner tries again; a repeat finishes what was left.
     if (opened.change) await retireOtherAccountConnections(deps, lineUserId, id)
+    // #30: a nominee of a group whose Owner left now has the Drive connection the change
+    // waits for, so it takes effect here (repeatable: a retry after 'failed' finishes it).
+    await completePendingOwnerChanges(deps, lineUserId, defer)
   } catch (err) {
     logError('google_signin_store_failed', {}, err)
     return 'failed'

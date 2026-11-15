@@ -30,6 +30,7 @@ const ROW = {
   feature_track_remind: true, feature_weekly_summary: true,
   daily_reminder_time: '08:45:00', weekly_summary_weekday: 5, weekly_summary_time: '17:30:00',
   nominated_owner_line_user_id: 'Upim', owner_confirmed_at: null, owner_nominated_at: '2026-11-12T03:00:00+00:00',
+  owner_left_at: null,
 }
 
 describe('SupabaseStore.getGroupSetup', () => {
@@ -41,9 +42,11 @@ describe('SupabaseStore.getGroupSetup', () => {
       features: { summarize: true, draftTasks: true, saveFiles: false, trackRemind: true, weeklySummary: true },
       dailyReminderTime: '08:45', weeklySummaryWeekday: 5, weeklySummaryTime: '17:30',
       nominatedOwnerLineUserId: 'Upim', ownerConfirmedAt: null, ownerNominatedAt: new Date('2026-11-12T03:00:00Z'),
+      ownerLeftAt: null,
     })
     const columns = String(calls.find((c) => c.method === 'select')?.args[0]).split(',').map((c) => c.trim())
     expect(columns).toContain('owner_nominated_at')
+    expect(columns).toContain('owner_left_at')
     expect(calls).toContainEqual({ method: 'eq', args: ['id', 'g1'] })
   })
 

@@ -7,6 +7,7 @@ import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, type ParsedTask } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
+import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { setupCard } from '../setup/card'
 import { isSetupOpen, setupState } from '../setup/rules'
 import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
@@ -51,7 +52,10 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   }
   if (!group.featureSummarize) return replyText(deps, replyToken, groupId, REPLY_FEATURE_OFF, sent)
   // Owner-backed features run only with a confirmed Owner.
-  if (!group.ownerConfirmedAt || !group.nominatedOwnerLineUserId) {
+  if (!ownerBackedOn(group) || !group.nominatedOwnerLineUserId) {
+    // #30: the Owner left. The reply (no push) carries the owner_needed card, so the group
+    // can still reach the Owner page when that card's push was skipped near the quota.
+    if (group.ownerLeftAt !== null) return reply(deps, replyToken, groupId, [ownerNeededCard(deps.config.liffId, groupId)], sent)
     const messages: LineMessage[] = [{ type: 'text', text: REPLY_NO_OWNER }]
     // Setup not finished (no Project yet): the #2a setup card rides on the same reply,
     // the second way to it after the join reply (#52). It reaches groups whose join reply

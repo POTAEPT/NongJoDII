@@ -1404,14 +1404,14 @@ export class SupabaseStore implements StorePort {
   async listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[]> {
     type Row = {
       group_id: string; line_user_id: string; left_at: string
-      groups: { line_group_id: string; nominated_owner_line_user_id: string | null }
+      groups: { line_group_id: string; nominated_owner_line_user_id: string | null; owner_confirmed_at: string }
     }
     // Left memberships of groups with a confirmed Owner the bot is still in; the Owner's own
     // row is picked out below (PostgREST cannot compare two columns).
     const rows = await readAllPages<Row>('listConfirmedOwnersWhoLeft', (from, to) =>
       this.db
         .from('group_members')
-        .select('group_id, line_user_id, left_at, groups!inner(line_group_id, nominated_owner_line_user_id)')
+        .select('group_id, line_user_id, left_at, groups!inner(line_group_id, nominated_owner_line_user_id, owner_confirmed_at)')
         .not('left_at', 'is', null)
         .not('groups.owner_confirmed_at', 'is', null)
         .is('groups.left_at', null)
@@ -1419,7 +1419,10 @@ export class SupabaseStore implements StorePort {
         .order('line_user_id')
         .range(from, to))
     return rows
-      .filter((r) => r.line_user_id === r.groups.nominated_owner_line_user_id)
+      // Only a leave at or after the confirm: an Owner confirmed later (a Sub group taken over
+      // by someone who had left it before) has not left since.
+      .filter((r) => r.line_user_id === r.groups.nominated_owner_line_user_id &&
+        Date.parse(r.left_at) >= Date.parse(r.groups.owner_confirmed_at))
       .map((r) => ({ groupId: r.group_id, lineGroupId: r.groups.line_group_id, lineUserId: r.line_user_id, leftAt: new Date(r.left_at) }))
   }
 

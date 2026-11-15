@@ -158,8 +158,10 @@ describe('SupabaseStore #30 reconcile queries (#74)', () => {
   it('listConfirmedOwnersWhoLeft keeps only the left membership that is the confirmed Owner of a live group', async () => {
     const { store, calls } = stubDb([{
       data: [
-        { group_id: 'g1', line_user_id: 'Uowner', left_at: '2026-11-12T03:00:00+00:00', groups: { line_group_id: 'C1', nominated_owner_line_user_id: 'Uowner' } },
-        { group_id: 'g1', line_user_id: 'Umember', left_at: '2026-11-12T03:00:00+00:00', groups: { line_group_id: 'C1', nominated_owner_line_user_id: 'Uowner' } },
+        { group_id: 'g1', line_user_id: 'Uowner', left_at: '2026-11-12T03:00:00+00:00', groups: { line_group_id: 'C1', nominated_owner_line_user_id: 'Uowner', owner_confirmed_at: '2026-11-01T03:00:00+00:00' } },
+        { group_id: 'g1', line_user_id: 'Umember', left_at: '2026-11-12T03:00:00+00:00', groups: { line_group_id: 'C1', nominated_owner_line_user_id: 'Uowner', owner_confirmed_at: '2026-11-01T03:00:00+00:00' } },
+        // Confirmed after leaving (a take-over of a Sub group they had left): not a lost leave.
+        { group_id: 'g2', line_user_id: 'Unew', left_at: '2026-11-02T03:00:00+00:00', groups: { line_group_id: 'C2', nominated_owner_line_user_id: 'Unew', owner_confirmed_at: '2026-11-05T03:00:00+00:00' } },
       ],
       error: null,
     }])

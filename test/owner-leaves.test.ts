@@ -450,4 +450,16 @@ describe('review follow-ups (#74)', () => {
     expect(group(t, sub.id)).toMatchObject({ projectId: t.projectId, nominatedOwnerLineUserId: PIM, ownerConfirmedAt: null })
     expect(t.line.pushes.filter((p) => p.messages.some(isTakeoverCard))).toHaveLength(1)
   })
+
+  it('the reconcile leaves alone an Owner confirmed after an old leave (a Sub group taken over by a former Member)', async () => {
+    const t = await setup()
+    // PIM's membership is marked left from before the confirm: the take-over confirms an
+    // Owner without a membership check, so this is not a lost Owner leave.
+    const pim = t.store.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === PIM)!
+    pim.leftAt = new Date(TEST_NOW.getTime() - 86_400_000)
+    Object.assign(group(t, t.groupId), { nominatedOwnerLineUserId: PIM, ownerConfirmedAt: TEST_NOW })
+    await tickAt(t, bkk('2026-11-12T11:00:00'))
+    expect(group(t, t.groupId)).toMatchObject({ nominatedOwnerLineUserId: PIM, ownerConfirmedAt: TEST_NOW, ownerLeftAt: null })
+    expect(t.line.pushes.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(0)
+  })
 })

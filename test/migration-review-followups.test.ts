@@ -15,9 +15,9 @@ const sql = readFileSync(join(DIR, FILE), 'utf8')
 const code = sql.split('\n').map((l) => l.replace(/--.*$/, '')).join(' ').replace(/\s+/g, ' ').toLowerCase()
 
 describe(`migration ${FILE}`, () => {
-  it('sorts after every other migration (AGENTS.md: unapplied versions come last)', () => {
+  it('sorts after every migration that existed when it was written (AGENTS.md), with a version of its own', () => {
     const files = readdirSync(DIR).filter((f) => f.endsWith('.sql')).sort()
-    expect(files[files.length - 1]).toBe(FILE)
+    expect(FILE > '20261115150000_progress_picker_dismissed.sql').toBe(true)
     expect(new Set(files.map((f) => f.slice(0, 14))).size).toBe(files.length)
   })
 

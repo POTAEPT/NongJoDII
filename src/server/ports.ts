@@ -560,7 +560,8 @@ export interface StorePort {
    *  has an open one (unique index task_prompts_one_open_owner_needed). */
   openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string | null; askedAt: Date }): Promise<{ promptId: string | null }>
   /** #30 reconcile (#74): groups the bot is in whose confirmed Owner's membership is marked
-   *  left, with the leave time. A leave whose Owner mark failed after the membership write. */
+   *  left at or after the confirm, with the leave time. A leave whose Owner mark failed after
+   *  the membership write. */
   listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[]>
   /** The presser becomes the nominee of a main group whose Owner left, or of a group with no
    *  Project whose Owner left (a Sub group detached by #30 part B), unless another live

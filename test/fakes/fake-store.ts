@@ -1496,7 +1496,7 @@ export class FakeStore implements StorePort {
     for (const g of [...this.tables.groups].sort((a, b) => a.id.localeCompare(b.id))) {
       if (g.ownerConfirmedAt === null || g.nominatedOwnerLineUserId === null || this.isLeft(g.id)) continue
       const m = this.tables.group_members.find((x) => x.groupId === g.id && x.lineUserId === g.nominatedOwnerLineUserId)
-      if (m?.leftAt) out.push({ groupId: g.id, lineGroupId: g.lineGroupId, lineUserId: m.lineUserId, leftAt: new Date(m.leftAt.getTime()) })
+      if (m?.leftAt && m.leftAt >= g.ownerConfirmedAt) out.push({ groupId: g.id, lineGroupId: g.lineGroupId, lineUserId: m.lineUserId, leftAt: new Date(m.leftAt.getTime()) })
     }
     return out
   }

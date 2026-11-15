@@ -587,3 +587,18 @@ describe('a manual detach clears the nominee: any live Member can claim (user de
     expect(groupRow(h, subA.id)).toMatchObject({ nominatedOwnerLineUserId: MEMBER, ownerConfirmedAt: null })
   })
 })
+
+describe('take-over card retry: what it does not cover', () => {
+  it('a push whose outcome is unknown (LINE 5xx or timeout) keeps its budget claim and is not retried', async () => {
+    const h = makeTestDeps()
+    const { projectId } = seedProject(h)
+    h.line.failPush = true
+    await change(h, projectId)
+    h.line.failPush = false
+    h.setNow(new Date(TEST_NOW.getTime() + 15 * MIN))
+    expect((await handleTickRequest(tickRequest(), h.deps, h.defer, [takeoverCardRetryJob])).status).toBe(200)
+    await h.runDeferred()
+    // LINE may have delivered it, so the claim stands for it: no second push.
+    expect(h.line.pushes.filter((p) => p.to === 'Cmain')).toHaveLength(1)
+  })
+})

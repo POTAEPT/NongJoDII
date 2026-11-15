@@ -287,6 +287,25 @@ describe('file saver (#4)', () => {
     expect(h.store.tables.messages.some((m) => m.lineMessageId === 'm-x')).toBe(true)
   })
 
+  it('pauses after the Owner leaves the group (owner_left_at set): no save, no reply', async () => {
+    const h = await setup()
+    h.store.seedMember({ groupId: h.subId, lineUserId: OWNER, displayName: 'Owner Name' })
+    await send(h, ev.memberLeft({ groupId: SUB, userIds: [OWNER] }))
+    await h.runDeferred()
+    const sub = h.store.tables.groups.find((g) => g.id === h.subId)!
+    expect(sub.ownerLeftAt).not.toBeNull()
+    expect(sub.ownerConfirmedAt).toBeNull()
+
+    h.line.contents.set('m-y', { data: bytes('y'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-y', fileName: 'y.pdf', fileSize: 1, replyToken: 'rt-y' }))
+    await h.runDeferred()
+    expect(h.line.contentCalls).toEqual([])
+    expect(h.google.uploads).toEqual([])
+    expect(h.store.tables.files).toEqual([])
+    expect(h.line.replies.filter((r) => r.replyToken === 'rt-y')).toEqual([])
+    expect(h.store.tables.messages.some((m) => m.lineMessageId === 'm-y')).toBe(true)
+  })
+
   it('does nothing when the setup form turned file saving off', async () => {
     const h = await setup()
     h.store.tables.group_setups.find((r) => r.groupId === h.subId)!.featureSaveFiles = false

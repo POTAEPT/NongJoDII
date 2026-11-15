@@ -224,6 +224,21 @@ describe('a member leaves the group (#29)', () => {
     expect(JSON.stringify(t.line.replies.at(-1)?.messages)).toContain(ANSWER_TEXT.left)
   })
 
+  it('a take whose Task a concurrent leave already released answers that the presser left', async () => {
+    const t = setup()
+    const open = t.store.seedTask({ groupId: t.group.id, createdByLineUserId: OWNER, title: 'จองห้อง', status: 'not_assigned' })
+    const realRelease = t.store.releaseTasksIfLeft.bind(t.store)
+    // The leave runs in full (mark left, release) just after the take's write and before its recheck.
+    vi.spyOn(t.store, 'releaseTasksIfLeft').mockImplementationOnce(async (p) => {
+      await t.store.markMemberLeft({ groupId: t.group.id, lineUserId: TON, at: new Date(TEST_NOW.getTime() + 1) })
+      await realRelease(p)
+      return realRelease(p)
+    })
+    await t.send(ev.groupPostback({ userId: TON, data: encodeReminderAction({ kind: 'take', taskId: open.id }) }))
+    expect(t.task(open.id)).toMatchObject({ assigneeLineUserId: null, status: 'not_assigned' })
+    expect(JSON.stringify(t.line.replies.at(-1)?.messages)).toContain(ANSWER_TEXT.left)
+  })
+
   it('makes no AI call', async () => {
     const t = setup()
     await t.send(ev.memberLeft({ userIds: [BIW] }))

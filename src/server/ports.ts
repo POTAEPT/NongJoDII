@@ -368,7 +368,8 @@ export interface StorePort {
   getGroupSetup(groupId: string): Promise<GroupSetup | null>
   /** #28: saves Settings while `ownerLineUserId` is still the group's confirmed Owner (saved
    *  false otherwise, and nothing is written). Group values first, then the listed live
-   *  Members' nicknames and role; not one transaction, and repeating it is harmless. */
+   *  Members' nicknames and role (the caller lists only changed ones); not one transaction,
+   *  and repeating it is harmless. */
   saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }>
   /** One transaction (rpc setup_group): locks the group; a 'closed' group or an Owner who
    *  is not a live Member saves nothing. Otherwise writes the settings and the nominee,

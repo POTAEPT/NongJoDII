@@ -135,6 +135,9 @@ function iso(d: Date | null): string | null {
   return d === null ? null : d.toISOString()
 }
 
+/** Settings writes this many Members' rows at once (#28). Agent choice. */
+const SETTINGS_MEMBER_WRITES = 10
+
 /** PostgREST filter: the row's last membership event is older than `iso`. A row from before
  *  membership_event_at existed falls back to left_at (its last applied leave), and a live
  *  row with neither has seen no event. */
@@ -953,14 +956,18 @@ export class SupabaseStore implements StorePort {
       .select('id')
     check('saveGroupSettings', error)
     if ((data?.length ?? 0) === 0) return { saved: false }
-    for (const m of w.members) {
-      const { error: memberError } = await this.db
-        .from('group_members')
-        .update({ nicknames: m.nicknames, role: m.role })
-        .eq('group_id', w.groupId)
-        .eq('line_user_id', m.lineUserId)
-        .is('left_at', null)
-      check('saveGroupSettings', memberError)
+    // Up to SETTINGS_MEMBER_WRITES at a time, so a save that touches many Members does not
+    // wait through one request after another.
+    for (let i = 0; i < w.members.length; i += SETTINGS_MEMBER_WRITES) {
+      await Promise.all(w.members.slice(i, i + SETTINGS_MEMBER_WRITES).map(async (m) => {
+        const { error: memberError } = await this.db
+          .from('group_members')
+          .update({ nicknames: m.nicknames, role: m.role })
+          .eq('group_id', w.groupId)
+          .eq('line_user_id', m.lineUserId)
+          .is('left_at', null)
+        check('saveGroupSettings', memberError)
+      }))
     }
     return { saved: true }
   }

@@ -64,9 +64,14 @@ export async function submitSettings(deps: Deps, body: unknown): Promise<ApiResu
   const parsed = parseGroupValues(body)
   if (!parsed.ok) return badRequest(parsed.field)
   const v = parsed.value
-  // Only live Members: Settings edits them, it never adds anyone. One who left since the
-  // page loaded is dropped so the rest still saves.
-  const liveIds = new Set((await deps.store.listLiveMembers(group.groupId)).map((m) => m.lineUserId))
+  // Only live Members whose nicknames or role changed: Settings edits them, it never adds
+  // anyone. One who left since the page loaded is dropped so the rest still saves, and an
+  // unchanged one costs no write (the page sends every Member on each save).
+  const live = new Map((await deps.store.listLiveMembers(group.groupId)).map((m) => [m.lineUserId, m]))
+  const changed = v.members.filter((m) => {
+    const now = live.get(m.lineUserId)
+    return now !== undefined && (now.role !== m.role || now.nicknames.join('\n') !== m.nicknames.join('\n'))
+  })
   const { saved } = await deps.store.saveGroupSettings({
     groupId: group.groupId, ownerLineUserId: requester, workDescription: v.workDescription,
     features: {
@@ -75,7 +80,7 @@ export async function submitSettings(deps: Deps, body: unknown): Promise<ApiResu
     },
     dailyReminderTime: v.dailyReminderTime, weeklySummaryWeekday: v.weeklySummaryWeekday,
     weeklySummaryTime: v.weeklySummaryTime,
-    members: v.members.filter((m) => liveIds.has(m.lineUserId)),
+    members: changed,
   })
   // The Owner changed between the check above and the write.
   if (!saved) return notOwner

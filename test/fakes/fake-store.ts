@@ -135,7 +135,7 @@ export type GroupSetupRecord = {
 }
 /** task_prompts rows of kind owner_needed (#30). */
 export type OwnerPromptRecord = {
-  id: string; groupId: string; subjectLineUserId: string; askedAt: Date
+  id: string; groupId: string; subjectLineUserId: string | null; askedAt: Date
   answer: 'owner_confirmed' | null; answeredByLineUserId: string | null; answeredAt: Date | null
 }
 export type ProjectRecord = { id: string; ownerLineUserId: string; driveProjectFolderId?: string | null }
@@ -1377,7 +1377,7 @@ export class FakeStore implements StorePort {
   }
 
   /** The unique index task_prompts_one_open_owner_needed: one open card per group. */
-  async openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }> {
+  async openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string | null; askedAt: Date }): Promise<{ promptId: string | null }> {
     this.fault('openOwnerNeededPrompt')
     fk(this.hasGroup(p.groupId), 'task_prompts.group_id')
     fk(this.hasLineUser(p.subjectLineUserId), 'task_prompts.subject_line_user_id')
@@ -1590,30 +1590,44 @@ export class FakeStore implements StorePort {
     return { outcome: 'saved' }
   }
 
-  async detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]> {
+  /** Same two steps, in the same order, as SupabaseStore. */
+  async detachExpiredTakeovers(askedBefore: Date, at: Date): Promise<DetachedSubGroup[]> {
     this.fault('detachExpiredTakeovers')
-    const out: DetachedSubGroup[] = []
-    for (const g of this.tables.groups) {
+    const expired = this.tables.groups.filter((g) => {
       const asked = this.takeoverAskedAt(g.id)
-      if (asked === null || asked >= askedBefore) continue
+      return asked !== null && asked < askedBefore
+    })
+    this.startOwnerCount(expired.map((g) => g.id), at)
+    const out: DetachedSubGroup[] = []
+    for (const g of expired) {
       this.setupOf(g.id).takeoverAskedAt = null
       g.projectId = null
-      if (at) g.ownerLeftAt = new Date(at.getTime())
-      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
+      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
-  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]> {
+  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<string[]> {
     this.fault('startDetachedOwnerCount')
-    const out: DetachedSubGroup[] = []
+    return this.startOwnerCount(groupIds, at)
+  }
+
+  /** OWNER_COUNT of SupabaseStore: no confirmed Owner, owner_left_at null or older than `at`. */
+  private startOwnerCount(groupIds: string[], at: Date): string[] {
+    const out: string[] = []
     for (const g of this.tables.groups) {
-      if (!groupIds.includes(g.id) || g.projectId !== null || g.ownerConfirmedAt !== null) continue
+      if (!groupIds.includes(g.id) || g.ownerConfirmedAt !== null) continue
       if (g.ownerLeftAt !== null && g.ownerLeftAt >= at) continue
-      g.ownerLeftAt = new Date(at.getTime())
-      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
+      this.clearForOwnerCount(g, at)
+      out.push(g.id)
     }
-    return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+    return out.sort()
+  }
+
+  private clearForOwnerCount(g: GroupRow, at: Date): void {
+    g.ownerLeftAt = new Date(at.getTime())
+    g.nominatedOwnerLineUserId = null
+    Object.assign(this.setupOf(g.id), { ownerNominatedByLineUserId: null, ownerNominatedAt: null })
   }
 
   // ---- #11 removal and recovery ----
@@ -1688,7 +1702,7 @@ export class FakeStore implements StorePort {
     if (!g || g.projectId === null || this.isMainGroup(groupId) || g.ownerConfirmedAt !== null ||
       g.ownerLeftAt === null || g.ownerLeftAt > leftBefore || this.isLeft(groupId)) return { detached: false }
     g.projectId = null
-    g.ownerLeftAt = new Date(at.getTime())
+    this.clearForOwnerCount(g, at)
     Object.assign(this.setupOf(groupId), { takeoverAskedAt: null, driveFolderId: null })
     return { detached: true }
   }

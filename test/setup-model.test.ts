@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addNickname, initialSetupForm, removeNickname, setNickname, setRole, stepForField, toSubmitBody, validateAll,
+  addNickname, initialSetupForm, submitView, removeNickname, setNickname, setRole, stepForField, toSubmitBody, validateAll,
   validateStep,
 } from '@/app/liff/setup-model'
 import { cleanNicknames, isQuarterHour, NICKNAMES_PER_MEMBER_MAX, QUARTER_HOURS, WEEKDAYS } from '@/server/setup/rules'
@@ -120,5 +120,22 @@ describe('stepForField', () => {
   })
   it('gives null for a field the form has no step for, or no field', () => {
     for (const f of ['groupId', 'idToken', undefined, null, 7]) expect(stepForField(f)).toBeNull()
+  })
+})
+
+describe('submitView (#30 part B)', () => {
+  it('a claim waiting for Drive never shows as done', () => {
+    expect(submitView(200, { state: 'needs_drive' })).toBe('needs_drive')
+  })
+  it('a saved setup shows as done', () => {
+    expect(submitView(200, { state: 'confirmed', posted: 'pushed' })).toBe('done')
+    expect(submitView(200, { state: 'pending_owner', posted: 'pushed' })).toBe('done')
+  })
+  it('naming someone else on a group whose Owner left sends the page to the Owner flow', () => {
+    expect(submitView(409, { error: 'owner_needed' })).toBe('owner_needed')
+  })
+  it('other answers are errors', () => {
+    expect(submitView(409, { error: 'setup_closed' })).toBe('error')
+    expect(submitView(400, { error: 'bad_request', field: 'members' })).toBe('error')
   })
 })

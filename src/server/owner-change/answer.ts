@@ -72,18 +72,22 @@ export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): P
   const waiting = change.waiting
   if (waiting.length === 0) return { status: 409, body: { error: 'nothing_waiting' } }
   const ids = choice === 'takeover' ? waiting.map((g) => g.groupId) : []
+  const at = deps.now()
+  // #30 part B, before the detach: the groups start a fresh Owner count with no nominee
+  // (idempotent, never moved back). Done first, so a request that dies before or after the
+  // rpc never leaves a detached group without owner_left_at (which gates its setup form on
+  // Drive); on a group that stays attached it changes nothing a later answer or the 7-day
+  // expiry would not write again.
+  if (choice === 'detach') await deps.store.startDetachedOwnerCount(waiting.map((g) => g.groupId), at)
   const { outcome } = await deps.store.answerSubgroupTakeover(change.projectId, ids)
   if (outcome === 'changed') return { status: 409, body: { error: 'changed' } }
   log('subgroup_takeover_answered', { projectId: change.projectId, choice, subGroups: waiting.length })
-  const at = deps.now()
   if (choice === 'takeover') {
     // The new Owner's Drive gets the Sub groups' folders, if they have signed in to Google.
     defer(() => syncDriveForOwner(deps, requester, deadline))
   } else {
-    // #30 part B: the detached groups have no confirmed Owner, so they start the owner_needed
-    // flow (Drive-gated Owner, 7 days, then the bot leaves) and get its card.
-    const detached = await deps.store.startDetachedOwnerCount(waiting.map((g) => g.groupId), at)
-    defer(() => announceDetached(deps, detached, deadline, at, 'owner_needed'))
+    // #30 part B: the owner_needed card (a Drive-gated new Owner, 7 days, then the bot leaves).
+    defer(() => announceDetached(deps, waiting, deadline, at, 'owner_needed'))
   }
   const result: TakeoverAnswerResult = { choice: choice as TakeoverChoice, subGroups: waiting.length }
   return { status: 200, body: result }

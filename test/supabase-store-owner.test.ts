@@ -183,7 +183,11 @@ describe('SupabaseStore.detachOwnerlessSubGroup (#30 part B)', () => {
     const { store, calls } = stubDb([{ data: [{ id: 'g1' }], error: null }])
     expect(await store.detachOwnerlessSubGroup('g1', before, AT)).toEqual({ detached: true })
     expect(calls).toContainEqual({
-      method: 'update', args: [{ project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: AT.toISOString() }],
+      method: 'update',
+      args: [{
+        project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: AT.toISOString(),
+        nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null,
+      }],
     })
     expect(calls).toEqual(expect.arrayContaining([
       { method: 'not', args: ['project_id', 'is', null] },
@@ -228,20 +232,19 @@ describe('SupabaseStore.answerOwnerNeededPrompt (#30 part B)', () => {
 })
 
 describe('SupabaseStore.startDetachedOwnerCount (#30 part B)', () => {
-  it('starts the Owner count on detached groups with no confirmed Owner, never moving it back', async () => {
-    const { store, calls } = stubDb([{ data: [{ id: 'g1', line_group_id: 'C1', name: null, nominated_owner_line_user_id: 'Uold' }], error: null }])
-    expect(await store.startDetachedOwnerCount(['g1'], AT)).toEqual([
-      { groupId: 'g1', lineGroupId: 'C1', name: null, nominatedOwnerLineUserId: 'Uold' },
-    ])
+  it('starts the Owner count and clears the nominee on groups with no confirmed Owner, never moving it back', async () => {
+    const { store, calls } = stubDb([{ data: [{ id: 'g1' }], error: null }])
+    expect(await store.startDetachedOwnerCount(['g1'], AT)).toEqual(['g1'])
     expect(calls).toEqual(expect.arrayContaining([
-      { method: 'update', args: [{ owner_left_at: AT.toISOString() }] },
+      {
+        method: 'update',
+        args: [{ owner_left_at: AT.toISOString(), nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null }],
+      },
       { method: 'in', args: ['id', ['g1']] },
-      { method: 'is', args: ['project_id', null] },
       { method: 'is', args: ['owner_confirmed_at', null] },
       { method: 'or', args: [`owner_left_at.is.null,owner_left_at.lt.${AT.toISOString()}`] },
     ]))
   })
-
   it('does nothing for no groups', async () => {
     const { store, calls } = stubDb([])
     expect(await store.startDetachedOwnerCount([], AT)).toEqual([])

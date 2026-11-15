@@ -254,7 +254,7 @@ describe('the take-over answer (#31 step 2, LIFF view takeover)', () => {
     expect(h.store.tables.drive_connections.map((c) => c.status).sort()).toEqual(['active', 'replaced'])
   })
 
-  it('detach: the Sub groups leave the Project, keep their old nominee unconfirmed and each gets the owner_needed card (#30 part B)', async () => {
+  it('detach: the Sub groups leave the Project with no nominee and each gets the owner_needed card (#30 part B)', async () => {
     const h = makeTestDeps()
     const { projectId, main, subA, subB } = seedProject(h)
     await change(h, projectId)
@@ -262,7 +262,7 @@ describe('the take-over answer (#31 step 2, LIFF view takeover)', () => {
     const res = await answer(h, main.id, NEW, 'detach')
     expect(res).toEqual({ status: 200, body: { choice: 'detach', subGroups: 2 } })
     for (const sub of [subA, subB]) {
-      expect(groupRow(h, sub.id)).toMatchObject({ projectId: null, nominatedOwnerLineUserId: OLD, ownerConfirmedAt: null })
+      expect(groupRow(h, sub.id)).toMatchObject({ projectId: null, nominatedOwnerLineUserId: null, ownerConfirmedAt: null })
       expect(setupRow(h, sub.id).takeoverAskedAt).toBeNull()
       expect(setupRow(h, sub.id).driveFolderId).toBe(`fold-${sub.lineGroupId}`)
     }
@@ -310,7 +310,7 @@ describe('no answer: the 7-day rule (tick)', () => {
     await tick(h, new Date(TEST_NOW.getTime() + TAKEOVER_WAIT_MS + 15 * MIN))
     for (const sub of [subA, subB]) {
       expect(groupRow(h, sub.id)).toMatchObject({
-        projectId: null, nominatedOwnerLineUserId: OLD, ownerConfirmedAt: null,
+        projectId: null, nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
         // A fresh 7-day Owner count from the detach (#30 part B).
         ownerLeftAt: new Date(TEST_NOW.getTime() + TAKEOVER_WAIT_MS + 15 * MIN),
       })
@@ -329,9 +329,9 @@ describe('no answer: the 7-day rule (tick)', () => {
     const h = makeTestDeps()
     const { projectId, subA } = seedProject(h)
     await change(h, projectId)
-    await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1))
+    await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1), TEST_NOW)
     expect(await h.store.answerSubgroupTakeover(projectId, [subA.id])).toEqual({ outcome: 'changed' })
-    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, nominatedOwnerLineUserId: OLD })
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, nominatedOwnerLineUserId: null })
   })
 
   it('the cards stop when the tick has no time left; the detach is already saved', async () => {
@@ -339,7 +339,7 @@ describe('no answer: the 7-day rule (tick)', () => {
     const { projectId, subA, subB } = seedProject(h)
     await change(h, projectId)
     h.line.pushes.length = 0
-    const groups = await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1))
+    const groups = await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1), TEST_NOW)
     expect(groups).toHaveLength(2)
     // 15 s left: one card needs two LINE calls of up to 10 s each.
     await announceDetached(h.deps, groups, new Date(h.deps.now().getTime() + 15_000), h.deps.now())
@@ -404,18 +404,17 @@ describe('a manual "detach" answer (#30 part B): the owner_needed flow, as for e
     members: [{ lineUserId: who, nicknames: [], role: '' }], ownerLineUserId: who,
   })
 
-  it('sets owner_left_at, posts one card, and the setup form then needs Drive', async () => {
+  it('sets owner_left_at, clears the nominee, posts one card, and the setup form then needs Drive', async () => {
     const h = makeTestDeps()
     h.store.pushClock = () => h.deps.now()
     const { projectId, main, subA } = seedProject(h)
     await change(h, projectId)
     h.line.pushes.length = 0
     await answer(h, main.id, NEW, 'detach')
-    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerConfirmedAt: null, ownerLeftAt: TEST_NOW })
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerConfirmedAt: null, ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: null })
     expect(h.line.pushes.filter((p) => p.to === 'CsubA')).toHaveLength(1)
-    // The old Owner, still its nominee, has left it; a Member names themselves in the setup
-    // form: no confirm without Drive.
-    await h.store.markMemberLeft({ groupId: subA.id, lineUserId: OLD, at: TEST_NOW })
+    // The previous Owner is still a Member there, yet another Member can claim (option B).
+    // Naming yourself in the setup form is that claim: no confirm without Drive.
     const res = await submitSetup(h.deps, form(subA.id, MEMBER), h.defer)
     await h.runDeferred()
     expect(res).toEqual({ status: 200, body: { state: 'needs_drive' } })
@@ -430,8 +429,36 @@ describe('a manual "detach" answer (#30 part B): the owner_needed flow, as for e
     await answer(h, main.id, NEW, 'detach')
     expect(await answer(h, main.id, NEW, 'detach')).toEqual({ status: 409, body: { error: 'nothing_waiting' } })
     expect(h.line.pushes).toHaveLength(2) // one per Sub group, from the first answer
-    // The store step itself is idempotent too.
-    expect(await h.store.startDetachedOwnerCount([main.id], TEST_NOW)).toEqual([])
+  })
+
+  it('the Owner-count step is idempotent: a repeat with the same time changes nothing and keeps a claim made since', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    await answer(h, main.id, NEW, 'detach')
+    expect((await h.store.claimOwnerChange(subA.id, MEMBER, TEST_NOW)).outcome).toBe('claimed')
+    expect(await h.store.startDetachedOwnerCount([subA.id], TEST_NOW)).toEqual([])
+    expect(await h.store.startDetachedOwnerCount([subA.id], TEST_NOW)).toEqual([])
+    expect(groupRow(h, subA.id)).toMatchObject({ ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: MEMBER })
+  })
+
+  it('the previous Owner, still a Member, can claim too when first', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    await answer(h, main.id, NEW, 'detach')
+    expect((await h.store.claimOwnerChange(subA.id, OLD, TEST_NOW)).outcome).toBe('claimed')
+    expect((await h.store.claimOwnerChange(subA.id, MEMBER, TEST_NOW)).outcome).toBe('taken')
+  })
+
+  it('the take-over expiry never moves owner_left_at back (a later re-invite wins)', async () => {
+    const h = makeTestDeps()
+    const { projectId, subA } = seedProject(h)
+    await change(h, projectId)
+    const later = new Date(TEST_NOW.getTime() + 2 * MIN)
+    h.store.seedSchedule(subA.id, { ownerLeftAt: later })
+    await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1), new Date(TEST_NOW.getTime() + MIN))
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerLeftAt: later })
   })
 
   it('with no new Owner 7 days later, the bot leaves', async () => {

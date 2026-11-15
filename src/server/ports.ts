@@ -277,11 +277,7 @@ export type OwnerChangeState = {
   waiting: TakeoverSubGroup[]
 }
 /** A Sub group the daily rule detached from its Project. */
-export type DetachedSubGroup = {
-  groupId: string; lineGroupId: string; name: string | null
-  /** The nominee it keeps (its old Owner), when the store read it (#30 part B). */
-  nominatedOwnerLineUserId?: string | null
-}
+export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: string | null }
 /** #30 part B: a group that has had no Owner since ownerLeftAt. subGroup: attached to a
  *  Project and not its main group (it detaches instead of the bot leaving). */
 export type OwnerlessGroup = {
@@ -503,7 +499,7 @@ export interface StorePort {
   markOwnerLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
   /** Inserts the group's owner_needed card (task_prompts). promptId null when the group already
    *  has an open one (unique index task_prompts_one_open_owner_needed). */
-  openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }>
+  openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string | null; askedAt: Date }): Promise<{ promptId: string | null }>
   /** The presser becomes the nominee of a main group whose Owner left, or of a group with no
    *  Project whose Owner left (a Sub group detached by #30 part B), unless another live
    *  Member already holds the nomination. Compare-and-set on the nominee read first, so of two
@@ -601,15 +597,20 @@ export interface StorePort {
    *  (project_id and takeover_asked_at null; it keeps its old nominee and folder). */
   answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }>
   /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
-   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. With `at` (#30 part
-   *  B), the same UPDATE sets owner_left_at = at: a waiting Sub group has no confirmed Owner,
-   *  so it starts a fresh 7-day Owner count and the owner_needed flow. */
-  detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]>
-  /** #30 part B, after the new Owner's "detach" answer (answer_subgroup_takeover): one UPDATE
-   *  sets owner_left_at = at on those of `groupIds` that have no Project and no confirmed
-   *  Owner and whose owner_left_at is null or older than `at`, returning them (with their
-   *  nominee). A repeat with the same `at` changes and returns nothing. */
-  startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]>
+   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups.
+   *  #30 part B: a waiting Sub group has no confirmed Owner, so first, in its own UPDATE, the
+   *  same groups start a fresh Owner count (owner_left_at = at, never moved back) with the
+   *  nominee cleared, as startDetachedOwnerCount does; then the detach. That order means a
+   *  run that stops between the two leaves a group still attached (the next tick detaches
+   *  it), never a detached group without owner_left_at. */
+  detachExpiredTakeovers(askedBefore: Date, at: Date): Promise<DetachedSubGroup[]>
+  /** #30 part B, run before a detach: one UPDATE, on those of `groupIds` with no confirmed
+   *  Owner whose owner_left_at is null or older than `at`, sets owner_left_at = at (a fresh
+   *  7-day Owner count) and clears the nominee (nominated_owner_line_user_id,
+   *  owner_nominated_by_line_user_id, owner_nominated_at), so any live Member can claim the
+   *  role (decided 2026-11-15, option B). Returns the IDs it changed; a repeat with the same
+   *  `at` changes nothing, so a claim made since is kept. */
+  startDetachedOwnerCount(groupIds: string[], at: Date): Promise<string[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
   // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
   /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One
@@ -632,8 +633,8 @@ export interface StorePort {
   listOwnerlessGroups(leftBefore: Date, limit: number): Promise<OwnerlessGroup[]>
   /** #30 part B: one UPDATE detaches a Sub group that has had no Owner since before
    *  `leftBefore`: project_id and takeover_asked_at null (as detachExpiredTakeovers, #31),
-   *  drive_folder_id null (its folder is in the old Owner's Drive) and owner_left_at = `at`
-   *  (a fresh 7-day count as a group with no Project). The WHERE holds every condition (still
+   *  drive_folder_id null (its folder is in the old Owner's Drive), owner_left_at = `at`
+   *  (a fresh 7-day count as a group with no Project) and the nominee cleared (option B). The WHERE holds every condition (still
    *  attached, not main, no confirmed Owner, owner_left_at <= leftBefore, bot in), so a group
    *  already detached is never detached again. detached: this call changed the row. */
   detachOwnerlessSubGroup(groupId: string, leftBefore: Date, at: Date): Promise<{ detached: boolean }>

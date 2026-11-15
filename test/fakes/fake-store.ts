@@ -197,6 +197,8 @@ export class FakeStore implements StorePort {
     | { op: 'group'; groupId: string; to: string }
   )[] = []
 
+  /** unsent_messages: LINE message IDs whose sender unsent them (#24). */
+  unsentLineMessageIds = new Set<string>()
   /** group_members writes made by saveGroupSettings: one database request each in SupabaseStore. */
   settingsMemberWrites = 0
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
@@ -308,6 +310,8 @@ export class FakeStore implements StorePort {
     this.fault('insertMessage')
     // Conflict target first: a redelivery is a no-op, whatever else it carries.
     if (this.tables.messages.some((row) => row.webhookEventId === m.webhookEventId)) return { inserted: false, id: null }
+    // messages_skip_unsent: the sender unsent this message, so a late delivery stores nothing.
+    if (this.unsentLineMessageIds.has(m.lineMessageId)) return { inserted: false, id: null }
     unique(this.tables.messages.some((row) => row.lineMessageId === m.lineMessageId), 'messages.line_message_id')
     fk(this.hasGroup(m.groupId), 'messages.group_id')
     fk(this.tables.webhook_events.some((w) => w.webhookEventId === m.webhookEventId), 'messages.webhook_event_id')
@@ -550,8 +554,10 @@ export class FakeStore implements StorePort {
   }
 
   // ---- #24 unsend ----
-  async deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }> {
-    this.fault('deleteMessageByLineId')
+  async unsendMessage(lineMessageId: string): Promise<{ deleted: boolean }> {
+    this.fault('unsendMessage')
+    // unsent_messages tombstone, as rpc unsend_message
+    this.unsentLineMessageIds.add(lineMessageId)
     const i = this.tables.messages.findIndex((row) => row.lineMessageId === lineMessageId)
     if (i === -1) return { deleted: false }
     const [gone] = this.tables.messages.splice(i, 1)

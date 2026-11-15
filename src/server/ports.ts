@@ -289,7 +289,9 @@ export interface StorePort {
   /** Deletes the stored message with this LINE message id. deleted false when no row had it
    *  (never stored, or already deleted), so a repeat is harmless. Rows that point at it
    *  (task_prompts.trigger_message_id, files.message_id) are kept by ON DELETE SET NULL. */
-  deleteMessageByLineId(lineMessageId: string): Promise<{ deleted: boolean }>
+  // #24: keeps a tombstone of the LINE message ID and deletes the stored copy; a later insert of
+  // that message ID stores nothing (insertMessage answers inserted false). deleted: a copy was there
+  unsendMessage(lineMessageId: string): Promise<{ deleted: boolean }>
   // #33 file request by quote-reply
   /** The stored message with this LINE message id in this group (never another group's),
    *  then the newest files row whose message_id points at it. */

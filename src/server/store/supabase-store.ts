@@ -14,7 +14,7 @@ import type {
   DashboardTaskRow,
   GroupRow,
   GroupSetup,
-  GroupSettingsWrite, GroupSetupWrite,
+  GroupSettingsWrite, LatestWeeklyInsight, GroupSetupWrite,
   Member,
   Membership,
   MessageRef,
@@ -1195,6 +1195,37 @@ export class SupabaseStore implements StorePort {
         })
       }
       if (rows.length < DASHBOARD_PAGE) return out
+    }
+  }
+
+  async listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> {
+    if (groupIds.length === 0) return []
+    type Row = {
+      group_id: string; week_start: string; tasks_done: number; tasks_in_process: number
+      tasks_awaiting_owner: number; posted_at: string | null
+    }
+    // PostgREST has no DISTINCT ON: read every row, newest week first per group, in pages,
+    // and keep the first of each group. One row per group and week keeps this small.
+    const latest = new Map<string, LatestWeeklyInsight>()
+    for (let from = 0; ; from += DASHBOARD_PAGE) {
+      const { data, error } = await this.db
+        .from('weekly_insights')
+        .select('group_id, week_start, tasks_done, tasks_in_process, tasks_awaiting_owner, posted_at')
+        .in('group_id', groupIds)
+        .order('group_id')
+        .order('week_start', { ascending: false })
+        .range(from, from + DASHBOARD_PAGE - 1)
+      check('listLatestWeeklyInsights', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        if (latest.has(r.group_id)) continue
+        latest.set(r.group_id, {
+          groupId: r.group_id, weekStart: r.week_start,
+          counts: { done: r.tasks_done, inProcess: r.tasks_in_process, awaitingOwner: r.tasks_awaiting_owner },
+          postedAt: toDate(r.posted_at),
+        })
+      }
+      if (rows.length < DASHBOARD_PAGE) return [...latest.values()]
     }
   }
 

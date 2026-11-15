@@ -11,7 +11,7 @@ import type {
   DashboardTaskRow,
   GroupRow,
   GroupSetup,
-  GroupSettingsWrite, GroupSetupWrite,
+  GroupSettingsWrite, LatestWeeklyInsight, GroupSetupWrite,
   Member,
   Membership,
   NewAiUsage,
@@ -999,6 +999,17 @@ export class FakeStore implements StorePort {
       .filter((t) => t.status === 'not_assigned')
       .slice(0, limit)
       .map((t) => ({ id: t.id, title: t.title, dueAt: t.dueAt }))
+  }
+
+  async listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> {
+    this.fault('listLatestWeeklyInsights')
+    const latest = new Map<string, WeeklyInsightRecord>()
+    for (const w of this.tables.weekly_insights) {
+      if (!groupIds.includes(w.groupId)) continue
+      const seen = latest.get(w.groupId)
+      if (!seen || w.weekStart > seen.weekStart) latest.set(w.groupId, w)
+    }
+    return [...latest.values()].map((w) => ({ groupId: w.groupId, weekStart: w.weekStart, counts: { ...w.counts }, postedAt: w.postedAt }))
   }
 
   async saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }> {

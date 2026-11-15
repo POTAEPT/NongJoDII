@@ -27,8 +27,10 @@ const dii: DashboardGroup = {
   ],
   insight: null,
   files: [],
+  access: 'overview',
+  ownerLineUserId: null,
 }
-const design: DashboardGroup = { groupId: 'g2', name: null, members: [], tasks: [task('t6', 'done', null, null)], insight: null, files: [] }
+const design: DashboardGroup = { groupId: 'g2', name: null, members: [], tasks: [task('t6', 'done', null, null)], insight: null, files: [], access: 'overview', ownerLineUserId: null }
 
 describe('Dashboard model (#18)', () => {
   it('counts the three status labels and the progress percent', () => {

@@ -1526,12 +1526,15 @@ export class SupabaseStore implements StorePort {
 
   async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {
     if (projectIds.length === 0) return []
-    type Row = { id: string; project_id: string; name: string | null }
+    type Row = {
+      id: string; project_id: string; name: string | null
+      nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null
+    }
     const out: DashboardGroupRow[] = []
     for (let from = 0; ; from += DASHBOARD_PAGE) {
       const { data, error } = await this.db
         .from('groups')
-        .select('id, project_id, name')
+        .select('id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at')
         .in('project_id', projectIds)
         .is('left_at', null)
         .order('is_main', { ascending: false })
@@ -1540,7 +1543,12 @@ export class SupabaseStore implements StorePort {
         .range(from, from + DASHBOARD_PAGE - 1)
       check('listProjectGroups', error)
       const rows = (data ?? []) as Row[]
-      for (const r of rows) out.push({ groupId: r.id, projectId: r.project_id, name: r.name })
+      for (const r of rows) {
+        out.push({
+          groupId: r.id, projectId: r.project_id, name: r.name,
+          ownerLineUserId: r.owner_confirmed_at !== null ? r.nominated_owner_line_user_id : null,
+        })
+      }
       if (rows.length < DASHBOARD_PAGE) return out
     }
   }

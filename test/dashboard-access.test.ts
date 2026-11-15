@@ -62,14 +62,68 @@ describe('loadDashboard (#17)', () => {
     expect(data.groups).toHaveLength(3)
   })
 
-  it('a Member sees only their own groups and Tasks', async () => {
+  it('a Member sees only their own groups, and in them only the Tasks assigned to them (#90)', async () => {
     const s = setup()
     const data = (await s.load('t-jeff')).body as DashboardData
     expect(data.role).toBe('member')
     expect(names(data)).toEqual(['กลุ่มโปรเจกต์ DII', 'ทีมออกแบบ'])
+    expect(data.groups.map((g) => g.access)).toEqual(['mine', 'mine'])
     const titles = data.groups.flatMap((g) => g.tasks.map((t) => t.title))
-    expect(titles).toEqual(['ทำสไลด์ Dashboard', 'ออกแบบโลโก้'])
+    expect(titles).toEqual(['ทำสไลด์ Dashboard'])
+    // Not another Member's Task in the same group, and nothing from a group they are not in.
+    expect(JSON.stringify(data)).not.toContain('ออกแบบโลโก้')
     expect(JSON.stringify(data)).not.toContain('ส่งงานลูกค้า')
+  })
+
+  it('a Member does not get unowned Tasks or the weekly insight; the Owner gets both (#90)', async () => {
+    const s = setup()
+    s.task(s.dii.id, 'จองห้อง', { status: 'not_assigned', assignee: null })
+    await s.store.saveWeeklyInsight({ groupId: s.dii.id, weekStart: '2026-11-09', counts: { done: 0, inProcess: 1, awaitingOwner: 1 }, createdAt: TEST_NOW })
+    const member = (await s.load('t-jeff')).body as DashboardData
+    const memberDii = member.groups.find((g) => g.groupId === s.dii.id)!
+    expect(memberDii.tasks.map((t) => t.title)).toEqual(['ทำสไลด์ Dashboard'])
+    expect(memberDii.insight).toBeNull()
+    const pm = (await s.load('t-pm')).body as DashboardData
+    const pmDii = pm.groups.find((g) => g.groupId === s.dii.id)!
+    expect(pmDii.access).toBe('overview')
+    expect(pmDii.tasks.map((t) => t.title)).toContain('จองห้อง')
+    expect(pmDii.insight).toMatchObject({ weekStart: '2026-11-09' })
+  })
+
+  it('a Member still sees the group\'s Member list, with LINE names (#90)', async () => {
+    const s = setup()
+    const data = (await s.load('t-jeff')).body as DashboardData
+    expect(data.groups[0].members.map((m) => m.displayName)).toEqual(['พีเอ็ม', 'เจฟ'])
+  })
+
+  it('every group says who its confirmed Owner is, for both roles (#90)', async () => {
+    const s = setup()
+    const dii = s.store.tables.groups.find((g) => g.id === s.dii.id)!
+    dii.nominatedOwnerLineUserId = 'Upm'
+    dii.ownerConfirmedAt = new Date(TEST_NOW.getTime())
+    const design = s.store.tables.groups.find((g) => g.id === s.design.id)!
+    design.nominatedOwnerLineUserId = 'Upm' // named but not confirmed: no Owner yet
+    for (const tok of ['t-pm', 't-jeff']) {
+      const data = (await s.load(tok)).body as DashboardData
+      expect(data.groups.find((g) => g.groupId === s.dii.id)!.ownerLineUserId).toBe('Upm')
+      expect(data.groups.find((g) => g.groupId === s.design.id)!.ownerLineUserId).toBeNull()
+    }
+  })
+
+  it('a PM of one Project who is a plain Member of another sees that other group as "mine" (#90)', async () => {
+    const s = setup()
+    const other = s.store.seedProject('Uelse')
+    const g2 = s.store.seedGroup({ lineGroupId: 'Cother', name: 'โปรเจกต์อื่น', projectId: other.id })
+    s.member(g2.id, 'Upm', 'พีเอ็ม')
+    s.member(g2.id, 'Uelse', 'อีกคน')
+    s.task(g2.id, 'งานของอีกคน', { assignee: 'Uelse' })
+    s.task(g2.id, 'งานของพีเอ็ม', { assignee: 'Upm' })
+    const data = (await s.load('t-pm')).body as DashboardData
+    expect(data.role).toBe('pm')
+    const otherGroup = data.groups.find((g) => g.groupId === g2.id)!
+    expect(otherGroup.access).toBe('mine')
+    expect(otherGroup.tasks.map((t) => t.title)).toEqual(['งานของพีเอ็ม'])
+    expect(data.groups.find((g) => g.groupId === s.dii.id)!.access).toBe('overview')
   })
 
   it('shows LINE names, never nicknames', async () => {
@@ -165,19 +219,21 @@ describe('loadDashboard (#17)', () => {
 })
 
 describe('visibleGroups (the access rule)', () => {
-  const g = (groupId: string, projectId: string) => ({ groupId, projectId, name: groupId })
+  const g = (groupId: string, projectId: string) => ({ groupId, projectId, name: groupId, ownerLineUserId: null })
   const m = (groupId: string, projectId: string, p: { left?: boolean; isPm?: boolean; owner?: string } = {}) => ({
     groupId, projectId, projectOwnerLineUserId: p.owner ?? 'Uother', isPm: p.isPm ?? false, left: p.left ?? false,
   })
 
   it('has no groups for someone with no live membership', () => {
     expect(visibleGroups('U1', [m('a', 'p', { left: true })], [g('a', 'p'), g('b', 'p')]).groups).toEqual([])
-    expect(visibleGroups('U1', [], [g('a', 'p')])).toEqual({ groups: [], pm: false })
+    expect(visibleGroups('U1', [], [g('a', 'p')])).toEqual({ groups: [], pm: false, overview: new Set() })
   })
 
   it('a PM of one Project does not widen another Project', () => {
     const out = visibleGroups('U1', [m('a', 'p', { isPm: true }), m('c', 'q')], [g('a', 'p'), g('b', 'p'), g('c', 'q'), g('d', 'q')])
     expect(out.groups.map((x) => x.groupId)).toEqual(['a', 'b', 'c'])
     expect(out.pm).toBe(true)
+    // Overview only where they are a PM; c is theirs as a plain Member.
+    expect([...out.overview].sort()).toEqual(['a', 'b'])
   })
 })

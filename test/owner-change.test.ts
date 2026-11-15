@@ -451,14 +451,73 @@ describe('a manual "detach" answer (#30 part B): the owner_needed flow, as for e
     expect((await h.store.claimOwnerChange(subA.id, MEMBER, TEST_NOW)).outcome).toBe('taken')
   })
 
-  it('the take-over expiry never moves owner_left_at back (a later re-invite wins)', async () => {
+  it('the take-over expiry never moves owner_left_at back: a newer one waits for a later tick', async () => {
     const h = makeTestDeps()
-    const { projectId, subA } = seedProject(h)
+    const { projectId, subA, subB } = seedProject(h)
     await change(h, projectId)
     const later = new Date(TEST_NOW.getTime() + 2 * MIN)
     h.store.seedSchedule(subA.id, { ownerLeftAt: later })
-    await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1), new Date(TEST_NOW.getTime() + MIN))
-    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerLeftAt: later })
+    const cutoff = new Date(TEST_NOW.getTime() + 1)
+    const detached = await h.store.detachExpiredTakeovers(cutoff, new Date(TEST_NOW.getTime() + MIN))
+    expect(detached.map((g) => g.groupId)).toEqual([subB.id])
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId, ownerLeftAt: later, nominatedOwnerLineUserId: OLD })
+    const next = new Date(TEST_NOW.getTime() + 15 * MIN)
+    expect((await h.store.detachExpiredTakeovers(cutoff, next)).map((g) => g.groupId)).toEqual([subA.id])
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerLeftAt: next, nominatedOwnerLineUserId: null })
+  })
+
+  it('a count, then a claim, then a re-run with a later time keeps the claim', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    await answer(h, main.id, NEW, 'detach')
+    const claimAt = new Date(TEST_NOW.getTime() + MIN)
+    expect((await h.store.claimOwnerChange(subA.id, MEMBER, claimAt)).outcome).toBe('claimed')
+    expect(await h.store.startDetachedOwnerCount([subA.id], new Date(TEST_NOW.getTime() + 2 * MIN))).toEqual([])
+    expect(groupRow(h, subA.id)).toMatchObject({ ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: MEMBER })
+  })
+
+  it('a Sub group whose Owner left long before a manual detach still gets a fresh count', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    // Named Owner 60 days ago, left 30 days ago.
+    setupRow(h, subA.id).ownerNominatedAt = new Date(TEST_NOW.getTime() - 60 * 86_400_000)
+    h.store.seedSchedule(subA.id, { ownerLeftAt: new Date(TEST_NOW.getTime() - 30 * 86_400_000) })
+    await answer(h, main.id, NEW, 'detach')
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: null })
+  })
+
+  it('a failed detach rpc leaves the waiting Sub groups attached and untouched', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    h.line.pushes.length = 0
+    h.store.failNext('answerSubgroupTakeover')
+    await expect(answerTakeover(h.deps, { idToken: `tok-${NEW}`, groupId: main.id, choice: 'detach' }, h.defer)).rejects.toThrow()
+    await h.runDeferred()
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId, ownerLeftAt: null, nominatedOwnerLineUserId: OLD })
+    expect(setupRow(h, subA.id).takeoverAskedAt).not.toBeNull()
+    expect(h.line.pushes).toEqual([])
+  })
+
+  it('a Sub group the gate did not see but the rpc detached still gets the count, the card and no nominee', async () => {
+    const h = makeTestDeps()
+    h.store.pushClock = () => h.deps.now()
+    const { projectId, main, subB } = seedProject(h)
+    await change(h, projectId)
+    h.line.pushes.length = 0
+    // The gate's read misses subB (a stale read); the store holds it waiting all along.
+    const read = h.store.getOwnerChange.bind(h.store)
+    let calls = 0
+    h.store.getOwnerChange = async (id) => {
+      const c = await read(id)
+      calls++
+      return calls === 1 && c ? { ...c, waiting: c.waiting.filter((g) => g.groupId !== subB.id) } : c
+    }
+    await answer(h, main.id, NEW, 'detach')
+    expect(groupRow(h, subB.id)).toMatchObject({ projectId: null, ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: null })
+    expect(h.line.pushes.map((p) => p.to)).toContain('CsubB')
   })
 
   it('with no new Owner 7 days later, the bot leaves', async () => {

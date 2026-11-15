@@ -1,7 +1,7 @@
 import { driveDeadline, syncDriveForOwner } from '../google/drive-folders'
 import { ensureGroupAccess, requireLiffUser } from '../liff-auth'
 import { log } from '../log'
-import type { ApiResult, Defer, Deps, OwnerChangeState } from '../ports'
+import type { ApiResult, Defer, Deps, OwnerChangeState, TakeoverSubGroup } from '../ports'
 import { badRequest, field } from '../review/load'
 import { announceDetached, TAKEOVER_WAIT_MS } from './detach'
 import type { TakeoverAnswerResult, TakeoverChoice, TakeoverLoad } from './types'
@@ -57,6 +57,12 @@ export async function loadTakeover(deps: Deps, body: unknown): Promise<ApiResult
   return { status: 200, body: view }
 }
 
+/** The Project's waiting Sub groups as the store holds them now, plus any the gate read. */
+async function waitingNow(deps: Deps, projectId: string, read: TakeoverSubGroup[]): Promise<TakeoverSubGroup[]> {
+  const now = (await deps.store.getOwnerChange(projectId))?.waiting ?? []
+  return [...now, ...read.filter((g) => !now.some((n) => n.groupId === g.groupId))]
+}
+
 /** POST /api/takeover/answer { idToken, groupId, choice }. The answer covers every Sub
  *  group still waiting when it is saved. 409 nothing_waiting: none waits (answered before,
  *  or detached after 7 days); 409 changed: one detached while this was saved (nothing
@@ -72,13 +78,9 @@ export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): P
   const waiting = change.waiting
   if (waiting.length === 0) return { status: 409, body: { error: 'nothing_waiting' } }
   const ids = choice === 'takeover' ? waiting.map((g) => g.groupId) : []
-  const at = deps.now()
-  // #30 part B, before the detach: the groups start a fresh Owner count with no nominee
-  // (idempotent, never moved back). Done first, so a request that dies before or after the
-  // rpc never leaves a detached group without owner_left_at (which gates its setup form on
-  // Drive); on a group that stays attached it changes nothing a later answer or the 7-day
-  // expiry would not write again.
-  if (choice === 'detach') await deps.store.startDetachedOwnerCount(waiting.map((g) => g.groupId), at)
+  // #30 part B: a "detach" answer detaches every Sub group of the Project still waiting when
+  // the rpc runs, so they are read again right before it (the gate's read may be older).
+  const detaching = choice === 'detach' ? await waitingNow(deps, change.projectId, waiting) : []
   const { outcome } = await deps.store.answerSubgroupTakeover(change.projectId, ids)
   if (outcome === 'changed') return { status: 409, body: { error: 'changed' } }
   log('subgroup_takeover_answered', { projectId: change.projectId, choice, subGroups: waiting.length })
@@ -86,8 +88,14 @@ export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): P
     // The new Owner's Drive gets the Sub groups' folders, if they have signed in to Google.
     defer(() => syncDriveForOwner(deps, requester, deadline))
   } else {
-    // #30 part B: the owner_needed card (a Drive-gated new Owner, 7 days, then the bot leaves).
-    defer(() => announceDetached(deps, waiting, deadline, at, 'owner_needed'))
+    // #30 part B: after the detach, the groups that now have no Project and no Owner start a
+    // fresh Owner count with no nominee (any live Member may claim), and get the owner_needed
+    // card: a Drive-gated new Owner, 7 days, then the bot leaves. Known gap: a request that
+    // dies between the rpc and this write leaves them without owner_left_at; the migration on
+    // review-fixes-15nov makes answer_subgroup_takeover write it in the same statement.
+    const at = deps.now()
+    const counted = new Set(await deps.store.startDetachedOwnerCount(detaching.map((g) => g.groupId), at))
+    defer(() => announceDetached(deps, detaching.filter((g) => counted.has(g.groupId)), deadline, at, 'owner_needed'))
   }
   const result: TakeoverAnswerResult = { choice: choice as TakeoverChoice, subGroups: waiting.length }
   return { status: 200, body: result }

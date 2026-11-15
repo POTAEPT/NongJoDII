@@ -66,6 +66,7 @@ import {
   type DbMember,
   type DbMessage,
   type DbTask,
+  ownerCountDue,
   toCandidateRow,
   toDate,
   toGroupRow,
@@ -148,6 +149,12 @@ function check(method: keyof StorePort, error: PgError): void {
   if (error) throw new AdapterError(`supabase ${method}: ${error.code}`)
 }
 
+/** #30 part B: the columns every detach with no confirmed Owner writes: a fresh 7-day Owner
+ *  count and no nominee, so any live Member can claim the role (decided 2026-11-15, option B). */
+function OWNER_COUNT(when: string) {
+  return { owner_left_at: when, nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null }
+}
+
 /** IN lists go out this many values at a time, so the request URL stays short
  *  (a LINE user ID or a UUID is 33 to 36 characters). */
 export const IN_CHUNK = 100
@@ -161,12 +168,6 @@ function chunks<T>(values: T[]): T[][] {
 /** Every row of a list read, PAGE_SIZE rows at a time, so max_rows never hides the rows
  *  after the first page. `page(from, to)` is the query with .order() on a unique key (id)
  *  and .range(from, to); a short page is the last one. */
-/** #30 part B: the columns every detach with no confirmed Owner writes: a fresh 7-day Owner
- *  count and no nominee, so any live Member can claim the role (decided 2026-11-15, option B). */
-function OWNER_COUNT(when: string) {
-  return { owner_left_at: when, nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null }
-}
-
 async function readAllPages<R>(
   method: keyof StorePort,
   page: (from: number, to: number) => PromiseLike<{ data: unknown; error: PgError }>,
@@ -2059,24 +2060,19 @@ export class SupabaseStore implements StorePort {
   }
 
   async detachExpiredTakeovers(askedBefore: Date, at: Date): Promise<DetachedSubGroup[]> {
-    const cutoff = askedBefore.toISOString()
-    // #30 part B, first: the fresh Owner count, guarded so it never moves back.
-    const when = at.toISOString()
-    const count = await this.db
-      .from('groups')
-      .update(OWNER_COUNT(when))
-      .lt('takeover_asked_at', cutoff)
-      .is('owner_confirmed_at', null)
-      .or(`owner_left_at.is.null,owner_left_at.lt.${when}`)
-    check('detachExpiredTakeovers', count.error)
     // The documented daily statement (initial schema, change_project_owner):
     //   update groups set project_id = null, takeover_asked_at = null
     //    where takeover_asked_at < <cutoff> returning ...
     // project_id and takeover_asked_at change together (groups_takeover_pending_rules).
+    // #30 part B, in the same SET: a waiting Sub group has no confirmed Owner, so it starts a
+    // fresh Owner count with no nominee. The WHERE never moves owner_left_at back: a group
+    // whose owner_left_at is newer (a re-invite since this tick began) detaches on a later tick.
+    const when = at.toISOString()
     const { data, error } = await this.db
       .from('groups')
-      .update({ project_id: null, takeover_asked_at: null })
-      .lt('takeover_asked_at', cutoff)
+      .update({ project_id: null, takeover_asked_at: null, ...OWNER_COUNT(when) })
+      .lt('takeover_asked_at', askedBefore.toISOString())
+      .or(`owner_left_at.is.null,owner_left_at.lt.${when}`)
       .select('id, line_group_id, name')
     check('detachExpiredTakeovers', error)
     return ((data ?? []) as { id: string; line_group_id: string; name: string | null }[])
@@ -2086,16 +2082,32 @@ export class SupabaseStore implements StorePort {
 
   async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<string[]> {
     if (groupIds.length === 0) return []
-    const when = at.toISOString()
+    type Row = {
+      id: string; project_id: string | null; owner_confirmed_at: string | null
+      owner_left_at: string | null; owner_nominated_at: string | null
+    }
     const { data, error } = await this.db
       .from('groups')
-      .update(OWNER_COUNT(when))
+      .select('id, project_id, owner_confirmed_at, owner_left_at, owner_nominated_at')
       .in('id', groupIds)
-      .is('owner_confirmed_at', null)
-      .or(`owner_left_at.is.null,owner_left_at.lt.${when}`)
-      .select('id')
     check('startDetachedOwnerCount', error)
-    return ((data ?? []) as { id: string }[]).map((r) => r.id).sort()
+    const out: string[] = []
+    for (const r of (data ?? []) as Row[]) {
+      if (!ownerCountDue(r, at)) continue
+      // Compare-and-set on what was read, so a claim landing in between is kept.
+      const { data: done, error: updateError } = await this.db
+        .from('groups')
+        .update(OWNER_COUNT(at.toISOString()))
+        .eq('id', r.id)
+        .is('project_id', null)
+        .is('owner_confirmed_at', null)
+        .filter('owner_left_at', r.owner_left_at === null ? 'is' : 'eq', r.owner_left_at)
+        .filter('owner_nominated_at', r.owner_nominated_at === null ? 'is' : 'eq', r.owner_nominated_at)
+        .select('id')
+      check('startDetachedOwnerCount', updateError)
+      if ((done ?? []).length === 1) out.push(r.id)
+    }
+    return out.sort()
   }
 
   // ---- #11 removal and recovery ----

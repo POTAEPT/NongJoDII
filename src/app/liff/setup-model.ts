@@ -2,7 +2,7 @@ import {
   cleanNicknames, isIsoWeekday, isQuarterHour, NICKNAME_MAX, NICKNAMES_PER_MEMBER_MAX, ROLE_MAX,
   WORK_DESCRIPTION_MAX,
 } from '@/server/setup/rules'
-import type { SetupFeatures, SetupLoad, SetupSubmitBody } from '@/server/setup/types'
+import type { OwnerConfirmResult, SetupFeatures, SetupLoad, SetupSubmitBody, SetupSubmitResult } from '@/server/setup/types'
 
 // Pure logic of the setup form (#52, Figma v4 #2b-#2d2): defaults, step checks, the body
 // the form sends and where a refused field lives. The server checks everything again
@@ -14,7 +14,10 @@ export const SETUP_STEPS = 4
  *  naming yourself answers 200 { state: 'needs_drive' }: the role waits for Google Drive, so
  *  it must never show as done. Naming someone else there answers 409 owner_needed. */
 export type SubmitView = 'done' | 'needs_drive' | 'owner_needed' | 'error'
-export function submitView(status: number, json: unknown): SubmitView {
+/** The bodies the submit can answer with: the setup result, the Owner flow's result
+ *  (OwnerConfirmResult: confirmed or needs_drive) or an error. */
+export type SubmitBody = SetupSubmitResult | OwnerConfirmResult | { error?: string; field?: string } | null
+export function submitView(status: number, json: SubmitBody | unknown): SubmitView {
   const body = json as { state?: unknown; error?: unknown } | null
   if (status === 200) return body?.state === 'needs_drive' ? 'needs_drive' : 'done'
   if (status === 409 && body?.error === 'owner_needed') return 'owner_needed'

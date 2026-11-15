@@ -57,6 +57,7 @@ import type {
   ProgressYes,
   ProgressYesOutcome,
 } from '@/server/ports'
+import { ownerCountDue } from '@/server/store/mappers'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
 // In-memory StorePort. Tables mirror supabase/migrations/ (camelCase columns,
@@ -1702,34 +1703,35 @@ export class FakeStore implements StorePort {
     return { outcome: 'saved' }
   }
 
-  /** Same two steps, in the same order, as SupabaseStore. */
+  /** The one UPDATE of SupabaseStore: detach, fresh Owner count and no nominee, only where
+   *  owner_left_at is null or older than `at`. */
   async detachExpiredTakeovers(askedBefore: Date, at: Date): Promise<DetachedSubGroup[]> {
     this.fault('detachExpiredTakeovers')
-    const expired = this.tables.groups.filter((g) => {
-      const asked = this.takeoverAskedAt(g.id)
-      return asked !== null && asked < askedBefore
-    })
-    this.startOwnerCount(expired.map((g) => g.id), at)
     const out: DetachedSubGroup[] = []
-    for (const g of expired) {
+    for (const g of this.tables.groups) {
+      const asked = this.takeoverAskedAt(g.id)
+      if (asked === null || asked >= askedBefore) continue
+      if (g.ownerLeftAt !== null && g.ownerLeftAt >= at) continue
       this.setupOf(g.id).takeoverAskedAt = null
       g.projectId = null
+      this.clearForOwnerCount(g, at)
       out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
+  /** Same rule as SupabaseStore (ownerCountDue), checked and written in one step. */
   async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<string[]> {
     this.fault('startDetachedOwnerCount')
-    return this.startOwnerCount(groupIds, at)
-  }
-
-  /** OWNER_COUNT of SupabaseStore: no confirmed Owner, owner_left_at null or older than `at`. */
-  private startOwnerCount(groupIds: string[], at: Date): string[] {
     const out: string[] = []
     for (const g of this.tables.groups) {
-      if (!groupIds.includes(g.id) || g.ownerConfirmedAt !== null) continue
-      if (g.ownerLeftAt !== null && g.ownerLeftAt >= at) continue
+      if (!groupIds.includes(g.id)) continue
+      const nominatedAt = this.tables.group_setups.find((r) => r.groupId === g.id)?.ownerNominatedAt ?? null
+      const due = ownerCountDue({
+        project_id: g.projectId, owner_confirmed_at: g.ownerConfirmedAt?.toISOString() ?? null,
+        owner_left_at: g.ownerLeftAt?.toISOString() ?? null, owner_nominated_at: nominatedAt?.toISOString() ?? null,
+      }, at)
+      if (!due) continue
       this.clearForOwnerCount(g, at)
       out.push(g.id)
     }

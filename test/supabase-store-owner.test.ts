@@ -232,19 +232,47 @@ describe('SupabaseStore.answerOwnerNeededPrompt (#30 part B)', () => {
 })
 
 describe('SupabaseStore.startDetachedOwnerCount (#30 part B)', () => {
-  it('starts the Owner count and clears the nominee on groups with no confirmed Owner, never moving it back', async () => {
-    const { store, calls } = stubDb([{ data: [{ id: 'g1' }], error: null }])
+  const row = (p: Record<string, unknown> = {}) => ({
+    id: 'g1', project_id: null, owner_confirmed_at: null, owner_left_at: null, owner_nominated_at: null, ...p,
+  })
+
+  it('reads the groups, then writes the count with a compare-and-set on a group with no Project and no Owner', async () => {
+    const { store, calls } = stubDb([{ data: [row()], error: null }, { data: [{ id: 'g1' }], error: null }])
     expect(await store.startDetachedOwnerCount(['g1'], AT)).toEqual(['g1'])
     expect(calls).toEqual(expect.arrayContaining([
+      { method: 'in', args: ['id', ['g1']] },
       {
         method: 'update',
         args: [{ owner_left_at: AT.toISOString(), nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null }],
       },
-      { method: 'in', args: ['id', ['g1']] },
+      { method: 'eq', args: ['id', 'g1'] },
+      { method: 'is', args: ['project_id', null] },
       { method: 'is', args: ['owner_confirmed_at', null] },
-      { method: 'or', args: [`owner_left_at.is.null,owner_left_at.lt.${AT.toISOString()}`] },
+      { method: 'filter', args: ['owner_left_at', 'is', null] },
+      { method: 'filter', args: ['owner_nominated_at', 'is', null] },
     ]))
   })
+
+  it('skips a group still in a Project, a count newer than `at`, and a claim made since the count started', async () => {
+    for (const r of [
+      row({ project_id: 'p1' }),
+      row({ owner_left_at: '2026-11-14T03:00:00+00:00' }),
+      row({ owner_left_at: '2026-11-10T03:00:00+00:00', owner_nominated_at: '2026-11-11T03:00:00+00:00' }),
+    ]) {
+      const { store, calls } = stubDb([{ data: [r], error: null }])
+      expect(await store.startDetachedOwnerCount(['g1'], AT)).toEqual([])
+      expect(calls.some((c) => c.method === 'update')).toBe(false)
+    }
+  })
+
+  it('clears a nominee from before the Owner left (an old count)', async () => {
+    const { store } = stubDb([
+      { data: [row({ owner_left_at: '2026-11-01T03:00:00+00:00', owner_nominated_at: '2026-10-01T03:00:00+00:00' })], error: null },
+      { data: [{ id: 'g1' }], error: null },
+    ])
+    expect(await store.startDetachedOwnerCount(['g1'], AT)).toEqual(['g1'])
+  })
+
   it('does nothing for no groups', async () => {
     const { store, calls } = stubDb([])
     expect(await store.startDetachedOwnerCount([], AT)).toEqual([])

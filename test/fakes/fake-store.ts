@@ -118,11 +118,10 @@ export type GroupScheduleRecord = {
   /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
   memberCheckOn?: string | null
   memberCheckClaimedAt?: Date | null
-  /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = long ago) and
-   *  groups.owner_left_at. Absent = null. */
+  /** #11: groups.delete_after (left_at + 7 days) and groups.joined_at (absent = long ago).
+   *  Absent = null. groups.owner_left_at lives on GroupRow (`groups`). */
   deleteAfter?: Date | null
   joinedAt?: Date | null
-  ownerLeftAt?: Date | null
 }
 export type WeeklyInsightRecord = NewWeeklyInsight & { id: string; postedAt: Date | null }
 /** The other groups columns setup writes (#52). No row = schema defaults. */
@@ -1619,12 +1618,22 @@ export class FakeStore implements StorePort {
     const g = this.tables.groups.find((row) => row.id === j.groupId)
     if (!g) return
     const s = this.scheduleOf(g.id)
-    if (g.ownerConfirmedAt === null && s.ownerLeftAt != null && s.ownerLeftAt < j.at) s.ownerLeftAt = new Date(j.at.getTime())
+    if (g.ownerConfirmedAt === null && g.ownerLeftAt !== null && g.ownerLeftAt < j.at) g.ownerLeftAt = new Date(j.at.getTime())
     if (s.joinedAt == null || s.joinedAt < j.at) s.joinedAt = new Date(j.at.getTime())
     if (s.leftAt !== null && s.leftAt <= j.at) {
       s.leftAt = null
       s.deleteAfter = null
     }
+  }
+
+  /** Same rule as SupabaseStore: no confirmed Owner, owner_left_at <= leftBefore, bot in. */
+  async listOwnerlessGroups(leftBefore: Date, limit: number): Promise<string[]> {
+    this.fault('listOwnerlessGroups')
+    return this.tables.groups
+      .filter((g) => g.ownerConfirmedAt === null && g.ownerLeftAt !== null && g.ownerLeftAt <= leftBefore && !this.isLeft(g.id))
+      .sort((a, b) => (a.ownerLeftAt as Date).getTime() - (b.ownerLeftAt as Date).getTime() || a.id.localeCompare(b.id))
+      .slice(0, limit)
+      .map((g) => g.id)
   }
 
   async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
@@ -1661,8 +1670,11 @@ export class FakeStore implements StorePort {
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----
   /** Sets a group's weekly slot, feature toggle or left_at (the rest keep the defaults). */
-  seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>>): void {
-    Object.assign(this.scheduleOf(groupId), partial)
+  /** `ownerLeftAt` is written to the group row (GroupRow.ownerLeftAt), its one home. */
+  seedSchedule(groupId: string, partial: Partial<Omit<GroupScheduleRecord, 'groupId'>> & { ownerLeftAt?: Date | null }): void {
+    const { ownerLeftAt, ...rest } = partial
+    if (ownerLeftAt !== undefined) this.groupOf(groupId).ownerLeftAt = ownerLeftAt
+    Object.assign(this.scheduleOf(groupId), rest)
   }
 
   seedGroup(partial: Partial<GroupRow> = {}): GroupRow {

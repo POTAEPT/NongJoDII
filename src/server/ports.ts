@@ -598,6 +598,10 @@ export interface StorePort {
    *  left_at and delete_after are cleared where left_at <= at (a re-invite inside the 7
    *  days). The Owner reset runs first, so a redelivery after a half-failure redoes all. */
   markBotJoined(j: { groupId: string; at: Date }): Promise<void>
+  /** #30 part B: IDs of the groups the bot is still in (left_at null) with no confirmed Owner
+   *  and owner_left_at <= `leftBefore` (groups_owner_left_idx), oldest owner_left_at first,
+   *  then id, at most `limit`. */
+  listOwnerlessGroups(leftBefore: Date, limit: number): Promise<string[]>
   /** IDs of the groups whose delete_after <= now, oldest delete date first, at most `limit`. */
   listPurgeDueGroups(now: Date, limit: number): Promise<string[]>
   /** One DELETE: the group row where id = groupId and delete_after <= now. Its messages,

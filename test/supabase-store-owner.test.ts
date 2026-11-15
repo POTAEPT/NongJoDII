@@ -140,3 +140,17 @@ describe('SupabaseStore.listPendingOwnerChanges', () => {
     ]))
   })
 })
+
+describe('SupabaseStore.listOwnerlessGroups (#30 part B)', () => {
+  it('lists groups the bot is in with no confirmed Owner since owner_left_at <= the cutoff, oldest first', async () => {
+    const { store, calls } = stubDb([{ data: [{ id: 'g1' }], error: null }])
+    expect(await store.listOwnerlessGroups(AT, 50)).toEqual(['g1'])
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'lte', args: ['owner_left_at', AT.toISOString()] },
+      { method: 'is', args: ['owner_confirmed_at', null] },
+      { method: 'is', args: ['left_at', null] },
+      { method: 'order', args: ['owner_left_at', { ascending: true }] },
+      { method: 'limit', args: [50] },
+    ]))
+  })
+})

@@ -1941,6 +1941,20 @@ export class SupabaseStore implements StorePort {
     check('markBotJoined', cleared.error)
   }
 
+  async listOwnerlessGroups(leftBefore: Date, limit: number): Promise<string[]> {
+    const { data, error } = await this.db
+      .from('groups')
+      .select('id')
+      .lte('owner_left_at', leftBefore.toISOString())
+      .is('owner_confirmed_at', null)
+      .is('left_at', null)
+      .order('owner_left_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(limit)
+    check('listOwnerlessGroups', error)
+    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+
   async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {
     const { data, error } = await this.db
       .from('groups')

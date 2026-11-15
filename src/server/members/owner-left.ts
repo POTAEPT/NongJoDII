@@ -1,9 +1,12 @@
+import { checkTime, driveDeadline, DriveTimeUp } from '../google/drive-folders'
 import { bubble, button, header, text, uri } from '../line/flex-ui'
 import { pushToGroupWithinBudget, retryKeyFrom, type GroupPushResult } from '../line/push-budget'
 import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
-import { log } from '../log'
+import { log, logError } from '../log'
 import type { Deps, GroupRow } from '../ports'
+import { botLeaveGroup } from '../removal/leave'
+import type { TickJob } from '../tick/run-tick'
 
 // #30 part A: the Owner leaves a group.
 //
@@ -18,14 +21,52 @@ import type { Deps, GroupRow } from '../ports'
 //    Its button opens the LIFF Owner page, where a live Member takes the role over
 //    (setup/owner-change.ts).
 //
-// TODO(#30 part B, needs #11): OWNER_EXIT_AFTER_DAYS after owner_left_at with no confirmed
-// Owner, a tick job makes the bot leave the group and sets left_at and delete_after as soon
-// as LINE accepts the leave call; a re-invite inside those days clears the mark, and a
-// re-invite to a group still without a confirmed Owner resets owner_left_at to the re-invite
-// time. The index groups_owner_left_idx already serves that job's query.
+// 3. Part B, ownerExitJob below: OWNER_EXIT_AFTER_DAYS after owner_left_at with still no
+//    confirmed Owner, the bot leaves the group through botLeaveGroup (#11), which sets
+//    left_at and delete_after as soon as LINE accepts the leave call, so the 7-day deletion
+//    starts. A re-invite inside those 7 days clears the mark, and a re-invite to a group still
+//    without a confirmed Owner resets owner_left_at to the re-invite time (markBotJoined), so
+//    the count starts again.
 
 /** Part B: days after owner_left_at before the bot leaves a group with no new Owner. */
 export const OWNER_EXIT_AFTER_DAYS = 7
+const DAY_MS = 86_400_000
+
+/** Groups one tick lists; the rest wait for the next tick (every 15 minutes). */
+export const OWNER_EXIT_BATCH = 50
+
+/** Tick job, every tick. Timed from the tick's start like the purge (driveDeadline): each
+ *  leave starts only while one LINE call, run to its timeout, still ends in time. A leave
+ *  that throws (a LINE 5xx or timeout, or a store failure after LINE accepted) is logged and
+ *  the next group goes on; the group is still listed on the next tick, which tries again
+ *  (botLeaveGroup marks a group LINE answers 404 for). Posts nothing to the group. */
+export const ownerExitJob: TickJob = {
+  name: 'owner_exit',
+  async run(deps, now) {
+    const deadline = driveDeadline(now)
+    const leftBefore = new Date(now.getTime() - OWNER_EXIT_AFTER_DAYS * DAY_MS)
+    const groupIds = await deps.store.listOwnerlessGroups(leftBefore, OWNER_EXIT_BATCH)
+    if (groupIds.length === 0) return
+    let left = 0
+    let failed = 0
+    let complete = true
+    for (const groupId of groupIds) {
+      try {
+        checkTime(deps, deadline, 1)
+        const { outcome } = await botLeaveGroup(deps, { groupId, reason: 'no_owner', now })
+        if (outcome === 'left' || outcome === 'not_in_group') left++
+      } catch (err) {
+        if (err instanceof DriveTimeUp) {
+          complete = false
+          break
+        }
+        failed++
+        logError('owner_exit_failed', { groupId }, err)
+      }
+    }
+    log('owner_exit_done', { due: groupIds.length, left, failed, complete })
+  },
+}
 
 /** Share of the monthly quota this push leaves unspent: as small as the reminders' and the
  *  lost-access card's, because nothing else asks the group for a new Owner. */

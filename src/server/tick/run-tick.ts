@@ -3,6 +3,7 @@ import { driveSetupJob } from '@/server/google/drive-folders'
 import { weeklyInsightJob } from '@/server/insight/weekly'
 import { log, logError } from '@/server/log'
 import { memberCheckJob } from '@/server/members/daily-check'
+import { ownerExitJob } from '@/server/members/owner-left'
 import { takeoverExpiryJob } from '@/server/owner-change/detach'
 import type { Deps } from '@/server/ports'
 import { dailyRemindersJob } from '@/server/reminders/daily'
@@ -18,11 +19,11 @@ export type TickJob = { name: string; run(deps: Deps, now: Date): Promise<void> 
  *  works on one tick a day; then the 7-day Sub group take-over rule (#31), whose detach is one
  *  statement and whose cards are best effort; then the daily member check (#32), which goes
  *  on over later ticks when one runs short, so it comes after the jobs with no time check of
- *  their own; the daily purge (#11), on its own night slot; the Drive setup finisher (#13)
- *  last, as it sends nothing to LINE. The time-checked jobs stop on their own when the
- *  tick's time runs short. Still to come: the 7-day Owner-left rule (#30). */
+ *  their own; the 7-day Owner-left rule (#30), whose leave marks the group for the purge; the
+ *  daily purge (#11), on its own night slot; the Drive setup finisher (#13) last, as it sends
+ *  nothing to LINE. The time-checked jobs stop on their own when the tick's time runs short. */
 export const TICK_JOBS: TickJob[] = [
-  dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, takeoverExpiryJob, memberCheckJob, purgeJob, driveSetupJob,
+  dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, takeoverExpiryJob, memberCheckJob, ownerExitJob, purgeJob, driveSetupJob,
 ]
 
 /** Runs each job one after another. One job's failure is logged and never stops the

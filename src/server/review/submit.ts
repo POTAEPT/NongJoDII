@@ -1,4 +1,5 @@
 import { log, logError } from '../log'
+import { releaseIfLeft } from '../members/recheck'
 import type { ApiResult, Deps } from '../ports'
 import { statusFor, type TaskFields, validateTaskFields } from '../tasks/fields'
 import { buildTaskFeedback, type CreatedTask } from './feedback'
@@ -65,6 +66,11 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
       status: statusFor(p.fields.assigneeLineUserId, null), createdByLineUserId: requester,
     }, now)
     results.push(taskId ? { candidateId: p.candidateId, outcome, taskId } : { candidateId: p.candidateId, outcome })
+  }
+  // #29: an assignee may have left between validateTaskFields and the confirms above.
+  const assignees = new Set(plan.flatMap((p) => (p.action === 'confirm' && p.fields.assigneeLineUserId ? [p.fields.assigneeLineUserId] : [])))
+  for (const lineUserId of assignees) {
+    await releaseIfLeft(deps, { groupId: summary.groupId, lineUserId, event: 'review_assignee_left' })
   }
   log('review_submitted', {
     summaryId: summary.id,

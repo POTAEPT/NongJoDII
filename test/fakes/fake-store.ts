@@ -7,7 +7,7 @@ import type {
   CandidateState,
   GroupRow,
   GroupSetup,
-  GroupSetupWrite,
+  GroupSettingsWrite, GroupSetupWrite,
   Member,
   Membership,
   NewAiUsage,
@@ -50,6 +50,14 @@ export type LineUserRecord = { lineUserId: string; displayName: string | null }
 export type GroupMemberRecord = {
   groupId: string; lineUserId: string; nicknames: string[]; role: string | null
   source: 'message' | 'liff' | 'setup_form' | 'member_join'; leftAt: Date | null
+  /** Time of the latest memberLeft or memberJoined event applied; absent or null when none. */
+  membershipEventAt?: Date | null
+}
+
+/** Same rule as SupabaseStore's membershipOlderThan. */
+function membershipOlderThan(row: GroupMemberRecord, at: Date): boolean {
+  const last = row.membershipEventAt ?? row.leftAt
+  return last === null || last < at
 }
 export type MessageRecord = NewMessage & { id: string }
 export type SummaryRecord = NewSummary & { id: string }
@@ -161,6 +169,8 @@ export class FakeStore implements StorePort {
     | { op: 'group'; groupId: string; to: string }
   )[] = []
 
+  /** group_members writes made by saveGroupSettings: one database request each in SupabaseStore. */
+  settingsMemberWrites = 0
   private faults: { method: keyof StorePort; err: Error; skip: number }[] = []
   // Sign-in order of google_accounts rows (ORDER BY connected_at DESC), kept as a sequence
   // because tests sign several accounts in at the same clock time.
@@ -208,6 +218,11 @@ export class FakeStore implements StorePort {
     if (this.tables.webhook_events.some((w) => w.webhookEventId === e.webhookEventId)) return { inserted: false }
     this.tables.webhook_events.push({ ...e })
     return { inserted: true }
+  }
+
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    this.fault('hasWebhookEvent')
+    return this.tables.webhook_events.some((w) => w.webhookEventId === webhookEventId)
   }
 
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
@@ -1116,6 +1131,28 @@ export class FakeStore implements StorePort {
     return { outcome: 'pending' }
   }
 
+  async saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }> {
+    this.fault('saveGroupSettings')
+    const g = this.groupOf(w.groupId)
+    if (g.nominatedOwnerLineUserId !== w.ownerLineUserId || g.ownerConfirmedAt === null) return { saved: false }
+    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
+    Object.assign(g, {
+      workDescription: w.workDescription, featureSummarize: w.features.summarize,
+      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
+    })
+    Object.assign(this.scheduleOf(w.groupId), {
+      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
+      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
+    })
+    this.setupOf(w.groupId).featureSaveFiles = w.features.saveFiles
+    for (const m of w.members) {
+      this.settingsMemberWrites++
+      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
+      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
+    }
+    return { saved: true }
+  }
+
   async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {
     this.fault('confirmGroupOwner')
     return this.confirmOwner(groupId, lineUserId, at)
@@ -1135,6 +1172,60 @@ export class FakeStore implements StorePort {
     g.ownerConfirmedAt = at
     this.setupOf(groupId).isMain = true
     return { outcome: 'confirmed' }
+  }
+
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('markMemberLeft')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      // Same as SupabaseStore: no row yet -> a left row, so a late message cannot add them back.
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({
+        groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'message', leftAt: t.at, membershipEventAt: t.at,
+      })
+      return { updated: true }
+    }
+    if (!membershipOlderThan(row, t.at)) return { updated: false }
+    row.leftAt = t.at
+    row.membershipEventAt = t.at
+    return { updated: true }
+  }
+
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    this.fault('markMemberJoined')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (!row) {
+      fk(this.hasGroup(t.groupId), 'group_members.group_id')
+      fk(this.hasLineUser(t.lineUserId), 'group_members.line_user_id')
+      this.tables.group_members.push({
+        groupId: t.groupId, lineUserId: t.lineUserId, nicknames: [], role: null, source: 'member_join', leftAt: null, membershipEventAt: t.at,
+      })
+      return
+    }
+    if (!membershipOlderThan(row, t.at)) return
+    row.leftAt = null
+    row.membershipEventAt = t.at
+  }
+
+  async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {
+    this.fault('setMemberProfile')
+    const row = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId && m.leftAt === null)
+    if (!row) return { updated: false }
+    row.nicknames = [...t.nicknames]
+    row.role = t.role
+    return { updated: true }
+  }
+
+  async releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    this.fault('releaseTasksIfLeft')
+    // Same as release_tasks_if_left: a live Member keeps their Tasks.
+    const member = this.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === t.lineUserId)
+    if (member && member.leftAt === null) return []
+    const rows = this.tables.tasks.filter((x) =>
+      x.groupId === t.groupId && x.assigneeLineUserId === t.lineUserId && x.deletedAt === null && x.status !== 'done')
+    for (const x of rows) Object.assign(x, { assigneeLineUserId: null, status: 'not_assigned' })
+    return rows.map((x) => this.toTaskRow(x))
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

@@ -9,6 +9,10 @@ describe('parseGroupCommand', () => {
     },
   )
 
+  it.each(['NongJoDII ตั้งค่า', 'nongjodii SETTINGS', '@NongJoDII settings'])('matches %j as settings (#28)', (text) => {
+    expect(parseGroupCommand(text)).toBe('settings')
+  })
+
   it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'NongJoDII ขอไฟล์', null])('does not match %j', (text) => {
     expect(parseGroupCommand(text)).toBeNull()
   })

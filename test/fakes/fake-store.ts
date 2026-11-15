@@ -7,7 +7,7 @@ import type {
   CandidateState,
   GroupRow,
   GroupSetup,
-  GroupSetupWrite,
+  GroupSettingsWrite, GroupSetupWrite,
   Member,
   Membership,
   NewAiUsage,
@@ -1048,6 +1048,27 @@ export class FakeStore implements StorePort {
       return { outcome: 'confirmed' }
     }
     return { outcome: 'pending' }
+  }
+
+  async saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }> {
+    this.fault('saveGroupSettings')
+    const g = this.groupOf(w.groupId)
+    if (g.nominatedOwnerLineUserId !== w.ownerLineUserId || g.ownerConfirmedAt === null) return { saved: false }
+    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
+    Object.assign(g, {
+      workDescription: w.workDescription, featureSummarize: w.features.summarize,
+      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
+    })
+    Object.assign(this.scheduleOf(w.groupId), {
+      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
+      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
+    })
+    this.setupOf(w.groupId).featureSaveFiles = w.features.saveFiles
+    for (const m of w.members) {
+      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
+      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
+    }
+    return { saved: true }
   }
 
   async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {

@@ -1,0 +1,84 @@
+import { log } from '../log'
+import type { ApiResult, Deps, GroupSetup } from '../ports'
+import { badRequest } from '../review/load'
+import { FALLBACK_NAME, lineNameOf, openSetupGroup } from '../setup/load'
+import { setupState } from '../setup/rules'
+import { parseGroupValues } from '../setup/submit'
+import type { SettingsLoad, SettingsMember } from './types'
+
+// #28 Settings: everything the setup form set, edited later by the group's confirmed Owner.
+// Every live Member may look; only the Owner may change. The Owner is the person the group
+// names (groups.nominated_owner_line_user_id) once they confirmed (owner_confirmed_at); every
+// group of a Project names the same person, so this covers Sub groups too. Changing the
+// Owner belongs to the Owner change flow (#30, #31), and Stop using to #11.
+
+function isConfirmedOwner(group: GroupSetup, lineUserId: string): boolean {
+  return group.ownerConfirmedAt !== null && group.nominatedOwnerLineUserId === lineUserId
+}
+
+/** POST /api/settings/load */
+export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult> {
+  const gate = await openSetupGroup(deps, body)
+  if (!gate.ok) return gate.result
+  const { group, requester } = gate
+  const canEdit = isConfirmedOwner(group, requester)
+  const live = await deps.store.listLiveMembers(group.groupId)
+  // Nicknames are for the AI only; the Owner edits them here, everyone else sees LINE names.
+  const members: SettingsMember[] = live
+    .map((m) => ({
+      lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME,
+      nicknames: canEdit ? m.nicknames : [], role: canEdit ? m.role : null,
+    }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'th'))
+  const ownerId = group.ownerConfirmedAt !== null ? group.nominatedOwnerLineUserId : null
+  const view: SettingsLoad = {
+    groupId: group.groupId,
+    groupName: group.name,
+    state: setupState(group) === 'confirmed' ? 'ready' : 'not_set_up',
+    canEdit,
+    owner: ownerId ? { lineUserId: ownerId, displayName: await lineNameOf(deps, ownerId, live) } : null,
+    values: {
+      workDescription: group.workDescription ?? '',
+      features: {
+        summarize: group.features.summarize, saveFiles: group.features.saveFiles,
+        trackRemind: group.features.trackRemind, weeklySummary: group.features.weeklySummary,
+      },
+      dailyReminderTime: group.dailyReminderTime,
+      weeklySummaryWeekday: group.weeklySummaryWeekday,
+      weeklySummaryTime: group.weeklySummaryTime,
+    },
+    members,
+  }
+  return { status: 200, body: view }
+}
+
+const notOwner: ApiResult = { status: 403, body: { error: 'not_owner' } }
+
+/** POST /api/settings/submit: the setup form's body without ownerLineUserId. A time change
+ *  takes effect on the next 15-minute tick (a day already reminded is not reminded again). */
+export async function submitSettings(deps: Deps, body: unknown): Promise<ApiResult> {
+  const gate = await openSetupGroup(deps, body)
+  if (!gate.ok) return gate.result
+  const { group, requester } = gate
+  if (!isConfirmedOwner(group, requester)) return notOwner
+  const parsed = parseGroupValues(body)
+  if (!parsed.ok) return badRequest(parsed.field)
+  const v = parsed.value
+  // Only live Members: Settings edits them, it never adds anyone. One who left since the
+  // page loaded is dropped so the rest still saves.
+  const liveIds = new Set((await deps.store.listLiveMembers(group.groupId)).map((m) => m.lineUserId))
+  const { saved } = await deps.store.saveGroupSettings({
+    groupId: group.groupId, ownerLineUserId: requester, workDescription: v.workDescription,
+    features: {
+      summarize: v.features.summarize, draftTasks: v.features.summarize, saveFiles: v.features.saveFiles,
+      trackRemind: v.features.trackRemind, weeklySummary: v.features.weeklySummary,
+    },
+    dailyReminderTime: v.dailyReminderTime, weeklySummaryWeekday: v.weeklySummaryWeekday,
+    weeklySummaryTime: v.weeklySummaryTime,
+    members: v.members.filter((m) => liveIds.has(m.lineUserId)),
+  })
+  // The Owner changed between the check above and the write.
+  if (!saved) return notOwner
+  log('settings_saved', { groupId: group.groupId })
+  return { status: 200, body: { saved: true } }
+}

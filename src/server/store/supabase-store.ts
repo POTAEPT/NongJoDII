@@ -7,6 +7,7 @@ import type {
   AnnounceClaim,
   CandidateRow,
   DailyReminderGroup,
+  MemberCheckGroup,
   DriveContext,
   DriveGroup,
   DashboardGroupRow,
@@ -886,6 +887,79 @@ export class SupabaseStore implements StorePort {
       .eq('id', groupId)
       .eq('daily_reminder_claimed_at', at.toISOString())
     check('releaseDailyReminder', error)
+  }
+
+  // ---- #32 daily member check ----
+  /** Pages of PAGE_SIZE rows ordered by id, as listDailyReminderGroups. */
+  async listMemberCheckGroups(): Promise<MemberCheckGroup[]> {
+    type Row = { id: string; line_group_id: string; member_check_on: string | null }
+    const out: MemberCheckGroup[] = []
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, line_group_id, member_check_on')
+        .is('left_at', null)
+        .order('id')
+        .range(from, from + PAGE_SIZE - 1)
+      check('listMemberCheckGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) out.push({ groupId: r.id, lineGroupId: r.line_group_id, lastCheckedOn: r.member_check_on })
+      if (rows.length < PAGE_SIZE) return out
+    }
+  }
+
+  async claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    // One logic tree, as claimDailyReminder: the day is not checked, and no live claim.
+    const notChecked = `or(member_check_on.is.null,member_check_on.lt.${todayBkk})`
+    const noLiveClaim = `or(member_check_claimed_at.is.null,member_check_claimed_at.lt."${staleBefore.toISOString()}")`
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ member_check_claimed_at: at.toISOString() })
+      .eq('id', groupId)
+      .or(`and(${notChecked},${noLiveClaim})`)
+      .select('id')
+    check('claimMemberCheck', error)
+    return { claimed: (data?.length ?? 0) > 0 }
+  }
+
+  async finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ member_check_on: todayBkk, member_check_claimed_at: null })
+      .eq('id', groupId)
+      .eq('member_check_claimed_at', at.toISOString())
+    check('finishMemberCheck', error)
+  }
+
+  async releaseMemberCheck(groupId: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('groups')
+      .update({ member_check_claimed_at: null })
+      .eq('id', groupId)
+      .eq('member_check_claimed_at', at.toISOString())
+    check('releaseMemberCheck', error)
+  }
+
+  /** Live rows of one group: at most a LINE group's 500 members, inside one PostgREST page. */
+  async listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]> {
+    const { data, error } = await this.db
+      .from('group_members')
+      .select('line_user_id')
+      .eq('group_id', groupId)
+      .is('left_at', null)
+      .or(`member_checked_on.is.null,member_checked_on.lt.${todayBkk}`)
+      .order('line_user_id')
+    check('listMembersToCheck', error)
+    return ((data ?? []) as { line_user_id: string }[]).map((r) => r.line_user_id)
+  }
+
+  async markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void> {
+    const { error } = await this.db
+      .from('group_members')
+      .update({ member_checked_on: todayBkk })
+      .eq('group_id', groupId)
+      .eq('line_user_id', lineUserId)
+    check('markMemberChecked', error)
   }
 
   // ---- #45 reminder answers ----

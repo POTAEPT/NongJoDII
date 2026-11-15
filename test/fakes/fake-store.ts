@@ -26,6 +26,7 @@ import type {
   PushBudgetClaim,
   NewWeeklyInsight,
   DailyReminderGroup,
+  MemberCheckGroup,
   DriveContext,
   DriveGroup,
   ReminderTask,
@@ -58,6 +59,8 @@ export type GroupMemberRecord = {
   isPm?: boolean // group_members.is_pm; absent = false
   /** Time of the latest memberLeft or memberJoined event applied; absent or null when none. */
   membershipEventAt?: Date | null
+  /** group_members.member_checked_on (#32): Bangkok date of the last daily check; absent = null. */
+  memberCheckedOn?: string | null
 }
 
 /** Same rule as SupabaseStore's membershipOlderThan. */
@@ -104,6 +107,9 @@ export type GroupScheduleRecord = {
   dailyReminderTime: string; dailyReminderLastSentOn: string | null
   /** groups.daily_reminder_claimed_at: the live attempt's claim, or null. */
   dailyReminderClaimedAt?: Date | null
+  /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
+  memberCheckOn?: string | null
+  memberCheckClaimedAt?: Date | null
   /** #11: groups.delete_after (left_at + 7 days), groups.joined_at (absent = long ago) and
    *  groups.owner_left_at. Absent = null. */
   deleteAfter?: Date | null
@@ -1094,6 +1100,56 @@ export class FakeStore implements StorePort {
     this.fault('releaseDailyReminder')
     const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
     if (s && s.dailyReminderClaimedAt?.getTime() === at.getTime()) s.dailyReminderClaimedAt = null
+  }
+
+  // ---- #32 daily member check ----
+  async listMemberCheckGroups(): Promise<MemberCheckGroup[]> {
+    this.fault('listMemberCheckGroups')
+    return this.tables.groups
+      .map((g) => ({ g, s: this.scheduleOf(g.id) }))
+      .filter(({ s }) => s.leftAt === null)
+      .sort((a, b) => a.g.id.localeCompare(b.g.id))
+      .map(({ g, s }) => ({ groupId: g.id, lineGroupId: g.lineGroupId, lastCheckedOn: s.memberCheckOn ?? null }))
+  }
+
+  async claimMemberCheck(groupId: string, todayBkk: string, at: Date, staleBefore: Date): Promise<{ claimed: boolean }> {
+    this.fault('claimMemberCheck')
+    if (!this.hasGroup(groupId)) return { claimed: false }
+    const s = this.scheduleOf(groupId)
+    if (s.memberCheckOn != null && s.memberCheckOn >= todayBkk) return { claimed: false }
+    const held = s.memberCheckClaimedAt ?? null
+    if (held !== null && held.getTime() >= staleBefore.getTime()) return { claimed: false }
+    s.memberCheckClaimedAt = new Date(at)
+    return { claimed: true }
+  }
+
+  async finishMemberCheck(groupId: string, todayBkk: string, at: Date): Promise<void> {
+    this.fault('finishMemberCheck')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.memberCheckClaimedAt?.getTime() === at.getTime()) {
+      s.memberCheckOn = todayBkk
+      s.memberCheckClaimedAt = null
+    }
+  }
+
+  async releaseMemberCheck(groupId: string, at: Date): Promise<void> {
+    this.fault('releaseMemberCheck')
+    const s = this.tables.group_schedules.find((row) => row.groupId === groupId)
+    if (s && s.memberCheckClaimedAt?.getTime() === at.getTime()) s.memberCheckClaimedAt = null
+  }
+
+  async listMembersToCheck(groupId: string, todayBkk: string): Promise<string[]> {
+    this.fault('listMembersToCheck')
+    return this.tables.group_members
+      .filter((m) => m.groupId === groupId && m.leftAt === null && (m.memberCheckedOn == null || m.memberCheckedOn < todayBkk))
+      .map((m) => m.lineUserId)
+      .sort()
+  }
+
+  async markMemberChecked(groupId: string, lineUserId: string, todayBkk: string): Promise<void> {
+    this.fault('markMemberChecked')
+    const row = this.tables.group_members.find((m) => m.groupId === groupId && m.lineUserId === lineUserId)
+    if (row) row.memberCheckedOn = todayBkk
   }
 
   /** Oldest first = seed/insert order (the fake keeps no created_at on tasks). */

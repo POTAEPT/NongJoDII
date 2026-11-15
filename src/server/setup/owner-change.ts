@@ -53,6 +53,8 @@ function answer(outcome: CompleteOwnerChangeOutcome): ApiResult {
 /** Step 2 for one main group. On 'changed' it calls onMainGroupOwnerChanged. The caller
  *  defers the Drive run. Throws on a store failure. */
 export async function applyOwnerChange(deps: Deps, groupId: string, lineUserId: string, defer: Defer): Promise<CompleteOwnerChangeOutcome> {
+  // #30 part B: a Sub group detached for having no Owner has no Project.
+  if ((await deps.store.getGroupById(groupId))?.projectId === null) return confirmStandaloneOwner(deps, groupId, lineUserId)
   const { outcome } = await deps.store.completeOwnerChange(groupId, lineUserId, deps.now())
   log('owner_change', { groupId, outcome })
   if (outcome === 'changed') {
@@ -60,6 +62,34 @@ export async function applyOwnerChange(deps: Deps, groupId: string, lineUserId: 
     if (projectId !== null) await onMainGroupOwnerChanged(deps, { projectId, groupId, ownerLineUserId: lineUserId }, defer)
   }
   return outcome
+}
+
+/** #30 part B: a group with no Project whose Owner left (a Sub group that detached after 7
+ *  days with no Owner). The same two steps as for a main group: the presser already holds
+ *  the nomination (claimOwnerChange), and the change waits for their Drive connection. It
+ *  then runs through confirm_group_owner, the setup confirm, which creates the group's own
+ *  Project with it as the main group and confirms the Owner (groups_owner_rules clears
+ *  owner_left_at); a repeat answers already_confirmed. The old Project's Drive connection
+ *  is not this group's any more, so there is nothing to retire. */
+async function confirmStandaloneOwner(deps: Deps, groupId: string, lineUserId: string): Promise<CompleteOwnerChangeOutcome> {
+  const account = await deps.store.findGoogleAccountByLineUser(lineUserId)
+  const now = deps.now()
+  if (account?.tokenStatus !== 'valid') {
+    const g = await deps.store.getGroupById(groupId)
+    if (g && g.ownerConfirmedAt !== null && g.nominatedOwnerLineUserId === lineUserId) return 'already_owner'
+    return g?.nominatedOwnerLineUserId === lineUserId ? 'needs_drive' : 'not_nominee'
+  }
+  const { outcome } = await deps.store.confirmGroupOwner(groupId, lineUserId, now)
+  log('owner_change', { groupId, outcome, standalone: true })
+  switch (outcome) {
+    case 'confirmed':
+      await deps.store.answerOwnerNeededPrompt(groupId, lineUserId, now)
+      return 'changed'
+    case 'already_confirmed': return 'already_owner'
+    case 'not_nominee': return 'not_nominee'
+    case 'not_member': return 'not_member'
+    case 'closed': return 'not_pending'
+  }
 }
 
 /** The Google callback, after the sign-in is stored: finishes every Owner change this person

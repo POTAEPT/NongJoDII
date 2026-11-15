@@ -107,16 +107,43 @@ export class FakeLine implements LinePort {
     return { ...this.quota }
   }
 
+  // ---- #4 content download ----
+  /** LINE message id -> its content. A missing id answers null (LINE 404). */
+  contents = new Map<string, { data: Uint8Array; contentType: string | null }>()
+  /** Every content download, with the timeout it was given. */
+  contentCalls: { messageId: string; timeoutMs: number }[] = []
+  /** How long a download takes on `clock`; 0 = instant. A download longer than its
+   *  timeout rejects at the timeout, as the real adapter does. */
+  contentMs = 0
+  failContent = false
+
+  async getMessageContent(messageId: string, opts: { timeoutMs: number }): Promise<{ data: Uint8Array; contentType: string | null } | null> {
+    this.contentCalls.push({ messageId, timeoutMs: opts.timeoutMs })
+    if (this.contentMs > opts.timeoutMs) {
+      this.clock?.advance(opts.timeoutMs)
+      throw new AdapterError('line timeout')
+    }
+    if (this.contentMs > 0) this.clock?.advance(this.contentMs)
+    if (this.failContent) throw new AdapterError('line content 500')
+    const c = this.contents.get(messageId)
+    return c ? { data: c.data, contentType: c.contentType } : null
+  }
+
   /** Every leaveGroup call (#11), recorded before failLeave / leaveNotInGroup apply. */
   leaveCalls: string[] = []
   /** Makes leaveGroup reject, as the real adapter does on a LINE 5xx or a timeout. */
   failLeave = false
   /** Makes leaveGroup answer 'not_in_group' (LINE 404). */
   leaveNotInGroup = false
+  /** How long leaveGroup takes on `clock` (#30 part B time limit); 0 (the default) = instant. */
+  leaveMs = 0
+  /** LINE group IDs whose leaveGroup rejects (a LINE 5xx for those groups only). */
+  failLeaveFor = new Set<string>()
 
   async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
     this.leaveCalls.push(lineGroupId)
-    if (this.failLeave) throw new AdapterError('line leave 500')
+    if (this.leaveMs > 0) this.clock?.advance(this.leaveMs)
+    if (this.failLeave || this.failLeaveFor.has(lineGroupId)) throw new AdapterError('line leave 500')
     return this.leaveNotInGroup ? 'not_in_group' : 'left'
   }
 

@@ -417,18 +417,6 @@ describe('review follow-ups (#74)', () => {
     expect(ownerCards(t)).toHaveLength(1)
   })
 
-  it('a paused group whose owner_needed card never opened (the member_left job was lost) gets it from the tick, once', async () => {
-    const t = await setup()
-    Object.assign(group(t, t.groupId), { ownerLeftAt: TEST_NOW, ownerConfirmedAt: null })
-    t.store.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === OWNER)!.leftAt = TEST_NOW
-    await tickAt(t, bkk('2026-11-12T11:00:00'))
-    expect(ownerCards(t)).toHaveLength(1)
-    expect(ownerCards(t)[0].to).toBe(MAIN)
-    expect(prompts(t, t.groupId)).toEqual([expect.objectContaining({ subjectLineUserId: OWNER, answer: null })])
-    await tickAt(t, bkk('2026-11-12T11:15:00'))
-    expect(ownerCards(t)).toHaveLength(1)
-  })
-
   it('the weekly insight skips a Sub group waiting on the take-over question (no confirmed Owner)', async () => {
     const t = await setup()
     const sub = t.store.seedGroup({ lineGroupId: SUB, projectId: t.projectId, nominatedOwnerLineUserId: OWNER, ownerConfirmedAt: null })

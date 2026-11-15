@@ -11,7 +11,7 @@ import type { TakeoverAnswerResult, TakeoverChoice, TakeoverLoad } from './types
 // groups.id). Take over: the waiting Sub groups name the new Owner and are confirmed, so
 // their plan, Fair-use cap and Drive follow; their folder IDs are cleared and the new
 // Owner's Drive gets new folders, while old files stay in the old Owner's Drive. Detach:
-// they leave the Project and each gets a card to the setup form.
+// they leave the Project and each gets the owner_needed card (#30 part B).
 //
 // Only the Project's owner (projects.owner_line_user_id) may answer, as
 // answer_subgroup_takeover itself acts for that person. While a further Owner change is
@@ -85,7 +85,15 @@ export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): P
     // The new Owner's Drive gets the Sub groups' folders, if they have signed in to Google.
     defer(() => syncDriveForOwner(deps, requester, deadline))
   } else {
-    defer(() => announceDetached(deps, waiting, deadline, at))
+    // #30 part B: the detached groups have no confirmed Owner, so they start the owner_needed
+    // flow (Drive-gated Owner, 7 days, then the bot leaves) and get its card.
+    const started = await deps.store.startDetachedOwnerCount(waiting.map((g) => g.groupId), at)
+    // Once the review-followups migration is applied, the rpc's detach already started the
+    // count (its now() may equal or follow `at`, so `started` can be empty) and cleared the
+    // nominee. Every waiting group detached in this answer, so each gets its card.
+    const detached = waiting.map((g) => started.find((s) => s.groupId === g.groupId) ??
+      { groupId: g.groupId, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: null })
+    defer(() => announceDetached(deps, detached, deadline, at, 'owner_needed'))
   }
   const result: TakeoverAnswerResult = { choice: choice as TakeoverChoice, subGroups: waiting.length }
   return { status: 200, body: result }

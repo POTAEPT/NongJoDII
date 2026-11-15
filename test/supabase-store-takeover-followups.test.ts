@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { PAGE_SIZE, SupabaseStore } from '@/server/store/supabase-store'
 
 // #72 review follow-ups in SupabaseStore: the expired answer (NJ409 from
-// answer_subgroup_takeover, 20261115150000) and the lost take-over card query. Same
+// answer_subgroup_takeover, 20261116010000) and the lost take-over card query. Same
 // stand-in as supabase-store-owner-change.test.ts: rpc() and every awaited chain answer the
 // next queued result; chains record their calls.
 

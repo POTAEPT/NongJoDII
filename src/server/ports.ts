@@ -23,6 +23,11 @@ export interface LinePort {
   verifyIdToken(idToken: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   /** This month's push budget: limit null = no limit; used = messages counted so far. */
   getMessageQuota(): Promise<{ limit: number | null; used: number }>
+  /** #4: the bytes of an image or file a user sent (GET api-data.line.me/v2/bot/message/{id}/content).
+   *  null when LINE answers 404 (the content is gone). `timeoutMs` cuts the whole call, body
+   *  included, so a big file cannot run past the route's limit. contentType: LINE's
+   *  Content-Type header, null when absent. */
+  getMessageContent(messageId: string, opts: { timeoutMs: number }): Promise<{ data: Uint8Array; contentType: string | null } | null>
   /** The bot leaves the group (POST /v2/bot/group/{id}/leave, #11). 'left': LINE answered
    *  200. 'not_in_group': LINE answered 404, so the bot is not in the group (it was removed,
    *  or an earlier leave went through and its answer was lost). Rejects on anything else
@@ -56,7 +61,11 @@ export interface GooglePort {
   getFolder(accessToken: string, folderId: string): Promise<DriveFolderState>
   /** "Anyone with the link can view" (permissions.create role reader, type anyone). */
   shareAnyoneReader(accessToken: string, fileId: string): Promise<void>
+  /** #4: uploads a file into `parentId` (files.create with media); it inherits the folder's
+   *  sharing. `timeoutMs` cuts the whole upload. Returns Drive's id and webViewLink. */
+  uploadFile(accessToken: string, f: DriveUpload, opts: { timeoutMs: number }): Promise<{ id: string; webViewLink: string }>
 }
+export type DriveUpload = { name: string; parentId: string; mimeType: string; data: Uint8Array }
 
 // ---- Supabase ----
 export type GroupRow = {
@@ -93,6 +102,16 @@ export type QuotedFileLookup =
   | { kind: 'no_message' }
   | { kind: 'no_file' }
   | { kind: 'file'; fileName: string; driveLink: string }
+/** #4: a files row. messageId: the stored message it was last sent in (null after an unsend). */
+export type SavedFile = {
+  id: string; groupId: string; messageId: string | null; fileName: string; driveLink: string; driveFileId: string
+  sizeBytes: number | null
+}
+export type NewFile = {
+  groupId: string; messageId: string; senderLineUserId: string | null; driveConnectionId: string
+  fileName: string; contentSha256: string; driveFileId: string; driveLink: string; sentAt: Date
+  savedAt: Date; sizeBytes: number
+}
 export type Member = { lineUserId: string; displayName: string | null; nicknames: string[]; role: string | null }
 export type Membership = 'live' | 'left' | 'none'
 export type NewSummary = {
@@ -127,12 +146,18 @@ export type TaskPatch = {
 export type DashboardMembership = {
   groupId: string; projectId: string; projectOwnerLineUserId: string; isPm: boolean; left: boolean
 }
+/** #84: one group in the 1:1 chat menu. */
+export type UserGroup = { groupId: string; name: string | null; isOwner: boolean }
 export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
 export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
 /** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
 export type DashboardTaskRow = {
   id: string; groupId: string; title: string; status: TaskStatus
   assigneeLineUserId: string | null; assigneeName: string | null; dueAt: Date | null
+}
+export type DashboardFileRow = {
+  id: string; groupId: string; fileName: string; driveLink: string; sizeBytes: number | null
+  savedAt: Date; senderName: string | null
 }
 export type AiPurpose = 'summary' | 'progress_decision'
 export type NewAiUsage = {
@@ -147,6 +172,7 @@ export type PushPurpose =
   | 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
   | 'owner_takeover' | 'subgroup_detached'   // #31
   | 'owner_needed'                           // #30
+  | 'file_saved'                             // #4
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -197,7 +223,11 @@ export type NewProgressPrompt = {
 export type ProgressPromptRow = NewProgressPrompt & {
   id: string; answer: ProgressAnswer | null; answeredByLineUserId: string | null; answeredAt: Date | null
 }
-export type MessageRef = { id: string; groupId: string; senderLineUserId: string | null; sentAt: Date }
+export type MessageRef = {
+  id: string; groupId: string; senderLineUserId: string | null; sentAt: Date
+  /** #7: set once someone pressed "ไม่ใช่การอัปเดตงาน" on this message's picker; its picks are then refused. */
+  progressDismissedAt: Date | null
+}
 /** A person's Yes on a card: the answer and the Task move are one transaction. */
 export type ProgressYes = {
   promptId: string; taskId: string; fromStatus: TaskStatus; toStatus: ProgressTarget
@@ -277,14 +307,30 @@ export type OwnerChangeState = {
   waiting: TakeoverSubGroup[]
 }
 /** A Sub group the daily rule detached from its Project. */
-export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: string | null }
+export type DetachedSubGroup = {
+  groupId: string; lineGroupId: string; name: string | null
+  /** The nominee it keeps (its old Owner), when the store read it (#30 part B). */
+  nominatedOwnerLineUserId?: string | null
+}
+/** #30 part B: a group that has had no Owner since ownerLeftAt. subGroup: attached to a
+ *  Project and not its main group (it detaches instead of the bot leaving). */
+export type OwnerlessGroup = {
+  groupId: string; lineGroupId: string; subGroup: boolean; nominatedOwnerLineUserId: string | null
+  ownerLeftAt: Date; joinedAt: Date | null
+}
+/** #30 part B: what the exit job checks again right before it acts on a group. */
+export type OwnerExitState = {
+  ownerConfirmedAt: Date | null; ownerLeftAt: Date | null; leftAt: Date | null; joinedAt: Date | null; subGroup: boolean
+  /** groups.owner_nominated_at: when the current nominee was named (a claim sets it). */
+  ownerNominatedAt: Date | null
+}
 /** 'not_nominee': the main group does not name this person (change_project_owner raised). */
 export type OwnerChangeOutcome = 'changed' | 'not_nominee'
 /** 'changed': a chosen Sub group stopped waiting (expired and detached) while the answer
  *  was saved; nothing was written. */
 /** 'expired': the Sub groups waited more than 7 days (TAKEOVER_WAIT_MS); the tick detaches
  *  them, so the answer is refused (answer_subgroup_takeover raises SQLSTATE NJ409 once
- *  20261115150000 is applied). */
+ *  20261116010000 is applied). */
 export type TakeoverAnswerOutcome = 'saved' | 'changed' | 'expired'
 
 export interface StorePort {
@@ -312,6 +358,26 @@ export interface StorePort {
   /** The stored message with this LINE message id in this group (never another group's),
    *  then the newest files row whose message_id points at it. */
   findQuotedFile(groupId: string, lineMessageId: string): Promise<QuotedFileLookup>
+  // #4 file saver
+  /** The files row of this group with this content hash (unique files_one_per_hash), or null. */
+  findFileByHash(groupId: string, contentSha256: string): Promise<SavedFile | null>
+  /** INSERT ... ON CONFLICT (group_id, content_sha256) DO NOTHING. inserted false: another
+   *  save of the same content got in first; `file` is then that row. */
+  insertFile(f: NewFile): Promise<{ inserted: boolean; file: SavedFile }>
+  /** A re-sent file (same hash): points the row's message_id at the newest message that
+   *  carried it, so a quote-reply to that message (#33) finds the link. updated false when
+   *  the row is gone (group purged). */
+  linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }>
+  /** The Project's active drive_connections row, or null. */
+  findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null>
+  /** A photo batch (#4): how many messages of the group carry this imageSet ID, and how
+   *  many of those have a files row pointing at them. */
+  countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number }>
+  /** INSERT INTO image_set_cards ... ON CONFLICT DO NOTHING: claimed true for the one caller
+   *  that inserted the row, so one batch gets one "saved N photos" card. */
+  claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }>
+  /** #4 Dashboard: the newest `limit` files of each group, newest first, with the sender's LINE name. */
+  listDashboardFiles(groupIds: string[], limit: number): Promise<DashboardFileRow[]>
   // #15 Summary
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null
@@ -449,6 +515,8 @@ export interface StorePort {
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>
+  /** "ไม่ใช่การอัปเดตงาน": closes the message's picker. Only while not yet dismissed (first wins). */
+  dismissProgressPicker(messageId: string, byLineUserId: string, at: Date): Promise<{ updated: boolean }>
   findOpenProgressPrompt(taskId: string): Promise<ProgressPromptRow | null>           // kind mark_done, answer null
   /** Insert a mark_done card. prompt null when the Task already has an open one
    *  (unique index task_prompts_one_open_mark_done). */
@@ -490,15 +558,12 @@ export interface StorePort {
   markOwnerLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
   /** Inserts the group's owner_needed card (task_prompts). promptId null when the group already
    *  has an open one (unique index task_prompts_one_open_owner_needed). */
-  openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }>
+  openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string | null; askedAt: Date }): Promise<{ promptId: string | null }>
   /** #30 reconcile (#74): groups the bot is in whose confirmed Owner's membership is marked
    *  left, with the leave time. A leave whose Owner mark failed after the membership write. */
-  listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineUserId: string; leftAt: Date }[]>
-  /** #30 reconcile (#74): groups the bot is in, paused by an Owner leave (owner_left_at set,
-   *  no confirmed Owner), with no open owner_needed card. ownerLineUserId is the nominee
-   *  column (the Owner who left, or a later claimer). */
-  listGroupsWithoutOwnerCard(): Promise<{ groupId: string; lineGroupId: string; ownerLineUserId: string }[]>
-  /** The presser becomes the nominee of a main group whose Owner left, unless another live
+  listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[]>
+  /** The presser becomes the nominee of a main group whose Owner left, or of a group with no
+   *  Project whose Owner left (a Sub group detached by #30 part B), unless another live
    *  Member already holds the nomination. Compare-and-set on the nominee read first, so of two
    *  presses at once one wins. The caller has checked that `lineUserId` is a live Member. */
   claimOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerClaimOutcome }>
@@ -508,12 +573,19 @@ export interface StorePort {
    *  connection retired, the Sub group take-over question started) and answers the open
    *  owner_needed card. Repeating it changes nothing. */
   completeOwnerChange(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: CompleteOwnerChangeOutcome }>
-  /** IDs of the main groups (bot still in) whose Owner left and that name `lineUserId` as the
-   *  nominee, not yet confirmed. Ordered by id. */
+  /** IDs of the main groups, and of the groups with no Project (#30 part B), the bot is still
+   *  in, whose Owner left and that name `lineUserId` as the nominee, not yet confirmed.
+   *  Ordered by id. */
   listPendingOwnerChanges(lineUserId: string): Promise<string[]>
+  /** #30 part B: answers the group's open owner_needed card ('owner_confirmed'), for a new
+   *  Owner confirmed outside complete_owner_change. Only while it is open; a repeat is harmless. */
+  answerOwnerNeededPrompt(groupId: string, byLineUserId: string, at: Date): Promise<void>
   // #17 Dashboard read. The id lists are groups the caller already decided the requester may see.
   /** The requester's rows (live and left) in groups that belong to a Project and still have the bot. */
   listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]>
+  /** #84: the groups this person is a live Member of while the bot is still in them, for the
+   *  1:1 chat menu. isOwner: they are the group's confirmed Owner. */
+  listUserGroups(lineUserId: string): Promise<UserGroup[]>
   /** Groups of these Projects that still have the bot: main group first, then by join time, then id. */
   listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]>
   /** Live Members (left_at is null) of these groups, by LINE name. */
@@ -582,7 +654,7 @@ export interface StorePort {
    *  and main group's folder IDs, retires the active Drive connection ('replaced') and puts
    *  on the take-over question (takeover_asked_at = now(), Owner confirm and folder ID
    *  cleared) every Sub group that is still waiting, or does not run on `newOwner` already
-   *  (20261115150000, D1). A Sub group already confirmed on `newOwner` keeps running.
+   *  (20261116010000, D1). A Sub group already confirmed on `newOwner` keeps running.
    *  Production reaches it only through complete_owner_change (completeOwnerChange). */
   changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }>
   /** null when the Project does not exist. */
@@ -592,8 +664,15 @@ export interface StorePort {
    *  (project_id, takeover_asked_at and the folder ID null; it keeps its old nominee). */
   answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }>
   /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
-   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. */
-  detachExpiredTakeovers(askedBefore: Date): Promise<DetachedSubGroup[]>
+   *  `askedBefore` (groups_takeover_expiry_idx), returning those groups. With `at` (#30 part
+   *  B), the same UPDATE sets owner_left_at = at: a waiting Sub group has no confirmed Owner,
+   *  so it starts a fresh 7-day Owner count and the owner_needed flow. */
+  detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]>
+  /** #30 part B, after the new Owner's "detach" answer (answer_subgroup_takeover): one UPDATE
+   *  sets owner_left_at = at on those of `groupIds` that have no Project and no confirmed
+   *  Owner and whose owner_left_at is null or older than `at`, returning them (with their
+   *  nominee). A repeat with the same `at` changes and returns nothing. */
+  startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]>
   /** #31 lost take-over card: Projects whose Sub groups wait on a question asked at or after
    *  `askedAfter` (not expired), and whose main group has no owner_takeover push_log row
    *  since that ask (a push LINE refused, or one skipped near the quota, left none). */
@@ -615,6 +694,19 @@ export interface StorePort {
    *  left_at and delete_after are cleared where left_at <= at (a re-invite inside the 7
    *  days). The Owner reset runs first, so a redelivery after a half-failure redoes all. */
   markBotJoined(j: { groupId: string; at: Date }): Promise<void>
+  /** #30 part B: the groups the bot is still in (left_at null) with no confirmed Owner and
+   *  owner_left_at <= `leftBefore` (groups_owner_left_idx), oldest owner_left_at first, then
+   *  id, at most `limit`. */
+  listOwnerlessGroups(leftBefore: Date, limit: number): Promise<OwnerlessGroup[]>
+  /** #30 part B: one UPDATE detaches a Sub group that has had no Owner since before
+   *  `leftBefore`: project_id and takeover_asked_at null (as detachExpiredTakeovers, #31),
+   *  drive_folder_id null (its folder is in the old Owner's Drive) and owner_left_at = `at`
+   *  (a fresh 7-day count as a group with no Project). The WHERE holds every condition (still
+   *  attached, not main, no confirmed Owner, owner_left_at <= leftBefore, bot in), so a group
+   *  already detached is never detached again. detached: this call changed the row. */
+  detachOwnerlessSubGroup(groupId: string, leftBefore: Date, at: Date): Promise<{ detached: boolean }>
+  /** #30 part B: the group's Owner and bot state now; null when no group has this ID. */
+  getOwnerExitState(groupId: string): Promise<OwnerExitState | null>
   /** IDs of the groups whose delete_after <= now, oldest delete date first, at most `limit`. */
   listPurgeDueGroups(now: Date, limit: number): Promise<string[]>
   /** One DELETE: the group row where id = groupId and delete_after <= now. Its messages,
@@ -630,6 +722,9 @@ export type HandlerConfig = { lineChannelSecret: string; liffId: string; tokenEn
 export type Deps = {
   line: LinePort; llm: LlmPort; google: GooglePort; store: StorePort
   now: () => Date; config: HandlerConfig
+  /** Waits `ms` (#4: the quiet wait of a photo batch without a total). Absent = setTimeout.
+   *  The test harness moves its clock instead. */
+  sleep?: (ms: number) => Promise<void>
 }
 export type Defer = (job: () => Promise<void>) => void
 export type ApiResult = { status: number; body: unknown }

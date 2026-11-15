@@ -95,7 +95,18 @@ $$;
 -- (20261112143751), a waiting Sub group of the Project asked more than 7 days ago makes
 -- the call raise SQLSTATE NJ409 with nothing written; the app answers 409 expired, and the
 -- tick detaches the groups as usual. Same cutoff as the detach (takeover_asked_at <
--- now() - 7 days). Everything else is the 20261112143751 version.
+-- now() - 7 days).
+--
+-- The "detach" part of the answer also (#30 part B, PR #78 review; user decision
+-- 2026-11-16):
+--   * starts the detached group's 7-day Owner count in the same statement as the detach:
+--     owner_left_at = greatest(coalesce(owner_left_at, now()), now()). A detached Sub
+--     group has no confirmed Owner. The function has no time parameter, so now(). The app
+--     keeps its idempotent startDetachedOwnerCount step after the call, so both agree;
+--   * clears the old nominee (nominated_owner_line_user_id, owner_nominated_by_line_user_id,
+--     owner_nominated_at), so any live Member can claim the group's owner_needed card.
+-- The 7-day expiry detach (app code, detachExpiredTakeovers) is unchanged here.
+-- Everything else is the 20261112143751 version.
 create or replace function public.answer_subgroup_takeover(
   p_project_id          uuid,
   p_takeover_group_ids  uuid[] default '{}'
@@ -153,11 +164,17 @@ begin
   end if;
 
   -- Detach first (project_id and takeover_asked_at together, see
-  -- groups_takeover_pending_rules). The folder ID pointed into the old Owner's Drive.
+  -- groups_takeover_pending_rules). The folder ID pointed into the old Owner's Drive. The
+  -- Owner count starts now (groups_owner_rules keeps owner_confirmed_at null) and the old
+  -- nominee goes, so any Member can claim.
   update public.groups
      set project_id = null,
          takeover_asked_at = null,
-         drive_folder_id = null
+         drive_folder_id = null,
+         owner_left_at = greatest(coalesce(owner_left_at, now()), now()),
+         nominated_owner_line_user_id = null,
+         owner_nominated_by_line_user_id = null,
+         owner_nominated_at = null
    where project_id = p_project_id
      and takeover_asked_at is not null
      and id <> all (takeover);

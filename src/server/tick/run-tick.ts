@@ -4,6 +4,7 @@ import { weeklyInsightJob } from '@/server/insight/weekly'
 import { log, logError } from '@/server/log'
 import { memberCheckJob } from '@/server/members/daily-check'
 import { ownerNeededReconcileJob } from '@/server/members/owner-needed-reconcile'
+import { ownerExitJob } from '@/server/members/owner-left'
 import { takeoverExpiryJob } from '@/server/owner-change/detach'
 import { takeoverCardRetryJob } from '@/server/owner-change/takeover-retry'
 import type { Deps } from '@/server/ports'
@@ -21,14 +22,14 @@ export type TickJob = { name: string; run(deps: Deps, now: Date): Promise<void> 
  *  statement and whose cards are best effort, and the lost take-over card's retry (#31);
  *  then the daily member check (#32), which goes
  *  on over later ticks when one runs short, so it comes after the jobs with no time check of
- *  their own; the Owner-leave reconcile (#30: an Owner mark or owner_needed card a failure
- *  lost), after the member check so a leave it finds is reconciled on the same tick; the
- *  daily purge (#11), on its own night slot; the Drive setup finisher (#13)
- *  last, as it sends nothing to LINE. The time-checked jobs stop on their own when the
- *  tick's time runs short. Still to come: the 7-day Owner-left rule (#30). */
+ *  their own; the 7-day Owner-left rule (#30), whose leave marks the group for the purge;
+ *  the Owner-leave reconcile (#30: an Owner mark or owner_needed card a failure lost),
+ *  after the member check so a leave it finds is reconciled on the same tick; the daily
+ *  purge (#11), on its own night slot; the Drive setup finisher (#13) last, as it sends
+ *  nothing to LINE. The time-checked jobs stop on their own when the tick's time runs short. */
 export const TICK_JOBS: TickJob[] = [
   dailyRemindersJob, weeklyInsightJob, driveAccessCheckJob, takeoverExpiryJob, takeoverCardRetryJob, memberCheckJob,
-  ownerNeededReconcileJob, purgeJob, driveSetupJob,
+  ownerExitJob, ownerNeededReconcileJob, purgeJob, driveSetupJob,
 ]
 
 /** Runs each job one after another. One job's failure is logged and never stops the

@@ -29,7 +29,30 @@ describe('parseGroupCommand', () => {
     expect(parseGroupCommand(text)).toBe('request_file')
   })
 
-  it.each(['NongJoDII summarize please', 'summarize', 'สรุปหน่อย', 'ขอไฟล์', 'NongJoDII ขอไฟล์หน่อย', 'น้องจดดี สรุปหน่อยนะ', 'จดดี สรุปหน่อย', 'ตั้งค่า', null])('does not match %j', (text) => {
+  it.each([
+    ['น้องจดดี ตั้งค่าหน่อย', 'settings'],
+    ['น้องจดดี ตั้งค่าหน่อยครับ', 'settings'],
+    ['น้องจดดี, ตั้งค่า', 'settings'],
+    ['น้องจดดี: ตั้งค่าให้หน่อยนะคะ!', 'settings'],
+    ['น้องจดดี สรุปหน่อยครับ', 'summarize'],
+    ['น้องจดดี สรุปหน่อยนะ', 'summarize'],
+    ['น้องจดดี สรุป', 'summarize'],
+    ['น้องจดดีสรุปให้หน่อยค่ะ', 'summarize'],
+    ['NongJoDII summarize please', 'summarize'],
+    ['NongJoDII summarize!', 'summarize'],
+    ['NongJoDII ขอไฟล์หน่อย', 'request_file'],
+    ['น้องจดดี ขอไฟล์ด้วยครับ', 'request_file'],
+    ['น้องจดดี done ครับ', 'done'],
+  ])('accepts polite words and punctuation after the command: %j (#85)', (text, command) => {
+    expect(parseGroupCommand(text)).toBe(command)
+  })
+
+  it.each([
+    'summarize', 'สรุปหน่อย', 'ขอไฟล์', 'จดดี สรุปหน่อย', 'ตั้งค่า', null,
+    // Ordinary chat that contains a command word is not a command.
+    'ตั้งค่าห้องแล้ว', 'น้องจดดี ตั้งค่าห้องแล้ว', 'น้องจดดี สรุปงานเมื่อวานให้ที', 'เดี๋ยวสรุปหน่อยนะ น้องจดดี',
+    'NongJoDII summarize the meeting', 'น้องจดดี ขอไฟล์สไลด์',
+  ])('does not match %j', (text) => {
     expect(parseGroupCommand(text)).toBeNull()
   })
 })

@@ -5,9 +5,13 @@ import type {
   AnnounceClaim,
   CandidateRow,
   CandidateState,
+  DashboardGroupRow,
+  DashboardMemberRow,
+  DashboardMembership,
+  DashboardTaskRow,
   GroupRow,
   GroupSetup,
-  GroupSettingsWrite, GroupSetupWrite,
+  GroupSettingsWrite, LatestWeeklyInsight, GroupSetupWrite,
   Member,
   Membership,
   NewAiUsage,
@@ -51,6 +55,7 @@ export type LineUserRecord = { lineUserId: string; displayName: string | null }
 export type GroupMemberRecord = {
   groupId: string; lineUserId: string; nicknames: string[]; role: string | null
   source: 'message' | 'liff' | 'setup_form' | 'member_join'; leftAt: Date | null
+  isPm?: boolean // group_members.is_pm; absent = false
   /** Time of the latest memberLeft or memberJoined event applied; absent or null when none. */
   membershipEventAt?: Date | null
 }
@@ -671,6 +676,57 @@ export class FakeStore implements StorePort {
     return { inserted: true }
   }
 
+  // ---- #17 Dashboard read ----
+  async listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]> {
+    this.fault('listDashboardMemberships')
+    return this.tables.group_members
+      .filter((m) => m.lineUserId === lineUserId)
+      .flatMap((m) => {
+        const g = this.tables.groups.find((row) => row.id === m.groupId)
+        const project = g?.projectId ? this.tables.projects.find((p) => p.id === g.projectId) : undefined
+        const botLeft = this.tables.group_schedules.find((r) => r.groupId === m.groupId)?.leftAt ?? null
+        // groups inner join: only groups in a Project (with its row) that still have the bot
+        if (!g || !g.projectId || !project || botLeft !== null) return []
+        return [{
+          groupId: m.groupId, projectId: g.projectId, projectOwnerLineUserId: project.ownerLineUserId,
+          isPm: m.isPm === true, left: m.leftAt !== null,
+        }]
+      })
+  }
+
+  async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {
+    this.fault('listProjectGroups')
+    const isMain = (id: string) => this.tables.group_setups.find((r) => r.groupId === id)?.isMain === true
+    const rows = this.tables.groups
+      .map((g, order) => ({ g, order }))
+      .filter(({ g }) => g.projectId !== null && projectIds.includes(g.projectId))
+      .filter(({ g }) => (this.tables.group_schedules.find((r) => r.groupId === g.id)?.leftAt ?? null) === null)
+    // main group first, then insertion order (the fake's join order)
+    rows.sort((a, b) => Number(isMain(b.g.id)) - Number(isMain(a.g.id)) || a.order - b.order)
+    return rows.map(({ g }) => ({ groupId: g.id, projectId: g.projectId as string, name: g.name }))
+  }
+
+  async listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]> {
+    this.fault('listDashboardMembers')
+    return this.tables.group_members
+      .filter((m) => groupIds.includes(m.groupId) && m.leftAt === null)
+      .map((m) => ({
+        groupId: m.groupId, lineUserId: m.lineUserId,
+        displayName: this.tables.line_users.find((u) => u.lineUserId === m.lineUserId)?.displayName ?? null,
+      }))
+  }
+
+  async listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]> {
+    this.fault('listDashboardTasks')
+    return this.tables.tasks
+      .filter((t) => groupIds.includes(t.groupId) && t.deletedAt === null)
+      .map((t) => ({
+        id: t.id, groupId: t.groupId, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
+        assigneeName: this.tables.line_users.find((u) => u.lineUserId === t.assigneeLineUserId)?.displayName ?? null,
+        dueAt: t.dueAt,
+      }))
+  }
+
   // ---- #12 Google ----
   async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     this.fault('upsertGoogleAccount')
@@ -963,6 +1019,17 @@ export class FakeStore implements StorePort {
       .filter((t) => t.status === 'not_assigned')
       .slice(0, limit)
       .map((t) => ({ id: t.id, title: t.title, dueAt: t.dueAt }))
+  }
+
+  async listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> {
+    this.fault('listLatestWeeklyInsights')
+    const latest = new Map<string, WeeklyInsightRecord>()
+    for (const w of this.tables.weekly_insights) {
+      if (!groupIds.includes(w.groupId)) continue
+      const seen = latest.get(w.groupId)
+      if (!seen || w.weekStart > seen.weekStart) latest.set(w.groupId, w)
+    }
+    return [...latest.values()].map((w) => ({ groupId: w.groupId, weekStart: w.weekStart, counts: { ...w.counts }, postedAt: w.postedAt }))
   }
 
   async saveWeeklyInsight(i: NewWeeklyInsight): Promise<{ inserted: boolean }> {
@@ -1270,7 +1337,7 @@ export class FakeStore implements StorePort {
 
   seedMember(p: {
     groupId: string; lineUserId: string; displayName: string
-    nicknames?: string[]; role?: string; leftAt?: Date
+    nicknames?: string[]; role?: string; leftAt?: Date; isPm?: boolean
   }): void {
     fk(this.hasGroup(p.groupId), 'group_members.group_id')
     const user = this.tables.line_users.find((u) => u.lineUserId === p.lineUserId)
@@ -1278,7 +1345,7 @@ export class FakeStore implements StorePort {
     else this.tables.line_users.push({ lineUserId: p.lineUserId, displayName: p.displayName })
     const record: GroupMemberRecord = {
       groupId: p.groupId, lineUserId: p.lineUserId, nicknames: [...(p.nicknames ?? [])],
-      role: p.role ?? null, source: 'setup_form', leftAt: p.leftAt ?? null,
+      role: p.role ?? null, source: 'setup_form', leftAt: p.leftAt ?? null, isPm: p.isPm === true,
     }
     const i = this.tables.group_members.findIndex((m) => m.groupId === p.groupId && m.lineUserId === p.lineUserId)
     if (i === -1) this.tables.group_members.push(record)
@@ -1295,6 +1362,14 @@ export class FakeStore implements StorePort {
     }
     this.tables.files.push(row)
     return { ...row }
+  }
+
+  /** A Project row owned by `ownerLineUserId` (creates the line_users row); attach groups with seedGroup({ projectId }). */
+  seedProject(ownerLineUserId: string): ProjectRecord {
+    this.ensureLineUserRow(ownerLineUserId)
+    const project: ProjectRecord = { id: randomUUID(), ownerLineUserId }
+    this.tables.projects.push(project)
+    return { ...project }
   }
 
   seedAiUsage(partial: Partial<NewAiUsage> = {}): void {

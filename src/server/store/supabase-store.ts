@@ -8,9 +8,13 @@ import type {
   DailyReminderGroup,
   DriveContext,
   DriveGroup,
+  DashboardGroupRow,
+  DashboardMemberRow,
+  DashboardMembership,
+  DashboardTaskRow,
   GroupRow,
   GroupSetup,
-  GroupSettingsWrite, GroupSetupWrite,
+  GroupSettingsWrite, LatestWeeklyInsight, GroupSetupWrite,
   Member,
   Membership,
   MessageRef,
@@ -95,9 +99,21 @@ function toPromptRow(r: DbPrompt): ProgressPromptRow {
   }
 }
 
-/** Page size of every paged list read; equal to PostgREST max_rows in supabase/config.toml,
- *  which caps each answer. */
+/**
+ * Page size of every paged list read; equal to PostgREST max_rows in supabase/config.toml,
+ * which caps each answer.
+ */
 export const PAGE_SIZE = 1000
+
+/**
+ * Page size for listWeeklySummaryGroups.
+ */
+export const WEEKLY_PAGE = 1000
+
+/**
+ * Page size of the Dashboard reads; equal to PostgREST max_rows too.
+ */
+export const DASHBOARD_PAGE = 1000
 
 type PgError = { code: string } | null
 
@@ -1105,6 +1121,138 @@ export class SupabaseStore implements StorePort {
       throw new Error('confirmGroupOwner: unexpected result from confirm_group_owner')
     }
     return { outcome: data as OwnerConfirmOutcome }
+  }
+
+  // ---- #17 Dashboard read ----
+  async listDashboardMemberships(lineUserId: string): Promise<DashboardMembership[]> {
+    type Row = {
+      group_id: string; is_pm: boolean; left_at: string | null
+      groups: { project_id: string; projects: { owner_line_user_id: string } }
+    }
+    // Every page, in a stable order: PostgREST answers at most max_rows (1000) per request,
+    // and a left membership missing from the read would let visibleGroups show that group.
+    const out: DashboardMembership[] = []
+    for (let from = 0; ; from += DASHBOARD_PAGE) {
+      const { data, error } = await this.db
+        .from('group_members')
+        .select('group_id, is_pm, left_at, groups!inner(project_id, left_at, projects!inner(owner_line_user_id))')
+        .eq('line_user_id', lineUserId)
+        .not('groups.project_id', 'is', null)
+        .is('groups.left_at', null)
+        .order('group_id', { ascending: true })
+        .range(from, from + DASHBOARD_PAGE - 1)
+      check('listDashboardMemberships', error)
+      const rows = (data ?? []) as unknown as Row[]
+      for (const r of rows) {
+        out.push({
+          groupId: r.group_id, projectId: r.groups.project_id,
+          projectOwnerLineUserId: r.groups.projects.owner_line_user_id, isPm: r.is_pm, left: r.left_at !== null,
+        })
+      }
+      if (rows.length < DASHBOARD_PAGE) return out
+    }
+  }
+
+  async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {
+    if (projectIds.length === 0) return []
+    type Row = { id: string; project_id: string; name: string | null }
+    const out: DashboardGroupRow[] = []
+    for (let from = 0; ; from += DASHBOARD_PAGE) {
+      const { data, error } = await this.db
+        .from('groups')
+        .select('id, project_id, name')
+        .in('project_id', projectIds)
+        .is('left_at', null)
+        .order('is_main', { ascending: false })
+        .order('joined_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + DASHBOARD_PAGE - 1)
+      check('listProjectGroups', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) out.push({ groupId: r.id, projectId: r.project_id, name: r.name })
+      if (rows.length < DASHBOARD_PAGE) return out
+    }
+  }
+
+  async listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]> {
+    if (groupIds.length === 0) return []
+    type Row = { group_id: string; line_user_id: string; line_users: { display_name: string | null } | null }
+    const out: DashboardMemberRow[] = []
+    for (let from = 0; ; from += DASHBOARD_PAGE) {
+      const { data, error } = await this.db
+        .from('group_members')
+        .select('group_id, line_user_id, line_users(display_name)')
+        .in('group_id', groupIds)
+        .is('left_at', null)
+        .order('group_id')
+        .order('first_seen_at', { ascending: true })
+        .order('line_user_id')
+        .range(from, from + DASHBOARD_PAGE - 1)
+      check('listDashboardMembers', error)
+      const rows = (data ?? []) as unknown as Row[]
+      for (const r of rows) out.push({ groupId: r.group_id, lineUserId: r.line_user_id, displayName: r.line_users?.display_name ?? null })
+      if (rows.length < DASHBOARD_PAGE) return out
+    }
+  }
+
+  async listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]> {
+    if (groupIds.length === 0) return []
+    type Row = {
+      id: string; group_id: string; title: string; status: TaskStatus; assignee_line_user_id: string | null
+      due_at: string | null; assignee: { display_name: string | null } | null
+    }
+    const out: DashboardTaskRow[] = []
+    for (let from = 0; ; from += DASHBOARD_PAGE) {
+      const { data, error } = await this.db
+        .from('tasks')
+        .select('id, group_id, title, status, assignee_line_user_id, due_at, assignee:line_users!assignee_line_user_id(display_name)')
+        .in('group_id', groupIds)
+        .is('deleted_at', null)
+        .order('group_id')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + DASHBOARD_PAGE - 1)
+      check('listDashboardTasks', error)
+      const rows = (data ?? []) as unknown as Row[]
+      for (const r of rows) {
+        out.push({
+          id: r.id, groupId: r.group_id, title: r.title, status: r.status,
+          assigneeLineUserId: r.assignee_line_user_id, assigneeName: r.assignee?.display_name ?? null, dueAt: toDate(r.due_at),
+        })
+      }
+      if (rows.length < DASHBOARD_PAGE) return out
+    }
+  }
+
+  async listLatestWeeklyInsights(groupIds: string[]): Promise<LatestWeeklyInsight[]> {
+    if (groupIds.length === 0) return []
+    type Row = {
+      group_id: string; week_start: string; tasks_done: number; tasks_in_process: number
+      tasks_awaiting_owner: number; posted_at: string | null
+    }
+    // PostgREST has no DISTINCT ON: read every row, newest week first per group, in pages,
+    // and keep the first of each group. One row per group and week keeps this small.
+    const latest = new Map<string, LatestWeeklyInsight>()
+    for (let from = 0; ; from += DASHBOARD_PAGE) {
+      const { data, error } = await this.db
+        .from('weekly_insights')
+        .select('group_id, week_start, tasks_done, tasks_in_process, tasks_awaiting_owner, posted_at')
+        .in('group_id', groupIds)
+        .order('group_id')
+        .order('week_start', { ascending: false })
+        .range(from, from + DASHBOARD_PAGE - 1)
+      check('listLatestWeeklyInsights', error)
+      const rows = (data ?? []) as Row[]
+      for (const r of rows) {
+        if (latest.has(r.group_id)) continue
+        latest.set(r.group_id, {
+          groupId: r.group_id, weekStart: r.week_start,
+          counts: { done: r.tasks_done, inProcess: r.tasks_in_process, awaitingOwner: r.tasks_awaiting_owner },
+          postedAt: toDate(r.posted_at),
+        })
+      }
+      if (rows.length < DASHBOARD_PAGE) return [...latest.values()]
+    }
   }
 
   // ---- #12 Google ----

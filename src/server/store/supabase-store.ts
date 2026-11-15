@@ -34,6 +34,8 @@ import type {
   OwnerChangeOutcome,
   OwnerChangeState,
   OwnerClaimOutcome,
+  OwnerlessGroup,
+  OwnerExitState,
   OwnerConfirmOutcome,
   TakeoverAnswerOutcome,
   PushBudgetClaim,
@@ -1269,28 +1271,31 @@ export class SupabaseStore implements StorePort {
       is_main: boolean; project_id: string | null; nominated_owner_line_user_id: string | null
       owner_confirmed_at: string | null; owner_left_at: string | null; left_at: string | null
     } | null
-    if (!row || row.project_id === null || row.owner_left_at === null || row.owner_confirmed_at !== null || row.left_at !== null) {
+    if (!row || row.owner_left_at === null || row.owner_confirmed_at !== null || row.left_at !== null) {
       return { outcome: 'not_pending' }
     }
-    if (!row.is_main) return { outcome: 'not_main_group' }
+    // A group with no Project (a Sub group detached by #30 part B) is set up afresh.
+    const standalone = row.project_id === null
+    if (!standalone && !row.is_main) return { outcome: 'not_main_group' }
     const nominee = row.nominated_owner_line_user_id
     if (nominee === lineUserId) return { outcome: 'already_claimed' }
     // The old Owner (or an earlier claimer) who left the group frees the nomination.
     if (nominee !== null && (await this.getMembership(groupId, nominee)) === 'live') return { outcome: 'taken' }
     // Compare-and-set on the nominee read above: of two presses at once, one wins. A new
     // nominee leaves owner_confirmed_at null (groups_owner_rules) and owner_left_at set.
-    let update = this.db
+    // Still the same kind of group (is_main implies a Project: groups_main_needs_project).
+    const { data: won, error: updateError } = await this.db
       .from('groups')
       .update({
         nominated_owner_line_user_id: lineUserId, owner_nominated_by_line_user_id: lineUserId,
         owner_nominated_at: at.toISOString(),
       })
       .eq('id', groupId)
-      .eq('is_main', true)
       .not('owner_left_at', 'is', null)
       .is('owner_confirmed_at', null)
-    update = nominee === null ? update.is('nominated_owner_line_user_id', null) : update.eq('nominated_owner_line_user_id', nominee)
-    const { data: won, error: updateError } = await update.select('id')
+      .filter(standalone ? 'project_id' : 'is_main', standalone ? 'is' : 'eq', standalone ? null : true)
+      .filter('nominated_owner_line_user_id', nominee === null ? 'is' : 'eq', nominee)
+      .select('id')
     check('claimOwnerChange', updateError)
     return { outcome: (won ?? []).length === 1 ? 'claimed' : 'taken' }
   }
@@ -1307,13 +1312,23 @@ export class SupabaseStore implements StorePort {
     return { outcome: data as CompleteOwnerChangeOutcome }
   }
 
+  async answerOwnerNeededPrompt(groupId: string, byLineUserId: string, at: Date): Promise<void> {
+    const { error } = await this.db
+      .from('task_prompts')
+      .update({ answer: 'owner_confirmed', answered_by_line_user_id: byLineUserId, answered_at: at.toISOString() })
+      .eq('group_id', groupId)
+      .eq('kind', 'owner_needed')
+      .is('answer', null)
+    check('answerOwnerNeededPrompt', error)
+  }
+
   async listPendingOwnerChanges(lineUserId: string): Promise<string[]> {
     const rows = await readAllPages<{ id: string }>('listPendingOwnerChanges', (from, to) =>
       this.db
         .from('groups')
         .select('id')
         .eq('nominated_owner_line_user_id', lineUserId)
-        .eq('is_main', true)
+        .or('is_main.eq.true,project_id.is.null')
         .not('owner_left_at', 'is', null)
         .is('owner_confirmed_at', null)
         .is('left_at', null)
@@ -1941,10 +1956,10 @@ export class SupabaseStore implements StorePort {
     check('markBotJoined', cleared.error)
   }
 
-  async listOwnerlessGroups(leftBefore: Date, limit: number): Promise<string[]> {
+  async listOwnerlessGroups(leftBefore: Date, limit: number): Promise<OwnerlessGroup[]> {
     const { data, error } = await this.db
       .from('groups')
-      .select('id')
+      .select('id, line_group_id, project_id, is_main, nominated_owner_line_user_id, owner_left_at, joined_at')
       .lte('owner_left_at', leftBefore.toISOString())
       .is('owner_confirmed_at', null)
       .is('left_at', null)
@@ -1952,7 +1967,51 @@ export class SupabaseStore implements StorePort {
       .order('id', { ascending: true })
       .limit(limit)
     check('listOwnerlessGroups', error)
-    return ((data ?? []) as { id: string }[]).map((r) => r.id)
+    type Row = {
+      id: string; line_group_id: string; project_id: string | null; is_main: boolean
+      nominated_owner_line_user_id: string | null; owner_left_at: string; joined_at: string | null
+    }
+    return ((data ?? []) as Row[]).map((r) => ({
+      groupId: r.id, lineGroupId: r.line_group_id, subGroup: r.project_id !== null && !r.is_main,
+      nominatedOwnerLineUserId: r.nominated_owner_line_user_id,
+      ownerLeftAt: toDate(r.owner_left_at), joinedAt: toDate(r.joined_at),
+    }))
+  }
+
+  async getOwnerExitState(groupId: string): Promise<OwnerExitState | null> {
+    const { data, error } = await this.db
+      .from('groups')
+      .select('project_id, is_main, owner_confirmed_at, owner_left_at, left_at, joined_at, owner_nominated_at')
+      .eq('id', groupId)
+      .maybeSingle()
+    check('getOwnerExitState', error)
+    const r = data as {
+      project_id: string | null; is_main: boolean; owner_confirmed_at: string | null
+      owner_left_at: string | null; left_at: string | null; joined_at: string | null; owner_nominated_at: string | null
+    } | null
+    if (!r) return null
+    return {
+      ownerConfirmedAt: toDate(r.owner_confirmed_at), ownerLeftAt: toDate(r.owner_left_at),
+      leftAt: toDate(r.left_at), joinedAt: toDate(r.joined_at), subGroup: r.project_id !== null && !r.is_main,
+      ownerNominatedAt: toDate(r.owner_nominated_at),
+    }
+  }
+
+  async detachOwnerlessSubGroup(groupId: string, leftBefore: Date, at: Date): Promise<{ detached: boolean }> {
+    // project_id and takeover_asked_at change together (groups_takeover_pending_rules), as in
+    // detachExpiredTakeovers (#31).
+    const { data, error } = await this.db
+      .from('groups')
+      .update({ project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: at.toISOString() })
+      .eq('id', groupId)
+      .not('project_id', 'is', null)
+      .eq('is_main', false)
+      .is('owner_confirmed_at', null)
+      .lte('owner_left_at', leftBefore.toISOString())
+      .is('left_at', null)
+      .select('id')
+    check('detachOwnerlessSubGroup', error)
+    return { detached: (data ?? []).length === 1 }
   }
 
   async listPurgeDueGroups(now: Date, limit: number): Promise<string[]> {

@@ -108,11 +108,13 @@ export class FakeLine implements LinePort {
   leaveNotInGroup = false
   /** How long leaveGroup takes on `clock` (#30 part B time limit); 0 (the default) = instant. */
   leaveMs = 0
+  /** LINE group IDs whose leaveGroup rejects (a LINE 5xx for those groups only). */
+  failLeaveFor = new Set<string>()
 
   async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
     this.leaveCalls.push(lineGroupId)
     if (this.leaveMs > 0) this.clock?.advance(this.leaveMs)
-    if (this.failLeave) throw new AdapterError('line leave 500')
+    if (this.failLeave || this.failLeaveFor.has(lineGroupId)) throw new AdapterError('line leave 500')
     return this.leaveNotInGroup ? 'not_in_group' : 'left'
   }
 

@@ -1012,6 +1012,31 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
+  async deleteTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ deleted_at: t.at.toISOString(), deleted_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .is('assignee_line_user_id', null)
+      .neq('status', 'done')
+      .select('id')
+    check('deleteTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('tasks')
+      .update({ deleted_at: null, deleted_by_line_user_id: null, last_activity_at: t.at.toISOString(), last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .not('deleted_at', 'is', null)
+      .not('deleted_by_line_user_id', 'is', null) // a person's delete, never another kind
+      .select('id')
+    check('restoreTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
   // ---- #29 member leaves ----
   async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
     const at = t.at.toISOString()

@@ -424,6 +424,11 @@ export interface StorePort {
   postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }>
   /** "ฉันรับเอง": assignee = by and In Process; only a live Task not Done that has no assignee. */
   takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  // #23 "ไม่ใช่งาน" and its undo. Same rule: one UPDATE, precondition in WHERE.
+  /** Soft delete: deleted_at = at, deleted_by = by; only a live Task not Done that has no assignee. */
+  deleteTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  /** Undo of deleteTask: clears deleted_at and deleted_by; only a Task a person deleted (deleted_by set). */
+  restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
   // #29 member leaves. One UPDATE each, conditions in WHERE, so a repeat changes nothing.
   /** Sets left_at on a live membership row, or adds a left row when there is none (so a late
    *  message cannot add the person back); updated false = already left. */

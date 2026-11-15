@@ -1,4 +1,5 @@
 import type { LineEvent } from '@/server/line/types'
+import { markOwnerLeftOnLeave } from '@/server/members/owner-left'
 import type { Deps, MessageMention, TaskRow } from '@/server/ports'
 
 export type Job =
@@ -16,8 +17,10 @@ export type Job =
   | {
       // #29: people who left a group (LINE memberLeft) and the open Tasks released from them,
       // already saved at ingest. eventId keys the one push the card may make.
+      // #30 ownerLeft: the LINE user ID of the group's Owner when they are among the leavers
+      // (owner_left_at already set at ingest), else null; the job then posts the owner_needed card.
       kind: 'member_left'; groupId: string; lineGroupId: string
-      released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string
+      released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string; ownerLeft: string | null
     }
   | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
@@ -143,12 +146,14 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
       const tasks = await store.releaseTasksIfLeft({ groupId: group.id, lineUserId })
       if (tasks.length > 0) released.push({ lineUserId, tasks })
     }
+    // #30: the Owner among the leavers pauses the Owner-backed features, also before the ledger row.
+    const ownerLeft = await markOwnerLeftOnLeave(deps, group, lineUserIds, eventTimestamp)
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'memberLeft', lineGroupId: source.groupId,
       eventTimestamp, isRedelivery,
     })
-    if (!inserted || released.length === 0) return null
-    return { kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, released, eventId: event.webhookEventId }
+    if (!inserted || (released.length === 0 && ownerLeft === null)) return null
+    return { kind: 'member_left', groupId: group.id, lineGroupId: source.groupId, released, eventId: event.webhookEventId, ownerLeft }
   }
 
   if (source.type === 'group' && event.type === 'memberJoined') {

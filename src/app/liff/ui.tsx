@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { avatarInitial, avatarTone } from './display'
 
 // Shared building blocks of the LIFF pages, following the Figma UI v4 design system
@@ -156,22 +157,18 @@ export function AssigneeSheet({ open, subtitle, members, value, onClose, onConfi
     if (open) setPicked(value)
   }
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  const dialog = useModal(open, onClose)
 
   if (!open) return null
   const options: { id: string; name: string | null }[] = [
     ...members.map((m) => ({ id: m.lineUserId, name: m.displayName })),
     { id: '', name: null },
   ]
-  return (
+  // Rendered into <body>, beside the page, so the page can be made inert while it is open.
+  return createPortal(
     <div className="fixed inset-0 z-30 flex items-end bg-black/40" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="เลือกผู้รับ"
-        className="liff max-h-[85dvh] w-full overflow-y-auto rounded-t-2xl bg-page px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
+      <div ref={dialog} role="dialog" aria-modal="true" aria-label="เลือกผู้รับ" tabIndex={-1}
+        className="liff max-h-[85dvh] w-full overflow-y-auto rounded-t-2xl bg-page px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] focus:outline-none"
         onClick={(e) => e.stopPropagation()}>
         <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-line" />
         <div className="flex items-center justify-between">
@@ -203,8 +200,71 @@ export function AssigneeSheet({ open, subtitle, members, value, onClose, onConfi
         </ul>
         <Button className="mt-4" onClick={() => onConfirm(picked)}>ยืนยัน</Button>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
+}
+
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/** Makes an open dialog modal for keyboard and screen-reader users: focus moves into it
+ *  (the pressed option, else its first control), Tab and Shift+Tab stay inside, Escape
+ *  closes, everything else in <body> is inert, and focus goes back to the control that
+ *  opened it when it closes. Returns the ref for the dialog element. */
+function useModal(open: boolean, onClose: () => void) {
+  const dialog = useRef<HTMLDivElement>(null)
+  const close = useRef(onClose)
+  useEffect(() => { close.current = onClose })
+
+  useEffect(() => {
+    if (!open) return
+    const node = dialog.current
+    if (!node) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const overlay = node.parentElement
+    // The page behind can be neither clicked, focused nor read while the dialog is open.
+    const others = Array.from(document.body.children).filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== overlay && !el.inert,
+    )
+    for (const el of others) el.inert = true
+
+    const focusables = () => Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE))
+    const first = node.querySelector<HTMLElement>('[aria-pressed="true"]') ?? focusables()[0] ?? node
+    first.focus()
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        close.current()
+        return
+      }
+      if (e.key !== 'Tab') return
+      const list = focusables()
+      if (list.length === 0) {
+        e.preventDefault()
+        node.focus()
+        return
+      }
+      const head = list[0]
+      const tail = list[list.length - 1]
+      const active = document.activeElement
+      if (e.shiftKey && (active === head || !node.contains(active))) {
+        e.preventDefault()
+        tail.focus()
+      } else if (!e.shiftKey && (active === tail || !node.contains(active))) {
+        e.preventDefault()
+        head.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      for (const el of others) el.inert = false
+      if (opener?.isConnected) opener.focus()
+    }
+  }, [open])
+
+  return dialog
 }
 
 // ---------- status screens ----------

@@ -6,6 +6,7 @@ import type {
   CandidateRow,
   CandidateState,
   DashboardGroupRow,
+  UserGroup,
   DashboardMemberRow,
   DashboardMembership,
   DashboardTaskRow,
@@ -825,6 +826,19 @@ export class FakeStore implements StorePort {
           isPm: m.isPm === true, left: m.leftAt !== null,
         }]
       })
+  }
+
+  async listUserGroups(lineUserId: string): Promise<UserGroup[]> {
+    this.fault('listUserGroups')
+    return this.tables.group_members
+      .filter((m) => m.lineUserId === lineUserId && m.leftAt === null)
+      .flatMap((m) => {
+        const g = this.tables.groups.find((row) => row.id === m.groupId)
+        const botLeft = this.tables.group_schedules.find((r) => r.groupId === m.groupId)?.leftAt ?? null
+        if (!g || botLeft !== null) return []
+        return [{ groupId: g.id, name: g.name, isOwner: g.ownerConfirmedAt !== null && g.nominatedOwnerLineUserId === lineUserId }]
+      })
+      .sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
   async listProjectGroups(projectIds: string[]): Promise<DashboardGroupRow[]> {

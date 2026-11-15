@@ -1,7 +1,7 @@
 import { parseGroupCommand } from '@/server/commands/parse'
 import { handleFileRequest } from '@/server/files/request'
 import { handleGroupFile } from '@/server/files/save'
-import { sendConnectDriveCard } from '@/server/google/connect-card'
+import { handleUserChat } from '@/server/chat/menu'
 import { log, logError } from '@/server/log'
 import type { Deps } from '@/server/ports'
 import { handleProgressPostback } from '@/server/progress/handle-postback'
@@ -152,5 +152,5 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
     await handleMemberJoined(deps, job)
     return
   }
-  await sendConnectDriveCard(deps, job)
+  await handleUserChat(deps, job)
 }

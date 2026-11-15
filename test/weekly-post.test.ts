@@ -76,8 +76,8 @@ describe('weekly insight group post (#21)', () => {
     expect(push.messages).toHaveLength(1)
     const card = push.messages[0]
     if (card.type !== 'flex') throw new Error('expected a Flex card')
-    expect(card.altText).toBe(`${WEEKLY_CARD_TEXT.title}: เสร็จ 1 · กำลังทำ 1 · ยังไม่มีผู้รับ 1`)
-    expect(texts(card.contents)).toEqual(expect.arrayContaining(['ทีมอีเวนต์ · 16–22 พ.ย.', '• Budget']))
+    expect(card.altText).toBe(`${WEEKLY_CARD_TEXT.title}: ยังไม่มีผู้รับ 1 · กำลังทำ 1 · เสร็จ 1`)
+    expect(texts(card.contents)).toEqual(expect.arrayContaining(['ทีมอีเวนต์ · 16–22 พ.ย.', 'Budget']))
     expect(JSON.stringify(card.contents)).toContain(`https://liff.line.me/${TEST_LIFF_ID}?view=dashboard&id=${group.id}`)
 
     expect(insightOf(store, group.id)?.postedAt).toEqual(MONDAY_9)

@@ -1,19 +1,20 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { NICKNAME_MAX, QUARTER_HOURS, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
-import type { SetupFeatures, SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
-import { post } from './api'
+import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
+import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
+import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
+import { FEATURES, TimeSelect } from './setup-parts'
 import {
   addNickname, initialSetupForm, removeNickname, setNickname, setRole, SETUP_STEPS, stepForField, toSubmitBody,
   validateAll, validateStep, type SetupForm,
 } from './setup-model'
+import { Avatar, Button, Field, IconCheck, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
 
-// #52 setup form, Figma v4 #2b-#2d2: four steps with next and back, then one send. `id`
+// #52 setup form, Figma UI v4 #2b-#2d: four steps with back and next, then one send. `id`
 // is groups.id. Only the LIFF ID token goes up as identity.
 
-const ERR_401 = 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
 const ERR_403 = 'คุณไม่ได้อยู่ในกลุ่มนี้ จึงตั้งค่ากลุ่มไม่ได้'
 const ERR_404 = 'ไม่พบกลุ่มนี้'
 const ERR_409 = 'กลุ่มนี้ตั้งค่าเสร็จแล้ว เปลี่ยนการตั้งค่าได้ในหน้าตั้งค่า'
@@ -36,34 +37,12 @@ function errorCopy(status: number, fallback: string): string {
   return fallback
 }
 
-const FEATURES: { key: keyof SetupFeatures; label: string; sub: string }[] = [
-  { key: 'summarize', label: 'สรุปงานจากแชต', sub: 'ร่างงานให้ทีมกดยืนยัน' },
-  { key: 'saveFiles', label: 'เก็บไฟล์ลง Google Drive', sub: 'ไฟล์ในแชตไปอยู่โฟลเดอร์ของกลุ่ม' },
-  { key: 'trackRemind', label: 'ติดตามงาน + เตือน', sub: 'ถามปิดงาน และเตือนงานใกล้ครบกำหนด' },
-  { key: 'weeklySummary', label: 'สรุปรายสัปดาห์', sub: 'โพสต์สรุปในกลุ่มทุกสัปดาห์' },
-]
-
 const STEP_TITLES = [
-  { title: 'กลุ่มนี้ทำเรื่องอะไร?', sub: 'เล่าสั้น ๆ เพื่อให้ NongJoDII เข้าใจกลุ่ม' },
-  { title: 'ใครทำหน้าที่อะไร?', sub: 'ชื่อเล่นช่วยให้ NongJoDII รู้ว่าแชตพูดถึงใคร' },
-  { title: 'อยากให้ NongJoDII ช่วยอะไร?', sub: 'เลือกได้หลายข้อ' },
-  { title: 'ให้ NongJoDII เตือนตอนไหน?', sub: 'เวลาประเทศไทย' },
+  { title: 'กลุ่มนี้ทำเรื่องอะไร?', sub: 'เล่าสั้น ๆ เพื่อให้น้องจดดีเข้าใจกลุ่ม' },
+  { title: 'ใครทำหน้าที่อะไร?', sub: 'ชื่อเล่นช่วยให้น้องจดดีรู้ว่าแชตพูดถึงใคร' },
+  { title: 'อยากให้น้องจดดีช่วยอะไร?', sub: 'เลือกได้หลายข้อ' },
+  { title: 'ให้น้องจดดีเตือนตอนไหน?', sub: 'เวลาประเทศไทย' },
 ]
-
-function TimeSelect({ value, disabled, onChange }: { value: string; disabled: boolean; onChange: (v: string) => void }) {
-  return (
-    <select
-      className="mt-1 w-full rounded border p-2"
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      {QUARTER_HOURS.map((t) => (
-        <option key={t} value={t}>{t}</option>
-      ))}
-    </select>
-  )
-}
 
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SetupLoad }
 
@@ -148,52 +127,49 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
     }
   }
 
-  if (load.kind === 'loading') return <p className="p-4 text-base">กำลังโหลด...</p>
+  const close = () => liff.closeWindow()
+  const TITLE = 'ตั้งค่ากลุ่ม'
+  if (load.kind === 'loading') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังโหลด..." />
   if (load.kind === 'error') {
     return (
-      <div className="p-4 text-base">
-        <p>{load.message}</p>
-        <button type="button" className="mt-4 rounded border px-4 py-2" onClick={() => void fetchSetup()}>
-          ลองอีกครั้ง
-        </button>
-      </div>
+      <StatusScreen kind="error" appTitle={TITLE} onBack={close} title="โหลดข้อมูลไม่สำเร็จ" message={load.message}
+        onRetry={() => void fetchSetup()} onClose={close} />
     )
   }
   const { data } = load
-  const close = (
-    <button type="button" className="mt-4 w-full rounded border px-4 py-2" onClick={() => liff.closeWindow()}>
-      กลับไปที่แชท
-    </button>
-  )
   if (data.state === 'confirmed' || data.state === 'in_project') {
-    return <div className="p-4 text-base"><p>{ERR_409}</p>{close}</div>
+    return <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="ตั้งค่าเสร็จแล้ว" message={ERR_409} onClose={close} />
   }
   if (done) {
     const ownerName = resentOwnerName ?? form?.members.find((m) => m.lineUserId === form.ownerLineUserId)?.displayName
     // Only a pending nomination can be sent again: a confirmed group answers 409.
     const retryCard = done.state === 'pending_owner' && done.posted === 'failed'
     return (
-      <div className="p-4 text-base">
-        <h1 className="text-lg font-bold">ตั้งค่าเสร็จแล้ว ✓</h1>
-        {done.state === 'pending_owner' && ownerName && done.posted === 'pushed' && (
-          <p className="mt-2">รอ {ownerName} ยืนยันเป็นเจ้าของบอท จากการ์ดในกลุ่ม</p>
-        )}
-        {POSTED_NOTE[done.posted] && <p className="mt-2 text-sm text-gray-600">{POSTED_NOTE[done.posted]}</p>}
-        {retryCard && (
-          // The server pushes the card for the saved nomination under its own retry key,
-          // without saving this page's form again.
-          <button
-            type="button"
-            className="mt-4 w-full rounded bg-[#1F5BAD] px-4 py-2 text-white disabled:opacity-50"
-            disabled={submitting}
-            onClick={() => void resend()}
-          >
-            {submitting ? 'กำลังส่ง...' : 'ส่งการ์ดยืนยันอีกครั้ง'}
-          </button>
-        )}
-        {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
-        {close}
-      </div>
+      <Page title={TITLE} onBack={close} bottom={
+        <div className="space-y-2">
+          {retryCard && (
+            // The server pushes the card for the saved nomination under its own retry key,
+            // without saving this page's form again.
+            <Button disabled={submitting} onClick={() => void resend()}>
+              {submitting ? 'กำลังส่ง...' : 'ส่งการ์ดยืนยันอีกครั้ง'}
+            </Button>
+          )}
+          <Button variant={retryCard ? 'outline' : 'primary'} onClick={close}>กลับไปที่แชต</Button>
+        </div>
+      }>
+        <div className="flex flex-col items-center pt-8 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-done-bg text-done"><IconCheck className="h-7 w-7" /></span>
+          <h2 className="mt-4 text-xl font-semibold">ตั้งค่าเสร็จแล้ว</h2>
+          <p className="mt-1 text-sm text-ink-2">น้องจดดีรู้จักกลุ่มและทีมแล้ว จากนี้จะอ่านแชตและร่างงานให้กดยืนยันนะ</p>
+        </div>
+        <div className="mt-6 space-y-2">
+          {done.state === 'pending_owner' && ownerName && done.posted === 'pushed' && (
+            <Notice tone="info">รอ {ownerName} ยืนยันเป็นเจ้าของบอท จากการ์ดในกลุ่ม</Notice>
+          )}
+          {POSTED_NOTE[done.posted] && <Notice tone="info">{POSTED_NOTE[done.posted]}</Notice>}
+          {formError && <Notice>{formError}</Notice>}
+        </div>
+      </Page>
     )
   }
   if (!form) return null
@@ -213,141 +189,186 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
   const head = STEP_TITLES[step - 1]
 
   return (
-    <div className="p-4 text-base">
-      <p className="text-sm text-gray-600">ขั้นที่ {step}/{SETUP_STEPS}{data.groupName ? ` · ${data.groupName}` : ''}</p>
-      <h1 className="mt-1 text-lg font-bold">{head.title}</h1>
-      <p className="text-sm text-gray-600">{head.sub}</p>
+    <Page
+      title={data.groupName ? `${TITLE} · ${data.groupName}` : TITLE}
+      onBack={close}
+      bottom={
+        <div className="space-y-2">
+          {formError && <Notice>{formError}</Notice>}
+          <div className="flex gap-2">
+            {step > 1 && (
+              <Button variant="secondary" disabled={submitting} onClick={() => go(step - 1)}>ย้อนกลับ</Button>
+            )}
+            {step < SETUP_STEPS ? (
+              <Button disabled={submitting} onClick={() => go(step + 1)}>ต่อไป</Button>
+            ) : (
+              <Button disabled={submitting} onClick={() => void send()}>{submitting ? 'กำลังส่ง...' : 'เสร็จสิ้น'}</Button>
+            )}
+          </div>
+        </div>
+      }
+    >
+      <div className="flex items-center gap-2" aria-label={`ข้อ ${step} จาก ${SETUP_STEPS}`}>
+        {Array.from({ length: SETUP_STEPS }, (_, i) => (
+          <span key={i} className={`h-2 rounded-full ${i + 1 === step ? 'w-6' : 'w-2'} ${i < step ? 'bg-primary' : 'bg-line'}`} />
+        ))}
+        <span className="text-xs text-ink-3">ข้อ {step} จาก {SETUP_STEPS}</span>
+      </div>
+      <h2 className="mt-3 text-[22px] font-semibold leading-snug">{head.title}</h2>
+      <p className="mt-1 text-sm text-ink-2">{head.sub}</p>
 
       {step === 1 && (
-        <label className="mt-4 block">
-          <textarea
-            maxLength={WORK_DESCRIPTION_MAX}
-            rows={6}
-            className="w-full rounded border p-2"
-            value={form.workDescription}
-            disabled={submitting}
-            onChange={(e) => set({ ...form, workDescription: e.target.value })}
-          />
-          <span className="text-xs text-gray-500">{form.workDescription.length}/{WORK_DESCRIPTION_MAX}</span>
-        </label>
+        <div className="mt-4">
+          <Field label="เรื่องของกลุ่ม">
+            <textarea
+              maxLength={WORK_DESCRIPTION_MAX}
+              rows={6}
+              className={inputClass}
+              placeholder="พิมพ์ที่นี่"
+              value={form.workDescription}
+              disabled={submitting}
+              onChange={(e) => set({ ...form, workDescription: e.target.value })}
+            />
+          </Field>
+          <p className="mt-1 text-right text-xs text-ink-3">{form.workDescription.length}/{WORK_DESCRIPTION_MAX}</p>
+        </div>
       )}
 
       {step === 2 && (
         <div className="mt-4 space-y-3">
-          {form.members.map((m) => (
-            <section key={m.lineUserId} className="space-y-2 rounded border p-3">
-              <div className="flex items-center justify-between">
-                <span className="font-bold">{m.displayName}</span>
-                <label className="flex items-center gap-1 text-sm">
-                  <input
-                    type="radio"
-                    name="owner"
-                    checked={form.ownerLineUserId === m.lineUserId}
-                    disabled={submitting}
-                    onChange={() => set({ ...form, ownerLineUserId: m.lineUserId })}
-                  />
-                  เจ้าของบอท
-                </label>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {m.nicknames.map((n, i) => (
-                  <span key={i} className="flex items-center rounded-full border px-2">
+          {form.members.map((m) => {
+            const owner = form.ownerLineUserId === m.lineUserId
+            return (
+              <section key={m.lineUserId} className="space-y-3 rounded-2xl border border-line bg-page p-4">
+                <div className="flex items-center gap-3">
+                  <Avatar name={m.displayName} id={m.lineUserId} size="md" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold">{m.displayName}</p>
+                    <p className="text-xs text-ink-3">ชื่อใน LINE</p>
+                  </div>
+                  <label className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${owner ? 'bg-primary text-white' : 'bg-primary-soft text-primary'}`}>
                     <input
-                      type="text"
-                      aria-label="ชื่อเล่น"
-                      maxLength={NICKNAME_MAX}
-                      className="w-24 bg-transparent p-1 text-sm"
-                      value={n}
+                      type="radio"
+                      name="owner"
+                      className="sr-only"
+                      checked={owner}
                       disabled={submitting}
-                      onChange={(e) => set(setNickname(form, m.lineUserId, i, e.target.value))}
+                      onChange={() => set({ ...form, ownerLineUserId: m.lineUserId })}
                     />
-                    <button
-                      type="button"
-                      aria-label="ลบชื่อเล่น"
-                      className="px-1 text-gray-500"
-                      disabled={submitting}
-                      onClick={() => set(removeNickname(form, m.lineUserId, i))}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-                <button
-                  type="button"
-                  className="rounded-full border border-dashed px-3 py-1 text-sm text-blue-700"
-                  disabled={submitting}
-                  onClick={() => set(addNickname(form, m.lineUserId))}
-                >
-                  + ชื่อเล่น
-                </button>
-              </div>
-              <label className="block">
-                <span className="text-sm">หน้าที่</span>
-                <input
-                  type="text"
-                  maxLength={ROLE_MAX}
-                  className="mt-1 w-full rounded border p-2"
-                  value={m.role}
-                  disabled={submitting}
-                  onChange={(e) => set(setRole(form, m.lineUserId, e.target.value))}
-                />
-              </label>
-            </section>
-          ))}
-          <p className="text-xs text-gray-500">
-            เจ้าของบอทต้องกดยืนยันเองด้วยบัญชี LINE ก่อนจึงจะมีผล ชื่อเล่นใช้ให้ NongJoDII อ่านแชตเท่านั้น
+                    {owner && <IconCheck className="h-3.5 w-3.5" />}
+                    เจ้าของบอท
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {m.nicknames.map((n, i) => (
+                    <span key={i} className="flex items-center rounded-full border border-line bg-subtle pl-3 pr-1">
+                      <input
+                        type="text"
+                        aria-label="ชื่อเล่น"
+                        placeholder="ชื่อเล่น"
+                        maxLength={NICKNAME_MAX}
+                        className="w-24 bg-transparent py-1 text-sm focus:outline-none"
+                        value={n}
+                        disabled={submitting}
+                        onChange={(e) => set(setNickname(form, m.lineUserId, i, e.target.value))}
+                      />
+                      <button
+                        type="button"
+                        aria-label="ลบชื่อเล่น"
+                        className="flex h-7 w-7 items-center justify-center rounded-full text-ink-3"
+                        disabled={submitting}
+                        onClick={() => set(removeNickname(form, m.lineUserId, i))}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong px-3 py-1 text-sm font-semibold text-primary"
+                    disabled={submitting}
+                    onClick={() => set(addNickname(form, m.lineUserId))}
+                  >
+                    <IconPlus className="h-3.5 w-3.5" /> ชื่อเล่น
+                  </button>
+                </div>
+                <Field label="หน้าที่">
+                  <input
+                    type="text"
+                    maxLength={ROLE_MAX}
+                    className={inputClass}
+                    placeholder="เช่น Design, PM, Dev"
+                    value={m.role}
+                    disabled={submitting}
+                    onChange={(e) => set(setRole(form, m.lineUserId, e.target.value))}
+                  />
+                </Field>
+              </section>
+            )
+          })}
+          <p className="text-xs text-ink-3">
+            เจ้าของบอทต้องกดยืนยันเองด้วยบัญชี LINE ก่อนจึงจะมีผล ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น
           </p>
         </div>
       )}
 
       {step === 3 && (
-        <div className="mt-4 space-y-2">
-          {FEATURES.map((f) => (
-            <label key={f.key} className="flex items-start gap-3 rounded border p-3">
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={form.features[f.key]}
-                disabled={submitting}
-                onChange={(e) => set({ ...form, features: { ...form.features, [f.key]: e.target.checked } })}
-              />
-              <span>
-                <span className="block font-bold">{f.label}</span>
-                <span className="block text-sm text-gray-600">{f.sub}</span>
-              </span>
-            </label>
-          ))}
+        <div className="mt-4 space-y-3">
+          {FEATURES.map((f) => {
+            const on = form.features[f.key]
+            return (
+              <label key={f.key}
+                className={`flex cursor-pointer items-center gap-3 rounded-xl border p-4 ${on ? 'border-primary bg-primary-soft' : 'border-line bg-page'}`}>
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={on}
+                  disabled={submitting}
+                  onChange={(e) => set({ ...form, features: { ...form.features, [f.key]: e.target.checked } })}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold">{f.label}</span>
+                  <span className="block text-xs text-ink-3">{f.sub}</span>
+                </span>
+                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 ${on ? 'border-primary bg-primary text-white' : 'border-line-strong'}`}>
+                  {on && <IconCheck className="h-4 w-4" />}
+                </span>
+              </label>
+            )
+          })}
         </div>
       )}
 
       {step === 4 && (
-        <div className="mt-4 space-y-4">
-          <section className="rounded border p-3">
-            <span className="text-sm font-bold">เตือนงานทุกวัน</span>
-            <TimeSelect
-              value={form.dailyReminderTime}
-              disabled={submitting}
-              onChange={(v) => set({ ...form, dailyReminderTime: v })}
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              เลื่อนเลือกเวลา ทีละ 15 นาที · ค่าเริ่มต้น {SETUP_DEFAULTS.dailyReminderTime}
-            </p>
+        <div className="mt-4 space-y-3">
+          <section className="space-y-2 rounded-2xl border border-line bg-page p-4">
+            <Field label="เตือนงานทุกวัน">
+              <TimeSelect
+                value={form.dailyReminderTime}
+                disabled={submitting}
+                onChange={(v) => set({ ...form, dailyReminderTime: v })}
+              />
+            </Field>
+            <p className="text-xs text-ink-3">เลือกเวลาได้ทีละ 15 นาที · ค่าเริ่มต้น {SETUP_DEFAULTS.dailyReminderTime}</p>
           </section>
-          <section className="rounded border p-3">
-            <span className="text-sm font-bold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {WEEKDAYS.map((d) => (
-                <button
-                  key={d.iso}
-                  type="button"
-                  aria-pressed={form.weeklySummaryWeekday === d.iso}
-                  className={`rounded-full border px-3 py-1 text-sm ${form.weeklySummaryWeekday === d.iso ? 'bg-blue-700 text-white' : ''}`}
-                  disabled={submitting}
-                  onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
-                >
-                  {d.label}
-                </button>
-              ))}
+          <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
+            <span className="block text-sm font-semibold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
+            <div className="flex flex-wrap gap-2">
+              {WEEKDAYS.map((d) => {
+                const on = form.weeklySummaryWeekday === d.iso
+                return (
+                  <button
+                    key={d.iso}
+                    type="button"
+                    aria-pressed={on}
+                    className={`rounded-full px-4 py-1.5 text-sm font-semibold ${on ? 'bg-primary text-white' : 'border border-line bg-page text-ink-2'}`}
+                    disabled={submitting}
+                    onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
+                  >
+                    {d.label}
+                  </button>
+                )
+              })}
             </div>
             <TimeSelect
               value={form.weeklySummaryTime}
@@ -355,29 +376,9 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
               onChange={(v) => set({ ...form, weeklySummaryTime: v })}
             />
           </section>
-          <p className="text-xs text-gray-500">เปลี่ยนได้ทุกเมื่อในตั้งค่า</p>
+          <p className="text-xs text-ink-3">เปลี่ยนได้ทุกเมื่อในตั้งค่า</p>
         </div>
       )}
-
-      <div className="mt-4 space-y-2">
-        {formError && <p role="alert">{formError}</p>}
-        <div className="flex gap-2">
-          {step > 1 && (
-            <button type="button" className="flex-1 rounded border px-4 py-2" disabled={submitting} onClick={() => go(step - 1)}>
-              ย้อนกลับ
-            </button>
-          )}
-          {step < SETUP_STEPS ? (
-            <button type="button" className="flex-1 rounded border px-4 py-2 font-bold" disabled={submitting} onClick={() => go(step + 1)}>
-              ถัดไป
-            </button>
-          ) : (
-            <button type="button" className="flex-1 rounded border px-4 py-2 font-bold" disabled={submitting} onClick={() => void send()}>
-              {submitting ? 'กำลังส่ง...' : 'ส่ง'}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
+    </Page>
   )
 }

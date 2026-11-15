@@ -1,3 +1,4 @@
+import { STATUS, bubble, caption, header, progressBar, row, text } from '../line/flex-ui'
 import type { LineMessage } from '../line/types'
 import type { StorePort } from '../ports'
 import { bangkokMonthRange, formatThaiDateLong } from '../time/bangkok'
@@ -31,24 +32,42 @@ function usageLine(s: FairUseStatus): string {
   return `ใช้ไป ${s.tokens.toLocaleString('en-US')} / ${FAIR_USE_CAP_TOKENS.toLocaleString('en-US')} โทเคน และ $${(s.costMicroUsd / 1e6).toFixed(4)} / $${FAIR_USE_CAP_USD.toFixed(2)}`
 }
 
-export function capMessage(s: FairUseStatus): LineMessage {
+export const FAIR_USE_TEXT = {
+  warnTitle: 'ใกล้ถึงขีดจำกัดแผนฟรี',
+  capTitle: 'ใช้ AI ครบโควตาฟรีของเดือนนี้แล้ว',
+  usedLabel: 'ใช้ AI เดือนนี้',
+  warnBody: 'ถ้าเต็ม น้องจดดีจะหยุดสรุปแชตจนถึงต้นเดือนหน้า แต่งานที่สร้างไว้ยังอยู่ครบ ไม่ต้องห่วง',
+  resetLine: (reset: string) => `โควตาจะเริ่มใหม่วันที่ ${reset} เวลา 00:00 น.`,
+  capBody: (reset: string) => `น้องจดดีจะหยุดสรุปแชตไว้ก่อน สรุปได้อีกครั้งวันที่ ${reset} เวลา 00:00 น. (เวลาประเทศไทย) งานที่สร้างไว้ยังอยู่ครบ`,
+} as const
+
+/** Figma UI v4 #10: the tone header, the month's usage bar and what happens at the cap. */
+function usageCard(s: FairUseStatus, altText: string, capped: boolean): LineMessage {
+  const pct = capped ? 100 : Math.floor(s.fraction * 100)
+  const reset = formatThaiDateLong(s.resetAt)
   return {
-    type: 'text',
-    text: [
-      'ใช้ AI ครบโควตาฟรีของเดือนนี้แล้ว น้องจดดีจะหยุดสรุปแชทไว้ก่อน',
-      usageLine(s),
-      `สรุปแชทได้อีกครั้งวันที่ ${formatThaiDateLong(s.resetAt)} เวลา 00:00 น. (เวลาประเทศไทย)`,
-    ].join('\n'),
+    type: 'flex',
+    altText,
+    contents: bubble([
+      header('warning', capped ? FAIR_USE_TEXT.capTitle : FAIR_USE_TEXT.warnTitle),
+      row(caption(FAIR_USE_TEXT.usedLabel, { flex: 1 }), text(`${pct}%`, { flex: 0, size: 'xs', weight: 'bold', color: STATUS.not_assigned.fg })),
+      progressBar(pct / 100, STATUS.not_assigned.dot),
+      text(capped ? FAIR_USE_TEXT.capBody(reset) : FAIR_USE_TEXT.warnBody, { color: '#545454' }),
+      ...(capped ? [] : [caption(FAIR_USE_TEXT.resetLine(reset))]),
+      caption(usageLine(s), { size: 'xxs' }),
+    ]),
   }
 }
 
+export function capMessage(s: FairUseStatus): LineMessage {
+  const altText = [
+    'ใช้ AI ครบโควตาฟรีของเดือนนี้แล้ว น้องจดดีจะหยุดสรุปแชตไว้ก่อน',
+    `สรุปแชตได้อีกครั้งวันที่ ${formatThaiDateLong(s.resetAt)} เวลา 00:00 น. (เวลาประเทศไทย)`,
+  ].join(' ')
+  return usageCard(s, altText, true)
+}
+
 export function warnMessage(s: FairUseStatus): LineMessage {
-  return {
-    type: 'text',
-    text: [
-      `แจ้งเตือน: ใช้ AI ไปแล้ว ${Math.floor(s.fraction * 100)}% ของโควตาฟรีเดือนนี้`,
-      usageLine(s),
-      `โควตาจะเริ่มใหม่วันที่ ${formatThaiDateLong(s.resetAt)} เวลา 00:00 น.`,
-    ].join('\n'),
-  }
+  const altText = `แจ้งเตือน: ใช้ AI ไปแล้ว ${Math.floor(s.fraction * 100)}% ของโควตาฟรีเดือนนี้`
+  return usageCard(s, altText, false)
 }

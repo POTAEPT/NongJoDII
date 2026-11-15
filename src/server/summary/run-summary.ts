@@ -19,10 +19,10 @@ const SUMMARY_MAX_TOKENS = 4000
 const TITLE_MAX = 200
 const DETAILS_MAX = 2000
 
-const REPLY_FEATURE_OFF = 'ฟีเจอร์สรุปแชทปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า'
-const REPLY_NO_OWNER = 'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชทไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน'
+const REPLY_FEATURE_OFF = 'ฟีเจอร์สรุปแชตปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า'
+const REPLY_NO_OWNER = 'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชตไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน'
 const REPLY_NO_MESSAGES = 'ยังไม่มีข้อความให้สรุป'
-const REPLY_FAILED = 'ขอโทษนะ ตอนนี้สรุปแชทไม่สำเร็จ ลองใหม่อีกครั้ง'
+const REPLY_FAILED = 'ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง'
 
 /** "NongJoDII summarize": summarizes recent chat into a Summary with Task candidates
  *  (proposals only; a Task exists only after confirm) and replies in the group that asked. */

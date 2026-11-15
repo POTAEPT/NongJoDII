@@ -48,7 +48,7 @@ function buttons(m: LineMessage): Record<string, { type: string; data: string; m
     if (!node || typeof node !== 'object') return
     const n = node as Record<string, unknown>
     const a = n.action as { type: string; label: string; data: string } | undefined
-    if (n.type === 'button' && a) out[a.label] = a
+    if ((n.type === 'button' || n.type === 'box') && a) out[a.label] = a
     for (const v of Object.values(n)) walk(v)
   }
   if (m.type === 'flex') walk(m.contents)
@@ -85,7 +85,7 @@ describe('Done (#45)', () => {
     const t = setup()
     await t.press(BIW, done(t.slides.id))
     expect(t.task(t.slides.id)).toMatchObject({ status: 'done', doneAt: NOW, lastActivityAt: NOW, lastEditedByLineUserId: BIW })
-    expect(textOf(t.lastReply())).toBe('“ทำสไลด์” เสร็จแล้ว')
+    expect(textOf(t.lastReply())).toBe('ปิดงาน “ทำสไลด์” แล้ว')
     expect(t.line.replies[0].replyToken).toBe('rt-press')
     expect(t.line.pushes).toHaveLength(0)
   })
@@ -125,7 +125,7 @@ describe('Postpone (#45)', () => {
     const t = setup()
     await t.press(BIW, postpone(t.slides.id))
     const b = buttons(t.lastReply())
-    expect(Object.keys(b)).toEqual(['+1 วัน (อ. 17 พ.ย.)', '+3 วัน (พฤ. 19 พ.ย.)', '+1 สัปดาห์ (จ. 23 พ.ย.)', ANSWER_TEXT.pickDate])
+    expect(Object.keys(b)).toEqual(['พรุ่งนี้ (อ. 17 พ.ย.)', 'อีก 3 วัน (พฤ. 19 พ.ย.)', 'สัปดาห์หน้า (จ. 23 พ.ย.)', ANSWER_TEXT.pickDate])
     expect(b[ANSWER_TEXT.pickDate]).toMatchObject({ type: 'datetimepicker', min: '2026-11-16', initial: '2026-11-17' })
     expect(t.task(t.slides.id).dueAt).toEqual(bkk('2026-11-16T17:00:00')) // nothing changes yet
   })
@@ -133,7 +133,7 @@ describe('Postpone (#45)', () => {
   it('a choice moves the due date and keeps the time of day', async () => {
     const t = setup()
     await t.press(BIW, postpone(t.slides.id))
-    await t.press(BIW, buttons(t.lastReply())['+3 วัน (พฤ. 19 พ.ย.)'].data)
+    await t.press(BIW, buttons(t.lastReply())['อีก 3 วัน (พฤ. 19 พ.ย.)'].data)
     expect(t.task(t.slides.id)).toMatchObject({ dueAt: bkk('2026-11-19T17:00:00'), lastActivityAt: NOW, lastEditedByLineUserId: BIW })
     expect(textOf(t.lastReply())).toBe(ANSWER_TEXT.postponed('ทำสไลด์', 'พฤ. 19 พ.ย. 17:00'))
   })
@@ -194,7 +194,7 @@ describe('ฉันรับเอง (#45, option ก)', () => {
     const t = setup()
     await t.press(TON, take(t.room.id))
     expect(t.task(t.room.id)).toMatchObject({ assigneeLineUserId: TON, status: 'in_process', lastActivityAt: NOW })
-    expect(textOf(t.lastReply())).toBe('“จองห้อง” กำลังทำ')
+    expect(textOf(t.lastReply())).toBe('รับงาน “จองห้อง” แล้ว')
   })
 
   it('a second person is told it is already taken', async () => {
@@ -245,7 +245,7 @@ describe('a press without the presser\'s userId (#45)', () => {
     const refused = await answerProgressFromLiff(t.deps, { idToken: 'tok-ton', data: done(t.slides.id) })
     expect(refused.body).toMatchObject({ result: 'not_allowed' })
     const res = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: done(t.slides.id) })
-    expect(res).toMatchObject({ status: 200, body: { result: 'done', text: '“ทำสไลด์” เสร็จแล้ว' } })
+    expect(res).toMatchObject({ status: 200, body: { result: 'done', text: 'ปิดงาน “ทำสไลด์” แล้ว' } })
     expect(t.task(t.slides.id).status).toBe('done')
   })
 
@@ -255,7 +255,7 @@ describe('a press without the presser\'s userId (#45)', () => {
     const res = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: postpone(t.slides.id) })
     const body = res.body as { result: string; choices: { label: string }[] }
     expect(body.result).toBe('asked_date')
-    expect(body.choices.map((c) => c.label)).toEqual(['+1 วัน (อ. 17 พ.ย.)', '+3 วัน (พฤ. 19 พ.ย.)', '+1 สัปดาห์ (จ. 23 พ.ย.)'])
+    expect(body.choices.map((c) => c.label)).toEqual(['พรุ่งนี้ (อ. 17 พ.ย.)', 'อีก 3 วัน (พฤ. 19 พ.ย.)', 'สัปดาห์หน้า (จ. 23 พ.ย.)'])
   })
 
   it('the LIFF page offers its own date input, which postpones to the picked date', async () => {
@@ -292,7 +292,7 @@ describe('typed fallbacks (#45)', () => {
   it('"NongJoDII need time" with one open Task replies with the postpone choices', async () => {
     const t = setup()
     await t.say(BIW, 'NongJoDII need time')
-    expect(Object.keys(buttons(t.lastReply()))).toContain('+1 วัน (อ. 17 พ.ย.)')
+    expect(Object.keys(buttons(t.lastReply()))).toContain('พรุ่งนี้ (อ. 17 พ.ย.)')
   })
 
   it('with several open Tasks, asks which one', async () => {

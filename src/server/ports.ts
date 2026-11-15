@@ -128,7 +128,7 @@ export type NewAiUsage = {
 export type AiUsageCap = { capTokens: number; capCostUsd: number }
 export type AiUsageActual = { model: string; inputTokens: number; outputTokens: number; costUsd: number }
 /** What a push is for; stored in push_log.purpose (free text in the schema). */
-export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done'
+export type PushPurpose = 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -193,6 +193,11 @@ export type GroupSetup = {
   ownerNominatedAt: Date | null
 }
 export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
+/** #28 Settings: the setup form's values, written by the group's confirmed Owner. */
+export type GroupSettingsWrite = {
+  groupId: string; ownerLineUserId: string; workDescription: string | null; features: GroupFeatures
+  dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]
+}
 export type GroupSetupWrite = {
   groupId: string; byLineUserId: string; workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
@@ -204,13 +209,15 @@ export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nomin
 export type NewGoogleAccount = {
   lineUserId: string; googleSubject: string; email: string | null
   grantedScopes: string[]; refreshTokenCiphertext: string
+  /** When this sign-in finished: stored as google_accounts.connected_at (#14). */
+  signedInAt: Date
 }
 
 /** A group that gets a Drive folder: attached, Owner confirmed, bot still in it. */
 export type DriveGroup = { groupId: string; lineGroupId: string; name: string | null; folderId: string | null }
-/** What #13 reads to lay out a Project's folders. `account` is the Owner's most recently
- *  written Google account; `activeAccountId` the account of the Project's active Drive
- *  connection (null = none yet). */
+/** What #13 reads to lay out a Project's folders. `account` is the Owner's latest Google
+ *  account (the last one to sign in); `activeAccountId` the account of the Project's active
+ *  Drive connection (null = none yet). */
 export type DriveContext = {
   projectId: string; ownerLineUserId: string; projectFolderId: string | null
   mainGroup: DriveGroup | null; subGroups: DriveGroup[]
@@ -225,6 +232,9 @@ export interface StorePort {
   // #1 webhook
   // Store-once methods: ON CONFLICT DO NOTHING RETURNING; empty result = duplicate = inserted false.
   recordWebhookEvent(e: NewWebhookEvent): Promise<{ inserted: boolean }>           // conflict target webhook_event_id
+  /** Read only: is this event already in the ledger? (#29: a redelivered member event that
+   *  already ran must not run its writes again.) */
+  hasWebhookEvent(webhookEventId: string): Promise<boolean>
   upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> // null name: insert-if-absent, never overwrites; name set: update
   findLineUser(lineUserId: string): Promise<{ lineUserId: string; displayName: string | null } | null>
   ensureGroup(lineGroupId: string): Promise<GroupRow>                                // insert-if-absent (line_group_id), return row
@@ -335,6 +345,20 @@ export interface StorePort {
   postponeTask(t: { taskId: string; dueAt: Date; by: string; at: Date }): Promise<{ updated: boolean }>
   /** "ฉันรับเอง": assignee = by and In Process; only a live Task not Done that has no assignee. */
   takeTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  // #29 member leaves. One UPDATE each, conditions in WHERE, so a repeat changes nothing.
+  /** Sets left_at on a live membership row, or adds a left row when there is none (so a late
+   *  message cannot add the person back); updated false = already left. */
+  markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }>
+  /** The person's live, not-Done Tasks in the group go back to Not Assigned (assignee null,
+   *  status not_assigned); returns those Tasks, in no set order. Done Tasks keep the name. */
+  // #29: releases the person's open Tasks in the group only while they are not a live Member, in
+  // one database step (release_tasks_if_left); [] for a live Member
+  releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]>
+  /** A person joined (or rejoined) the group: adds a live row (source member_join), or clears
+   *  left_at when it is earlier than `at`, so an older join arriving after a leave cannot undo it. */
+  markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void>
+  // #29: a live Member's own nicknames and role (the "my info" screen); updated false when they are not live
+  setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }>
   // #7 Track progress
   listOpenTasks(groupId: string): Promise<TaskRow[]>                                  // live (deleted_at null), status <> done, oldest first
   getMessageRef(messageId: string): Promise<MessageRef | null>
@@ -357,6 +381,11 @@ export interface StorePort {
   // #52 onboarding
   setGroupName(groupId: string, name: string): Promise<void>
   getGroupSetup(groupId: string): Promise<GroupSetup | null>
+  /** #28: saves Settings while `ownerLineUserId` is still the group's confirmed Owner (saved
+   *  false otherwise, and nothing is written). Group values first, then the listed live
+   *  Members' nicknames and role (the caller lists only changed ones); not one transaction,
+   *  and repeating it is harmless. */
+  saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }>
   /** One transaction (rpc setup_group): locks the group; a 'closed' group or an Owner who
    *  is not a live Member saves nothing. Otherwise writes the settings and the nominee,
    *  updates nicknames and role of the listed live Members only (never their source), and,
@@ -377,8 +406,17 @@ export interface StorePort {
   /** Live Tasks of these groups, oldest first. */
   listDashboardTasks(groupIds: string[]): Promise<DashboardTaskRow[]>
   // #12 Google
-  upsertGoogleAccount(a: NewGoogleAccount): Promise<void>                            // conflict on google_subject: update, token_status 'valid'
-  findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null>
+  /** Conflict on google_subject: update, token_status 'valid'. Every sign-in sets
+   *  connected_at = signedInAt, so a person's latest account is the one that signed in
+   *  last, whatever else wrote to the rows since (#14). Answers the row's ID. */
+  upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }>
+  /** The person's latest account: connected_at DESC. signedInAt is that connected_at. */
+  findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null>
+  /** #14: one UPDATE that sets token_status 'revoked' and clears the refresh token, only
+   *  while the row is still 'valid' and still holds `refreshTokenCiphertext` (the token
+   *  Google refused). revoked: this call changed the row. So one caller per revocation gets
+   *  true, and a sign-in that stored a new token in between is left alone. */
+  markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }>
   // #13 Drive folders
   /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still
    *  in it). Every page, by group id. */
@@ -398,10 +436,26 @@ export interface StorePort {
    *  23505 it reads the holder again). created: this call inserted the row. Never updates
    *  or deletes a row. */
   claimDriveConnection(projectId: string, googleAccountId: string): Promise<{ created: boolean; accountId: string }>
+  /** #14, daily access check: IDs of the Projects that have an active drive_connections
+   *  row, every page, by connection id. */
+  listDriveConnectedProjects(): Promise<string[]>
+  /** #14, change of account: when the Project's active drive_connections row belongs to
+   *  another Google account than `keepGoogleAccountId`, clears the folder IDs
+   *  (projects.drive_project_folder_id, and groups.drive_folder_id of every group of the
+   *  Project), then marks that row 'replaced' with status_changed_at = `at`, the same way
+   *  change_project_owner retires a connection. The row is never deleted or re-pointed, so
+   *  it stays as history for the files saved through it. No active row, or one of
+   *  `keepGoogleAccountId`: writes nothing. retired: this call retired the row.
+   *  Separate statements, cleared first and retired last: a call that stopped part-way
+   *  leaves the row active, so the same call again finishes it. The clears match only the
+   *  folder IDs read before the active row was read, and the row is retired only if it is
+   *  still that active row after the clears, so a call that overlaps a finished change
+   *  cannot erase the folder IDs the new account stored. */
+  retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }>
   /** The tick finisher's Projects, by id: Drive setups that have not finished. A Project is
    *  listed when its main group has a confirmed Owner and the bot, a folder ID is still
    *  empty (the Project folder, or a group that getDriveContext lists: confirmed Owner, bot
-   *  still in it), the Owner's most recently written Google account is valid and no other
+   *  still in it), the Owner's latest Google account (connected_at) is valid and no other
    *  account holds the active drive_connections row, and the later of the Owner confirm
    *  (owner_confirmed_at) and that account's updated_at lies in [from, to]. updated_at
    *  moves on every sign-in, and also when the root folder ID is stored. */

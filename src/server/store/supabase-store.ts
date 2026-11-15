@@ -14,7 +14,7 @@ import type {
   DashboardTaskRow,
   GroupRow,
   GroupSetup,
-  GroupSetupWrite,
+  GroupSettingsWrite, GroupSetupWrite,
   Member,
   Membership,
   MessageRef,
@@ -151,6 +151,16 @@ function iso(d: Date | null): string | null {
   return d === null ? null : d.toISOString()
 }
 
+/** Settings writes this many Members' rows at once (#28). Agent choice. */
+const SETTINGS_MEMBER_WRITES = 10
+
+/** PostgREST filter: the row's last membership event is older than `iso`. A row from before
+ *  membership_event_at existed falls back to left_at (its last applied leave), and a live
+ *  row with neither has seen no event. */
+function membershipOlderThan(iso: string): string {
+  return `membership_event_at.lt."${iso}",and(membership_event_at.is.null,or(left_at.is.null,left_at.lt."${iso}"))`
+}
+
 export class SupabaseStore implements StorePort {
   constructor(private readonly db: SupabaseClient) {}
 
@@ -168,6 +178,16 @@ export class SupabaseStore implements StorePort {
       .select('webhook_event_id')
     check('recordWebhookEvent', error)
     return { inserted: (data ?? []).length === 1 }
+  }
+
+  async hasWebhookEvent(webhookEventId: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from('webhook_events')
+      .select('webhook_event_id')
+      .eq('webhook_event_id', webhookEventId)
+      .maybeSingle()
+    check('hasWebhookEvent', error)
+    return data !== null
   }
 
   async upsertLineUser(u: { lineUserId: string; displayName: string | null }): Promise<void> {
@@ -885,6 +905,111 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
+  // ---- #29 member leaves ----
+  async markMemberLeft(t: { groupId: string; lineUserId: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    // A person with no row yet gets a left row, so a message of theirs that arrives after
+    // the leave (LINE does not guarantee order) cannot add them back: touchGroupMember only
+    // inserts when no row exists. source 'message': seen through a group event.
+    const { data: added, error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'message', left_at: at, membership_event_at: at },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+      .select('line_user_id')
+    check('markMemberLeft', addError)
+    if ((added?.length ?? 0) > 0) return { updated: true }
+    // Only a leave newer than the last leave or join applied to the row. An older one (a late
+    // first delivery after a rejoin) leaves a current Member alone.
+    const { data, error } = await this.db
+      .from('group_members')
+      .update({ left_at: at, membership_event_at: at })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .or(membershipOlderThan(at))
+      .select('line_user_id')
+    check('markMemberLeft', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async markMemberJoined(t: { groupId: string; lineUserId: string; at: Date }): Promise<void> {
+    const at = t.at.toISOString()
+    const { error: addError } = await this.db
+      .from('group_members')
+      .upsert(
+        { group_id: t.groupId, line_user_id: t.lineUserId, source: 'member_join', membership_event_at: at },
+        { onConflict: 'group_id,line_user_id', ignoreDuplicates: true },
+      )
+    check('markMemberJoined', addError)
+    // Only a join newer than the last leave or join applied: a late join never undoes a
+    // later leave.
+    const { error } = await this.db
+      .from('group_members')
+      .update({ left_at: null, membership_event_at: at })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .or(membershipOlderThan(at))
+    check('markMemberJoined', error)
+  }
+
+  async saveGroupSettings(w: GroupSettingsWrite): Promise<{ saved: boolean }> {
+    // The Owner check is part of the UPDATE, so an Owner change between the page's check and
+    // this write saves nothing.
+    const { data, error } = await this.db
+      .from('groups')
+      .update({
+        work_description: w.workDescription,
+        feature_summarize: w.features.summarize, feature_draft_tasks: w.features.draftTasks,
+        feature_save_files: w.features.saveFiles, feature_track_remind: w.features.trackRemind,
+        feature_weekly_summary: w.features.weeklySummary,
+        daily_reminder_time: w.dailyReminderTime, weekly_summary_weekday: w.weeklySummaryWeekday,
+        weekly_summary_time: w.weeklySummaryTime,
+      })
+      .eq('id', w.groupId)
+      .eq('nominated_owner_line_user_id', w.ownerLineUserId)
+      .not('owner_confirmed_at', 'is', null)
+      .select('id')
+    check('saveGroupSettings', error)
+    if ((data?.length ?? 0) === 0) return { saved: false }
+    // Up to SETTINGS_MEMBER_WRITES at a time, so a save that touches many Members does not
+    // wait through one request after another.
+    for (let i = 0; i < w.members.length; i += SETTINGS_MEMBER_WRITES) {
+      await Promise.all(w.members.slice(i, i + SETTINGS_MEMBER_WRITES).map(async (m) => {
+        const { error: memberError } = await this.db
+          .from('group_members')
+          .update({ nicknames: m.nicknames, role: m.role })
+          .eq('group_id', w.groupId)
+          .eq('line_user_id', m.lineUserId)
+          .is('left_at', null)
+        check('saveGroupSettings', memberError)
+      }))
+    }
+    return { saved: true }
+  }
+
+  async setMemberProfile(t: { groupId: string; lineUserId: string; nicknames: string[]; role: string | null }): Promise<{ updated: boolean }> {
+    const { data, error } = await this.db
+      .from('group_members')
+      .update({ nicknames: t.nicknames, role: t.role })
+      .eq('group_id', t.groupId)
+      .eq('line_user_id', t.lineUserId)
+      .is('left_at', null)
+      .select('line_user_id')
+    check('setMemberProfile', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
+  async releaseTasksIfLeft(t: { groupId: string; lineUserId: string }): Promise<TaskRow[]> {
+    // One database step (release_tasks_if_left locks the membership row first), so a newer
+    // join cannot land between the membership check and the release.
+    const { data, error } = await this.db
+      .rpc('release_tasks_if_left', { p_group_id: t.groupId, p_line_user_id: t.lineUserId })
+      .select(TASK_COLS)
+    check('releaseTasksIfLeft', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
+  }
+
   /** Every open Task, in pages of PAGE_SIZE ordered by created_at then id, so PostgREST
    *  max_rows (1000) never hides newer (possibly more urgent) Tasks from the selection. */
   async listReminderTasks(groupId: string): Promise<ReminderTask[]> {
@@ -1063,29 +1188,46 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #12 Google ----
-  async upsertGoogleAccount(a: NewGoogleAccount): Promise<void> {
+  async upsertGoogleAccount(a: NewGoogleAccount): Promise<{ id: string }> {
     // refresh_token_ciphertext is text: the sealed 'v1.<iv>.<tag>.<ct>' string as-is.
-    const { error } = await this.db.from('google_accounts').upsert(
+    // connected_at is written on every sign-in (#14): it orders a person's accounts.
+    const { data, error } = await this.db.from('google_accounts').upsert(
       {
         line_user_id: a.lineUserId, google_subject: a.googleSubject, email: a.email,
         granted_scopes: a.grantedScopes, refresh_token_ciphertext: a.refreshTokenCiphertext, token_status: 'valid',
+        connected_at: a.signedInAt.toISOString(),
       },
       { onConflict: 'google_subject' },
-    )
+    ).select('id').maybeSingle()
     check('upsertGoogleAccount', error)
+    const row = data as { id: string } | null
+    if (!row) throw new AdapterError('supabase upsertGoogleAccount: no row')
+    return { id: row.id }
   }
 
-  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired' } | null> {
+  async findGoogleAccountByLineUser(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; signedInAt: Date } | null> {
     const { data, error } = await this.db
       .from('google_accounts')
-      .select('id, token_status')
+      .select('id, token_status, connected_at')
       .eq('line_user_id', lineUserId)
-      .order('updated_at', { ascending: false })
+      .order('connected_at', { ascending: false })
       .limit(1)
       .maybeSingle()
     check('findGoogleAccountByLineUser', error)
-    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired' } | null
-    return row ? { id: row.id, tokenStatus: row.token_status } : null
+    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired'; connected_at: string } | null
+    return row ? { id: row.id, tokenStatus: row.token_status, signedInAt: toDate(row.connected_at) } : null
+  }
+
+  async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
+    const { data, error } = await this.db
+      .from('google_accounts')
+      .update({ token_status: 'revoked', refresh_token_ciphertext: null })
+      .eq('id', googleAccountId)
+      .eq('token_status', 'valid')
+      .eq('refresh_token_ciphertext', refreshTokenCiphertext)
+      .select('id')
+    check('markGoogleAccountRevoked', error)
+    return { revoked: ((data ?? []) as unknown[]).length > 0 }
   }
 
   // ---- #13 Drive folders ----
@@ -1126,12 +1268,12 @@ export class SupabaseStore implements StorePort {
           .is('left_at', null)
           .order('id')
           .range(from, to)),
-      // The Owner's most recently written account, as findGoogleAccountByLineUser.
+      // The Owner's latest account (last sign-in), as findGoogleAccountByLineUser.
       this.db
         .from('google_accounts')
         .select('id, token_status, refresh_token_ciphertext, drive_root_folder_id')
         .eq('line_user_id', project.owner_line_user_id)
-        .order('updated_at', { ascending: false })
+        .order('connected_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
       this.db
@@ -1215,6 +1357,88 @@ export class SupabaseStore implements StorePort {
     return { created: true, accountId: googleAccountId }
   }
 
+  async listDriveConnectedProjects(): Promise<string[]> {
+    const rows = await readAllPages<{ project_id: string }>('listDriveConnectedProjects', (from, to) =>
+      this.db
+        .from('drive_connections')
+        .select('project_id')
+        .eq('status', 'active')
+        .order('id')
+        .range(from, to))
+    return rows.map((r) => r.project_id)
+  }
+
+  async retireDriveConnection(projectId: string, keepGoogleAccountId: string, at: Date): Promise<{ retired: boolean }> {
+    const m = 'retireDriveConnection'
+    // Separate statements, so what this guarantees is narrow and stated here:
+    //  * Only folder IDs read before the active row was read are cleared (the clears match
+    //    on those IDs). An ID stored after those reads is never cleared by this call.
+    //  * The row is retired last, and only if it is still the active row read at the
+    //    start: re-read after the clears, then an UPDATE that matches id and 'active'.
+    //  * A call that stops part-way leaves the row active; the same call again finishes.
+    // Not guaranteed: a Drive run of the old account that is already under way can still
+    // store a folder ID or claim the Project after this call (that needs a holder check
+    // inside the folder UPDATE, so a database function).
+    const { data: p, error: projectError } = await this.db
+      .from('projects')
+      .select('drive_project_folder_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    check(m, projectError)
+    const projectFolderId = (p as { drive_project_folder_id: string | null } | null)?.drive_project_folder_id ?? null
+    const groupFolderIds = (await readAllPages<{ drive_folder_id: string }>(m, (from, to) =>
+      this.db
+        .from('groups')
+        .select('drive_folder_id')
+        .eq('project_id', projectId)
+        .not('drive_folder_id', 'is', null)
+        .order('id')
+        .range(from, to))).map((g) => g.drive_folder_id)
+    const { data, error } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, error)
+    const active = data as { id: string; google_account_id: string } | null
+    if (!active || active.google_account_id === keepGoogleAccountId) return { retired: false }
+    // Cleared first, retired last: until the last statement the row is still active, so a
+    // run that stops here is seen and repeated by the next sign-in.
+    if (projectFolderId !== null) {
+      const { error: clearError } = await this.db
+        .from('projects')
+        .update({ drive_project_folder_id: null })
+        .eq('id', projectId)
+        .eq('drive_project_folder_id', projectFolderId)
+      check(m, clearError)
+    }
+    for (const chunk of chunks(groupFolderIds)) {
+      const { error: clearError } = await this.db
+        .from('groups')
+        .update({ drive_folder_id: null })
+        .eq('project_id', projectId)
+        .in('drive_folder_id', chunk)
+      check(m, clearError)
+    }
+    const { data: again, error: againError } = await this.db
+      .from('drive_connections')
+      .select('id, google_account_id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .maybeSingle()
+    check(m, againError)
+    if ((again as { id: string } | null)?.id !== active.id) return { retired: false }
+    const retired = await this.db
+      .from('drive_connections')
+      .update({ status: 'replaced', status_changed_at: at.toISOString() })
+      .eq('id', active.id)
+      .eq('status', 'active')
+      .select('id')
+    check(m, retired.error)
+    return { retired: ((retired.data ?? []) as unknown[]).length > 0 }
+  }
+
   /** Flat reads joined here, no embedded filters: the Owners with a confirm or a Google
    *  account write since `from`, then their accounts and main groups, then, for the
    *  Projects in the window, the empty folder IDs and the active connection holders. Every
@@ -1245,7 +1469,7 @@ export class SupabaseStore implements StorePort {
       ...confirmed.map((r) => r.nominated_owner_line_user_id), ...signedIn.map((r) => r.line_user_id),
     ])]
 
-    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string }
+    type Account = { id: string; line_user_id: string; token_status: string; updated_at: string; connected_at: string }
     type Main = { project_id: string; nominated_owner_line_user_id: string; owner_confirmed_at: string }
     const accounts: Account[] = []
     const mains: Main[] = []
@@ -1254,7 +1478,7 @@ export class SupabaseStore implements StorePort {
         readAllPages<Account>(m, (x, y) =>
           this.db
             .from('google_accounts')
-            .select('id, line_user_id, token_status, updated_at')
+            .select('id, line_user_id, token_status, updated_at, connected_at')
             .in('line_user_id', chunk)
             .order('id')
             .range(x, y)),
@@ -1274,11 +1498,12 @@ export class SupabaseStore implements StorePort {
       mains.push(...g)
     }
 
-    // Each Owner's most recently written account, as getDriveContext reads it.
+    // Each Owner's latest account (last sign-in), as getDriveContext reads it. The window
+    // below still runs on updated_at, which also moves when a root folder ID is stored.
     const latest = new Map<string, Account>()
     for (const a of accounts) {
       const seen = latest.get(a.line_user_id)
-      if (!seen || toDate(a.updated_at).getTime() > toDate(seen.updated_at).getTime()) latest.set(a.line_user_id, a)
+      if (!seen || toDate(a.connected_at).getTime() > toDate(seen.connected_at).getTime()) latest.set(a.line_user_id, a)
     }
     // Project ID -> the account that would run it: in the window, with a valid latest account.
     const inWindow = new Map<string, string>()

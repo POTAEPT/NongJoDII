@@ -3,15 +3,18 @@
 import { useEffect, useState } from 'react'
 import { DashboardView } from './dashboard-view'
 import { GoogleView } from './google-view'
+import { MeView } from './me-view'
 import { OwnerView } from './owner-view'
 import { ProgressView } from './progress-view'
 import { ReviewView } from './review-view'
+import { SettingsView } from './settings-view'
 import { SetupView } from './setup-view'
 import { TaskView } from './task-view'
 import { initLiff, type LiffViewProps } from './liff-sdk'
 import { readLiffParams, type LiffParams } from './params'
+import { StatusScreen } from './ui'
 
-const OPEN_FAILED = 'เปิดหน้านี้ไม่สำเร็จ กรุณาลองเปิดจากแชท LINE อีกครั้ง'
+const OPEN_FAILED = 'กรุณาลองเปิดจากแชต LINE อีกครั้ง'
 
 type State =
   | { kind: 'loading' }
@@ -41,8 +44,8 @@ export function LiffApp({ liffId }: { liffId: string }) {
     }
   }, [liffId])
 
-  if (state.kind === 'error') return <p className="p-4 text-base">{OPEN_FAILED}</p>
-  if (state.kind === 'loading') return <p className="p-4 text-base">กำลังเปิด...</p>
+  if (state.kind === 'error') return <StatusScreen kind="error" title="เปิดหน้านี้ไม่สำเร็จ" message={OPEN_FAILED} />
+  if (state.kind === 'loading') return <StatusScreen kind="loading" message="กำลังเปิด..." />
 
   const { params, props } = state
   const viewProps: LiffViewProps = { ...props, id: params.id }
@@ -53,5 +56,7 @@ export function LiffApp({ liffId }: { liffId: string }) {
   if (params.view === 'dashboard') return <DashboardView {...viewProps} />
   if (params.view === 'setup') return <SetupView {...viewProps} />
   if (params.view === 'owner') return <OwnerView {...viewProps} />
-  return <p className="p-4 text-base">{OPEN_FAILED}</p>
+  if (params.view === 'me') return <MeView {...viewProps} />
+  if (params.view === 'settings') return <SettingsView {...viewProps} />
+  return <StatusScreen kind="error" title="เปิดหน้านี้ไม่สำเร็จ" message={OPEN_FAILED} />
 }

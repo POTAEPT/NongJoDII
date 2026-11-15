@@ -15,7 +15,8 @@ afterEach(() => {
 })
 
 function texts(ms: LineMessage[]): string[] {
-  return ms.map((m) => (m.type === 'text' ? m.text : ''))
+  // A fair-use notice is a Flex card whose altText carries the sentence.
+  return ms.map((m) => (m.type === 'text' ? m.text : m.type === 'flex' ? m.altText : ''))
 }
 
 async function setup() {

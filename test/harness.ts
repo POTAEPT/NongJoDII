@@ -99,7 +99,7 @@ function next(prefix: string): string {
 }
 
 export const ev: {
-  groupText(p: { text: string; groupId?: string; userId?: string | null; eventId?: string; messageId?: string; timestamp?: number; replyToken?: string; redelivery?: boolean; mentionees?: LineMention[] }): LineEvent
+  groupText(p: { text: string; groupId?: string; userId?: string | null; eventId?: string; messageId?: string; timestamp?: number; replyToken?: string; redelivery?: boolean; mentionees?: LineMention[]; quotedMessageId?: string }): LineEvent
   groupImage(p: { groupId?: string; userId?: string; eventId?: string; messageId?: string; imageSet?: { id: string; index?: number; total?: number } }): LineEvent
   userText(p: { text: string; userId?: string; eventId?: string }): LineEvent
   follow(p: { userId?: string; eventId?: string }): LineEvent
@@ -121,9 +121,12 @@ export const ev: {
       replyToken: p.replyToken ?? next('rt'),
       webhookEventId: p.eventId ?? next('ev'),
       deliveryContext: { isRedelivery: p.redelivery ?? false },
-      message: p.mentionees
-        ? { id: p.messageId ?? next('msg'), type: 'text', text: p.text, mention: { mentionees: p.mentionees } }
-        : { id: p.messageId ?? next('msg'), type: 'text', text: p.text },
+      // quotedMessageId: LINE sets it only when the text quotes a past message (#33).
+      message: {
+        id: p.messageId ?? next('msg'), type: 'text', text: p.text,
+        ...(p.mentionees ? { mention: { mentionees: p.mentionees } } : {}),
+        ...(p.quotedMessageId ? { quotedMessageId: p.quotedMessageId } : {}),
+      },
     }
   },
   groupImage(p) {

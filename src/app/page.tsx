@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
-import { ADD_FRIEND_URL, thai } from "./fonts";
+import { ADD_FRIEND_URL } from "./fonts";
 
 // Home page of the app's domain: what NongJoDII is and how to start. The product itself
 // lives in LINE (docs/PROJECT.md); this page only introduces it, and gives Google's OAuth
@@ -18,6 +18,7 @@ const FEATURES = [
   { title: "ติดตามความคืบหน้าจากแชต", body: "คุยงานตามปกติ น้องจดดีถามยืนยันเมื่อมีคนบอกว่างานเสร็จ สถานะเปลี่ยนเมื่อมีคนกดยืนยันเท่านั้น" },
   { title: "เตือนงานที่ต้องตาม", body: "เตือนงานใกล้ถึงกำหนด งานเลยกำหนด งานที่ยังไม่มีผู้รับ และงานที่เงียบเกิน 5 วัน ตามเวลาที่กลุ่มเลือก" },
   { title: "สรุปรายสัปดาห์ + Dashboard", body: "ดูงานทุกกลุ่มของโปรเจกต์ในที่เดียว สมาชิกเห็นเฉพาะกลุ่มของตัวเอง" },
+  { title: "ปรับได้ทุกเมื่อ", body: "พิมพ์ “น้องจดดี ตั้งค่า” ในกลุ่ม เจ้าของบอทเปลี่ยนฟีเจอร์ เวลาเตือน ชื่อเล่นและหน้าที่ของทีมได้" },
 ] as const;
 
 const STEPS = [
@@ -28,14 +29,20 @@ const STEPS = [
 
 export default function Home() {
   return (
-    <div lang="th" className={`${thai.className} flex flex-1 flex-col bg-white text-[#14213D]`}>
+    <div lang="th" className="flex flex-1 flex-col bg-page font-thai text-ink [color-scheme:light]">
+      {/* Brand app bar, as on the LIFF pages (Figma UI v4). */}
+      <div className="bg-brand text-white">
+        <div className="mx-auto flex h-14 w-full max-w-3xl items-center px-6">
+          <Link href="/" className="font-semibold">น้องจดดี</Link>
+        </div>
+      </div>
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-16 px-6 py-16 sm:py-24">
         <section className="flex flex-col items-start gap-6">
           <div className="flex items-center gap-4">
             <Image src="/logo.svg" alt="" width={72} height={72} unoptimized priority />
             <div>
               <h1 className="text-4xl font-bold leading-tight sm:text-5xl">น้องจดดี</h1>
-              <p className="font-semibold text-[#3A84D6]">NongJoDII</p>
+              <p className="font-semibold text-primary">NongJoDII</p>
             </div>
           </div>
           {/* Thai has no spaces between words: the nowrap spans keep words the browser
@@ -59,9 +66,9 @@ export default function Home() {
           <h2 id="features" className="text-2xl font-bold">ทำอะไรได้บ้าง</h2>
           <ul className="grid gap-4 sm:grid-cols-2">
             {FEATURES.map((f) => (
-              <li key={f.title} className="rounded-2xl border border-[#E6EAF0] p-5">
+              <li key={f.title} className="rounded-2xl border border-line p-5">
                 <h3 className="font-semibold">{f.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-[#4B5565]">{f.body}</p>
+                <p className="mt-2 text-sm leading-relaxed text-ink-2">{f.body}</p>
               </li>
             ))}
           </ul>
@@ -72,7 +79,7 @@ export default function Home() {
           <ol className="flex flex-col gap-3">
             {STEPS.map((s, i) => (
               <li key={s} className="flex items-center gap-4">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#DCE8F7] font-semibold text-[#1F5BAD]">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-soft font-semibold text-primary">
                   {i + 1}
                 </span>
                 <span>{s}</span>
@@ -82,8 +89,8 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="flex flex-col items-center gap-2 border-t border-[#E6EAF0] px-6 py-6 text-center text-sm text-[#8A94A6]">
-        <Link href="/privacy" className="text-[#1F5BAD] underline underline-offset-4">
+      <footer className="flex flex-col items-center gap-2 border-t border-line px-6 py-6 text-center text-sm text-ink-3">
+        <Link href="/privacy" className="text-primary underline underline-offset-4">
           นโยบายความเป็นส่วนตัว
         </Link>
         <span>น้องจดดี · โปรเจกต์ DII Design, Pitching &amp; Hackathon 2026</span>

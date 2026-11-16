@@ -7,6 +7,8 @@ import { looksLikeProgress } from './keywords'
 // #7 Track progress, entry 1: a normal text line in a group. Runs after the message is
 // stored (webhook/process.ts), so a model failure can never lose it. Every answer is a
 // reply (free), never a push. Ordinary chat gets no reply.
+// #132: the free keyword list is a gate. A line without a progress word makes no model
+// call; only a match goes to the decision model, which then decides the Task and status.
 
 export type ProgressTextJob = {
   groupId: string
@@ -42,6 +44,9 @@ export async function handleProgressText(deps: Deps, job: ProgressTextJob): Prom
   const { store, line } = deps
   const { groupId, replyToken } = job
   if (!job.text.trim() || COMMAND.test(job.text)) return 'skipped'
+  // The keyword gate (#132): ordinary chat costs nothing, no store read and no model call.
+  const keywordStatus = looksLikeProgress(job.text)
+  if (!keywordStatus) return 'ignored'
 
   const group = await store.getGroupById(groupId)
   if (!group || !group.featureTrackRemind) return 'skipped'
@@ -49,7 +54,7 @@ export async function handleProgressText(deps: Deps, job: ProgressTextJob): Prom
   if (tasks.length === 0) return 'skipped'
   const members = await store.listLiveMembers(groupId)
 
-  // AI calls are billed to the confirmed Owner (#6). Without one, use the free keyword check.
+  // AI calls are billed to the confirmed Owner (#6). Without one, the free picker answers.
   const owner = group.ownerConfirmedAt ? group.nominatedOwnerLineUserId : null
   const decision: Decision = owner
     ? await decide(
@@ -97,18 +102,21 @@ export async function handleProgressText(deps: Deps, job: ProgressTextJob): Prom
     }
 
     case 'ambiguous': {
-      const picked = decision.taskIds
-        .map((id) => tasks.find((t) => t.id === id))
-        .filter((t): t is TaskRow => t !== undefined)
+      const picked = pickerCandidates(
+        decision.taskIds.map((id) => tasks.find((t) => t.id === id)).filter((t): t is TaskRow => t !== undefined),
+        decision.status,
+        job.senderLineUserId,
+      )
+      if (picked.length === 0) return 'ignored'
       await line.reply(replyToken, [pickerCard({ messageId: job.storedMessageId, tasks: picked, targetStatus: decision.status })])
       log('progress_picker', { groupId, choices: picked.length, reason: 'ambiguous' })
       return 'picker'
     }
 
     case 'failed': {
-      // No model answered: ask the group only when the line looks like progress.
-      const status = looksLikeProgress(job.text)
-      if (!status) return 'ignored'
+      // No model answered (it failed, the Fair-use cap, no Owner): ask the group with the
+      // keyword's status. Free, no further model call.
+      const status = keywordStatus
       const candidates = pickerCandidates(tasks, status, job.senderLineUserId)
       if (candidates.length === 0) return 'ignored'
       await line.reply(replyToken, [pickerCard({ messageId: job.storedMessageId, tasks: candidates, targetStatus: status })])

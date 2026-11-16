@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { addTag, removeTag, TAGS_TEXT } from '@/app/liff/tags-model'
+import { addTag, removeTag, tagSuggestions, TAGS_TEXT } from '@/app/liff/tags-model'
 import { loadDashboard, type DashboardData } from '@/server/dashboard/load'
 import type { LineEvent } from '@/server/line/types'
 import type { LlmRequest } from '@/server/ports'
@@ -9,7 +9,7 @@ import { loadReview } from '@/server/review/load'
 import { submitReview } from '@/server/review/submit'
 import type { ReviewView, SubmitResult } from '@/server/review/types'
 import { cleanTag, personTags, suggestedTags, TAG_MAX_LENGTH, TAGS_MAX } from '@/server/tasks/tags'
-import { loadTask } from '@/server/tasks/load'
+import { loadTask, type TaskView } from '@/server/tasks/load'
 import { updateTaskFromLiff } from '@/server/tasks/update'
 import { TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -179,5 +179,31 @@ describe('the person keeps or edits the tags (#109)', () => {
     expect(res.status).toBe(200)
     const data = res.body as DashboardData
     expect(data.groups[0].tasks.find((x) => x.title === 'ทำสไลด์')!.tags).toEqual(['ออกแบบ'])
+  })
+})
+
+describe("the group's tags, one tap to add (#144)", () => {
+  it("offers the set's tags not on the Task yet, in the set's order, ignoring case", () => {
+    expect(tagSuggestions(['ออกแบบ', 'Docs', 'ประชุม'], ['docs'])).toEqual(['ออกแบบ', 'ประชุม'])
+    expect(tagSuggestions([], ['ออกแบบ'])).toEqual([])
+    expect(tagSuggestions(['ออกแบบ'], ['ออกแบบ'])).toEqual([])
+  })
+
+  it('a tapped tag goes through the same rules as a typed one', () => {
+    const full = Array.from({ length: TAGS_MAX }, (_, i) => 't' + i)
+    expect(addTag(full, 'ออกแบบ').error).toBe(TAGS_TEXT.full())
+    expect(addTag(['ประชุม'], 'ออกแบบ')).toEqual({ tags: ['ประชุม', 'ออกแบบ'], error: null })
+  })
+
+  it("the review page and the Task page get the group's tag set", async () => {
+    const t = await setup([{ ...base, title: 'ทำสไลด์', tags: ['สไลด์'] }])
+    const row = t.store.tables.group_setups.find((r) => r.groupId === t.group.id)!
+    row.tagSet = ['ออกแบบ', 'ประชุม']
+    const review = (await loadReview(t.deps, { idToken: 'tok-pim', summaryId: t.summaryId })).body as ReviewView
+    expect(review.tagSet).toEqual(['ออกแบบ', 'ประชุม'])
+    const task = t.store.seedTask({ groupId: t.group.id, title: 'ทำโปสเตอร์', createdByLineUserId: 'Upim', tags: ['ออกแบบ'] })
+    const view = (await loadTask(t.deps, { idToken: 'tok-pim', taskId: task.id })).body as TaskView
+    expect(view.tagSet).toEqual(['ออกแบบ', 'ประชุม'])
+    expect(tagSuggestions(view.tagSet, view.tags)).toEqual(['ประชุม'])
   })
 })

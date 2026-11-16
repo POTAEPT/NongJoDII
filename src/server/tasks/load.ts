@@ -10,6 +10,8 @@ export type TaskView = {
   members: { lineUserId: string; displayName: string }[]                       // LINE names
   /** #121: the requester may change the assignee (always for an unowned Task). */
   canChangeAssignee: boolean
+  /** #144: the group's tag set (#110), offered as tap-to-add chips. */
+  tagSet: string[]
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -36,8 +38,9 @@ export async function openTask(
 }
 
 export async function taskView(deps: Deps, task: TaskRow, requester: string): Promise<TaskView> {
-  const [members, canChange] = await Promise.all([
+  const [members, canChange, setup] = await Promise.all([
     deps.store.listLiveMembers(task.groupId), canChangeAssignee(deps, task, requester),
+    deps.store.getGroupSetup(task.groupId),
   ])
   return {
     taskId: task.id, title: task.title, details: task.details, status: task.status,
@@ -45,6 +48,7 @@ export async function taskView(deps: Deps, task: TaskRow, requester: string): Pr
     tags: task.tags,
     members: members.map((m) => ({ lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME })),
     canChangeAssignee: canChange,
+    tagSet: setup?.tagSet ?? [],
   }
 }
 

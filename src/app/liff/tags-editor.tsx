@@ -1,12 +1,14 @@
 'use client'
 
 import { useState } from 'react'
-import { addTag, removeTag, TAGS_TEXT } from './tags-model'
+import { addTag, removeTag, tagSuggestions, TAGS_TEXT } from './tags-model'
 import { inputClass } from './ui'
 
 /** #109: tags as chips with a remove button, and a field to add one (Enter or the button). */
-export function TagsEditor({ tags, onChange, disabled = false, max }: {
+export function TagsEditor({ tags, onChange, disabled = false, max, suggestions = [] }: {
   tags: string[]; onChange: (tags: string[]) => void; disabled?: boolean
+  /** #144: the group's tag set; the ones not on the Task show as tap-to-add chips. */
+  suggestions?: readonly string[]
   /** At most this many tags: a Task's cap by default, a group's set (#110) passes its own. */
   max?: number
 }) {
@@ -19,6 +21,12 @@ export function TagsEditor({ tags, onChange, disabled = false, max }: {
       if (r.tags !== tags) onChange(r.tags)
       setInput('')
     }
+  }
+  const offered = tagSuggestions(suggestions, tags)
+  const pick = (tag: string) => {
+    const r = addTag(tags, tag, max)
+    setError(r.error)
+    if (r.error === null && r.tags !== tags) onChange(r.tags)
   }
   return (
     <div className="space-y-2">
@@ -44,6 +52,20 @@ export function TagsEditor({ tags, onChange, disabled = false, max }: {
           {TAGS_TEXT.add}
         </button>
       </div>
+      {offered.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs text-ink-3">{TAGS_TEXT.suggested}</p>
+          <ul className="flex flex-wrap gap-1.5">
+            {offered.map((t) => (
+              <li key={t}>
+                <button type="button" aria-label={TAGS_TEXT.addSuggested(t)} disabled={disabled}
+                  className="inline-flex items-center gap-1 rounded-full border border-dashed border-primary px-2.5 py-0.5 text-xs font-semibold text-primary disabled:opacity-50"
+                  onClick={() => pick(t)}>+ {t}</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <p className={`text-xs ${error ? 'text-danger' : 'text-ink-3'}`}>{error ?? TAGS_TEXT.hint(max)}</p>
     </div>
   )

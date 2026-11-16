@@ -11,6 +11,8 @@ export const TAGS_TEXT = {
   full: (max: number = TAGS_MAX) => `ใส่ได้ไม่เกิน ${max} แท็ก`,
   tooLong: `แท็กยาวได้ไม่เกิน ${TAG_MAX_LENGTH} ตัวอักษร`,
   duplicate: 'มีแท็กนี้แล้ว',
+  suggested: 'แท็กของกลุ่ม แตะเพื่อเพิ่ม',
+  addSuggested: (t: string) => `เพิ่มแท็ก ${t}`,
 } as const
 
 /** Adds what the person typed. Answers the new list, or why it was not added. Typing
@@ -24,6 +26,13 @@ export function addTag(tags: string[], input: string, max: number = TAGS_MAX): {
   if (tags.some((t) => t.toLocaleLowerCase('th') === tag.toLocaleLowerCase('th'))) return { tags, error: TAGS_TEXT.duplicate }
   if (tags.length >= max) return { tags, error: TAGS_TEXT.full(max) }
   return { tags: [...tags, tag], error: null }
+}
+
+/** #144: the group's tags not on this Task yet, in the set's order (case-insensitive, as
+ *  addTag compares). */
+export function tagSuggestions(tagSet: readonly string[], tags: readonly string[]): string[] {
+  const has = new Set(tags.map((t) => t.toLocaleLowerCase('th')))
+  return tagSet.filter((t) => !has.has(t.toLocaleLowerCase('th')))
 }
 
 export function removeTag(tags: string[], tag: string): string[] {

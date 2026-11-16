@@ -7,10 +7,10 @@ import { post } from './api'
 import { track } from './analytics'
 import {
   FALLBACK_MEMBER, FILES_TEXT, FILTERS, INSIGHT_TEXT, fileLine, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
-  errorCopy, filterTasks, groupName, hhmm, initialOf, initialScope, insightTiles, isOverdue, memberCards, memberName,
+  errorCopy, filterTasks, groupName, guideHref, hhmm, initialOf, initialScope, insightTiles, isNoGroups, isOverdue, memberCards, memberName,
   overviewGroups, overviewLine, scopeAfterRefresh, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
   type DashboardData, type DashboardFile, type DashboardGroup, type DashboardInsight, type DashboardTab, type DashboardTask, type GroupSummary,
-  type Scope, type StatusCounts, type TaskFilter,
+  type Scope, type StatusCounts, type TaskFilter, WELCOME_TEXT,
 } from './dashboard-model'
 import type { LiffViewProps } from './liff-sdk'
 
@@ -33,7 +33,8 @@ const DOT: Record<TaskStatus, string> = {
 }
 const RING: Record<TaskStatus, string> = { not_assigned: '#F0B429', in_process: '#4C8DDB', done: '#3DD68C' }
 
-type Load = { kind: 'loading' } | { kind: 'error'; status: number } | { kind: 'ready'; data: DashboardData }
+type Load =
+  | { kind: 'loading' } | { kind: 'error'; status: number } | { kind: 'welcome' } | { kind: 'ready'; data: DashboardData }
 
 export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
@@ -52,6 +53,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
     setLoad({ kind: 'loading' })
     try {
       const { status, json } = await post('/api/dashboard/load', { idToken, groupId: id })
+      if (isNoGroups(status, json)) return setLoad({ kind: 'welcome' })
       if (status !== 200) return setLoad({ kind: 'error', status })
       const data = json as DashboardData
       setScope(initialScope(data, id))
@@ -69,6 +71,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
     refreshing.current = true
     try {
       const { status, json } = await post('/api/dashboard/load', { idToken, groupId: id })
+      if (isNoGroups(status, json)) return setLoad({ kind: 'welcome' })
       if (status === 403) return setLoad({ kind: 'error', status })
       if (status !== 200) return
       const data = json as DashboardData
@@ -110,6 +113,29 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
 
   if (load.kind === 'loading') {
     return <Shell><p className="p-6 text-center text-sm text-[#8A94A6]">กำลังโหลด...</p></Shell>
+  }
+  if (load.kind === 'welcome') {
+    // #145: a first-time user in no group yet. Not an access error.
+    return (
+      <Shell>
+        <Notice tone="doc" title={WELCOME_TEXT.title} text={WELCOME_TEXT.body}>
+          <ol className="mb-2 flex flex-col gap-2 text-left text-sm">
+            {WELCOME_TEXT.steps.map((s, i) => (
+              <li key={s} className="flex items-start gap-3 rounded-xl bg-white px-3 py-2.5">
+                <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#DCE8F7] text-xs font-bold text-[#1F5BAD]">
+                  {i + 1}
+                </span>
+                <span>{s}</span>
+              </li>
+            ))}
+          </ol>
+          <Primary onClick={() => liff.openWindow({ url: guideHref(window.location.origin), external: false })}>
+            {WELCOME_TEXT.guide}
+          </Primary>
+          <Secondary onClick={back}>กลับไปที่แชต</Secondary>
+        </Notice>
+      </Shell>
+    )
   }
   if (load.kind === 'error') {
     const retryable = load.status !== 401 && load.status !== 403

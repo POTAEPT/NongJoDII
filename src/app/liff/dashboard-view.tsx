@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import type { TaskStatus } from '@/server/ports'
 import { post } from './api'
+import { track } from './analytics'
 import {
   FALLBACK_MEMBER, FILES_TEXT, FILTERS, INSIGHT_TEXT, fileLine, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
   errorCopy, filterTasks, groupName, hhmm, initialOf, initialScope, insightTiles, isOverdue, memberCards, memberName,
@@ -98,7 +99,14 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
   }, [load.kind, refresh])
 
   const back = () => liff.closeWindow()
-  const openTask = (taskId: string) => liff.openWindow({ url: liffUrl(liffId, 'task', taskId), external: false })
+  const openTask = (taskId: string) => {
+    track('dashboard_task_open') // #19
+    liff.openWindow({ url: liffUrl(liffId, 'task', taskId), external: false })
+  }
+  const openMember = (memberId: string) => {
+    track('dashboard_member_open') // #19
+    setMemberId(memberId)
+  }
 
   if (load.kind === 'loading') {
     return <Shell><p className="p-6 text-center text-sm text-[#8A94A6]">กำลังโหลด...</p></Shell>
@@ -169,10 +177,10 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
         </button>
 
         {comparing ? (
-          <Compare summaries={compared} onOpen={(gid) => { pick(gid); setTab('tasks') }} />
+          <Compare summaries={compared} onOpen={(gid) => { track('dashboard_compare_open_group'); pick(gid); setTab('tasks') }} />
         ) : (
           <>
-            <Tabs tab={tab} onChange={(t) => { setTab(t); setMemberId(null) }} />
+            <Tabs tab={tab} onChange={(t) => { track(`dashboard_tab_${t}`); setTab(t); setMemberId(null) }} />
             {group!.tasks.length === 0 && group!.members.length === 0 ? (
               <EmptyGroup insight={group!.insight} showInsight={tab === 'overview'} files={group!.files} />
             ) : tab === 'overview' ? (
@@ -181,7 +189,7 @@ export function DashboardView({ liff, liffId, idToken, id }: LiffViewProps) {
               ) : group!.access === 'mine' ? (
                 <MineOverview group={group!} now={now} onOpen={openTask} />
               ) : (
-                <Overview group={group!} now={now} onMember={setMemberId} onOpen={openTask} />
+                <Overview group={group!} now={now} onMember={openMember} onOpen={openTask} />
               )
             ) : tab === 'calendar' ? (
               <Calendar

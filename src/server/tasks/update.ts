@@ -5,6 +5,7 @@ import { badRequest, field } from '../review/load'
 import { statusFor, validateTaskFields } from './fields'
 import { personTags } from './tags'
 import { openTask, taskView } from './load'
+import { announceReassign, canChangeAssignee } from './assignee'
 
 /** POST /api/tasks/update. lastEditedByLineUserId is always the verified user. */
 export async function updateTaskFromLiff(deps: Deps, body: unknown): Promise<ApiResult> {
@@ -16,6 +17,11 @@ export async function updateTaskFromLiff(deps: Deps, body: unknown): Promise<Api
     assigneeLineUserId: field(body, 'assigneeLineUserId'), dueAt: field(body, 'dueAt'),
   })
   if (!v.ok) return badRequest(v.field)
+  // #121: a Task someone has moves only by that person, the Owner or a PM.
+  const moved = v.fields.assigneeLineUserId !== task.assigneeLineUserId
+  if (moved && !(await canChangeAssignee(deps, task, requester))) {
+    return { status: 403, body: { error: 'not_allowed' } }
+  }
   // #109: a page that sends no tags keeps the Task's tags.
   const sent = field(body, 'tags')
   const tags = sent === undefined ? task.tags : personTags(sent)
@@ -32,6 +38,7 @@ export async function updateTaskFromLiff(deps: Deps, body: unknown): Promise<Api
   if (assignee !== null) {
     await releaseIfLeft(deps, { groupId: task.groupId, lineUserId: assignee, event: 'task_edit_assignee_left', taskId: task.id })
   }
+  if (moved) await announceReassign(deps, { task, by: requester, from: task.assigneeLineUserId, to: assignee })
   const fresh = (await deps.store.getTask(task.id)) ?? task
-  return { status: 200, body: await taskView(deps, fresh) }
+  return { status: 200, body: await taskView(deps, fresh, requester) }
 }

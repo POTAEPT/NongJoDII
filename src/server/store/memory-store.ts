@@ -1400,6 +1400,15 @@ export class MemoryStore implements StorePort {
     return { updated: true }
   }
 
+  async reopenTask(t: { taskId: string; assignee: string | null; toStatus: 'in_process' | 'not_assigned'; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('reopenTask')
+    fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
+    const row = this.tables.tasks.find((x) => x.id === t.taskId && x.deletedAt === null && x.status === 'done')
+    if (!row || (row.assigneeLineUserId ?? null) !== t.assignee) return { updated: false }
+    Object.assign(row, { status: t.toStatus, doneAt: null, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
   async restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
     this.fault('restoreTask')
     fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')

@@ -24,6 +24,9 @@ export type SettingsLoad = {
   /** The requester is the group's confirmed Owner, so the values can be edited. */
   canEdit: boolean
   owner: { lineUserId: string; displayName: string } | null
+  /** #80: the setup form named an Owner who has not confirmed yet (and no Owner left), so
+   *  Settings waits for them. `isRequester`: the person opening Settings is that nominee. */
+  pendingOwner: { lineUserId: string; displayName: string; isRequester: boolean } | null
   values: SettingsValues
   members: SettingsMember[]
 }

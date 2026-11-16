@@ -32,12 +32,18 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, 'th'))
   const ownerId = group.ownerConfirmedAt !== null ? group.nominatedOwnerLineUserId : null
+  // #80: a nominee who has not confirmed yet. Not after an Owner left (#30): the nominee
+  // column then still names the old Owner.
+  const pendingId = group.ownerConfirmedAt === null && group.ownerLeftAt === null ? group.nominatedOwnerLineUserId : null
   const view: SettingsLoad = {
     groupId: group.groupId,
     groupName: group.name,
     state: setupState(group) === 'confirmed' ? 'ready' : 'not_set_up',
     canEdit,
     owner: ownerId ? { lineUserId: ownerId, displayName: await lineNameOf(deps, ownerId, live) } : null,
+    pendingOwner: pendingId
+      ? { lineUserId: pendingId, displayName: await lineNameOf(deps, pendingId, live), isRequester: pendingId === requester }
+      : null,
     values: {
       workDescription: group.workDescription ?? '',
       features: {

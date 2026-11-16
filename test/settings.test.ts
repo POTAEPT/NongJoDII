@@ -80,6 +80,32 @@ describe('loadSettings (#28)', () => {
     const view = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
     expect(view).toMatchObject({ state: 'not_set_up', canEdit: false, owner: null })
   })
+
+  // #80: the setup-done card links Settings while the named Owner has not confirmed yet.
+  it('names the Owner it waits for, and tells the nominee it is them', async () => {
+    const t = setup()
+    const g = t.store.tables.groups.find((row) => row.id === t.group.id)!
+    g.ownerConfirmedAt = null
+    g.nominatedOwnerLineUserId = BIW
+    const byOwner = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(byOwner).toMatchObject({ state: 'not_set_up', owner: null })
+    expect(byOwner.pendingOwner).toEqual({ lineUserId: BIW, displayName: 'บิว', isRequester: false })
+    const byNominee = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
+    expect(byNominee.pendingOwner).toEqual({ lineUserId: BIW, displayName: 'บิว', isRequester: true })
+  })
+
+  it('names no pending Owner once the Owner is confirmed, or after the Owner left (#30)', async () => {
+    const t = setup()
+    const ready = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
+    expect(ready).toMatchObject({ state: 'ready', pendingOwner: null })
+
+    // The Owner left: the nominee column still names them, but nobody is "pending".
+    const g = t.store.tables.groups.find((row) => row.id === t.group.id)!
+    g.ownerConfirmedAt = null
+    g.ownerLeftAt = new Date('2026-11-15T03:00:00Z')
+    const left = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
+    expect(left).toMatchObject({ state: 'not_set_up', pendingOwner: null })
+  })
 })
 
 describe('submitSettings (#28)', () => {

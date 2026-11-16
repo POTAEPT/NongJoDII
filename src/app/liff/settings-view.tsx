@@ -128,6 +128,9 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
         onClose={close} />
     )
   }
+  if (data.state === 'not_set_up' && data.pendingOwner) {
+    return <PendingOwnerScreen pendingOwner={data.pendingOwner} groupId={data.groupId} groupName={data.groupName} liffId={liffId} onClose={close} />
+  }
   if (data.state === 'not_set_up') {
     return (
       <StatusScreen kind="forbidden" appTitle={TITLE} onBack={close} title="กลุ่มนี้ยังตั้งค่าไม่เสร็จ"
@@ -399,3 +402,43 @@ function Plans() {
     </div>
   )
 }
+
+/** #80: Settings opened while the Owner the setup form named has not confirmed yet (the
+ *  setup-done card links Settings in that state too). The nominee is sent to the Owner
+ *  confirm page; anyone else is told whom the group waits for. */
+export function PendingOwnerScreen({ pendingOwner, groupId, groupName, liffId, onClose }: {
+  pendingOwner: NonNullable<SettingsLoad['pendingOwner']>
+  groupId: string; groupName: string | null; liffId: string; onClose: () => void
+}) {
+  const TITLE = 'ตั้งค่า'
+  if (!pendingOwner.isRequester) {
+    return (
+      <StatusScreen kind="forbidden" appTitle={TITLE} onBack={onClose} title={PENDING_OWNER_TEXT.waitTitle}
+        message={PENDING_OWNER_TEXT.wait(pendingOwner.displayName)} onClose={onClose} />
+    )
+  }
+  return (
+    <Page
+      title={TITLE}
+      onBack={onClose}
+      bottom={
+        <a className="flex min-h-12 w-full items-center justify-center rounded-xl bg-primary px-4 text-base font-semibold text-white"
+          href={liffUrl(liffId, 'owner', groupId)}>{PENDING_OWNER_TEXT.confirmButton}</a>
+      }
+    >
+      <div className="flex flex-col items-center pt-6 text-center">
+        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-soft text-primary"><IconLock className="h-7 w-7" /></span>
+        <h2 className="mt-4 text-[22px] font-semibold leading-snug">{PENDING_OWNER_TEXT.youTitle}</h2>
+        <p className="mt-2 text-sm text-ink-2">{PENDING_OWNER_TEXT.you(groupName)}</p>
+      </div>
+    </Page>
+  )
+}
+
+export const PENDING_OWNER_TEXT = {
+  waitTitle: 'รอยืนยันเจ้าของบอท',
+  wait: (name: string) => `รอ ${name} ยืนยันเป็นเจ้าของบอทก่อน แล้วค่อยเปิดการตั้งค่าได้`,
+  youTitle: 'ยืนยันเป็นเจ้าของบอทก่อน',
+  you: (groupName: string | null) => `คุณถูกเลือกเป็นเจ้าของบอทของกลุ่ม ${groupName ?? 'นี้'} ยืนยันก่อน แล้วค่อยเปิดการตั้งค่าได้`,
+  confirmButton: 'ยืนยันเป็นเจ้าของบอท',
+} as const

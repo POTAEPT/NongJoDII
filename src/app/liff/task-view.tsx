@@ -19,6 +19,8 @@ const COPY = {
   fallback: 'บันทึกไม่สำเร็จ กรุณาลองใหม่',
 }
 const ERR_LOAD = 'เชื่อมต่อไม่ได้ชั่วคราว ลองใหม่อีกครั้งในอีกสักครู่'
+/** #121: shown under the assignee when the requester may not move it (server: 403 not_allowed). */
+const ASSIGNEE_LOCKED = 'เปลี่ยนผู้รับได้เฉพาะผู้รับงาน เจ้าของบอท หรือ PM'
 const TITLE = 'แก้งาน'
 
 type Load =
@@ -86,7 +88,8 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
         dueAt: toBangkokIso(form.dueDate, form.dueTime),
         tags: form.tags,
       })
-      if (status !== 200) setFormError(errorCopy(status, COPY))
+      if (status === 403 && (json as { error?: unknown } | null)?.error === 'not_allowed') setFormError(ASSIGNEE_LOCKED)
+      else if (status !== 200) setFormError(errorCopy(status, COPY))
       else {
         setForm(toForm(json as TaskData))
         setSaved(true)
@@ -116,6 +119,8 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
     setForm({ ...form, ...patch })
   }
   const assignee = load.data.members.find((m) => m.lineUserId === form.assignee)
+  // #121: older payloads have no flag; the server still checks.
+  const assigneeLocked = load.data.canChangeAssignee === false
 
   return (
     <Page
@@ -148,7 +153,7 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
           <span className="mb-2 block text-sm font-semibold">ผู้รับ</span>
           <div className="flex items-center gap-2">
             {assignee ? (
-              <button type="button" disabled={submitting} onClick={() => setPicking(true)}
+              <button type="button" disabled={submitting || assigneeLocked} onClick={() => setPicking(true)}
                 className="inline-flex items-center gap-2 rounded-full border border-line bg-page py-1 pr-3 pl-1 text-sm font-semibold">
                 <Avatar name={assignee.displayName} id={assignee.lineUserId} size="md" />
                 {assignee.displayName}
@@ -156,12 +161,15 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
             ) : (
               <span className="text-sm text-ink-3">ยังไม่มีผู้รับ</span>
             )}
-            <button type="button" aria-label={assignee ? 'เปลี่ยนผู้รับ' : 'เลือกผู้รับ'} disabled={submitting}
-              onClick={() => setPicking(true)}
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-primary-soft text-primary">
-              <IconPlus className="h-5 w-5" />
-            </button>
+            {!assigneeLocked && (
+              <button type="button" aria-label={assignee ? 'เปลี่ยนผู้รับ' : 'เลือกผู้รับ'} disabled={submitting}
+                onClick={() => setPicking(true)}
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-primary-soft text-primary">
+                <IconPlus className="h-5 w-5" />
+              </button>
+            )}
           </div>
+          {assigneeLocked && <p className="mt-1 text-xs text-ink-3">{ASSIGNEE_LOCKED}</p>}
         </div>
         <div>
           <span className="mb-2 block text-sm font-semibold">กำหนดส่ง</span>

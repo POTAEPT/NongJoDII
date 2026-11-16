@@ -70,6 +70,10 @@ export interface GooglePort {
   /** #4: uploads a file into `parentId` (files.create with media); it inherits the folder's
    *  sharing. `timeoutMs` cuts the whole upload. Returns Drive's id and webViewLink. */
   uploadFile(accessToken: string, f: DriveUpload, opts: { timeoutMs: number }): Promise<{ id: string; webViewLink: string }>
+  /** #82: revokes the grant behind a refresh token (POST oauth2.googleapis.com/revoke).
+   *  'invalid': Google answered 400 (the token is already revoked or expired). Throws on any
+   *  other failure (5xx, timeout), so nothing is changed and the person can try again. */
+  revokeToken(refreshToken: string): Promise<'revoked' | 'invalid'>
 }
 export type DriveUpload = { name: string; parentId: string; mimeType: string; data: Uint8Array }
 
@@ -180,6 +184,7 @@ export type PushPurpose =
   | 'owner_takeover' | 'subgroup_detached'   // #31
   | 'owner_needed'                           // #30
   | 'file_saved' | 'file_failed' | 'drive_share_refused'   // #4
+  | 'drive_disconnected'                     // #82
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -619,6 +624,9 @@ export interface StorePort {
    *  Google refused). revoked: this call changed the row. So one caller per revocation gets
    *  true, and a sign-in that stored a new token in between is left alone. */
   markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }>
+  /** #82: the person's latest Google account (connected_at DESC) with its sealed refresh
+   *  token, for the disconnect. null when they have none. */
+  findGoogleAccountToken(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; refreshTokenCiphertext: string | null } | null>
   // #13 Drive folders
   /** IDs of the Projects whose main group has this person as its confirmed Owner (bot still
    *  in it). Every page, by group id. */

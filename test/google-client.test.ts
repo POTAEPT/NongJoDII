@@ -277,3 +277,24 @@ describe('GoogleHttpClient link share (#4 follow-up)', () => {
     expect((err as Error).message).toBe('google drive permissions 404')
   })
 })
+
+describe('GoogleHttpClient.revokeToken (#82)', () => {
+  it('posts the token form-encoded to the revoke endpoint and answers revoked on 200', async () => {
+    const { client, calls } = stubFetch(200, {})
+    await expect(client.revokeToken('rt-1')).resolves.toBe('revoked')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://oauth2.googleapis.com/revoke')
+    expect(calls[0].init.method).toBe('POST')
+    expect(Object.fromEntries(new URLSearchParams(calls[0].init.body as string))).toEqual({ token: 'rt-1' })
+  })
+
+  it('answers invalid on 400 (Google no longer holds the grant)', async () => {
+    await expect(stubFetch(400, { error: 'invalid_token' }).client.revokeToken('rt')).resolves.toBe('invalid')
+  })
+
+  it('throws an AdapterError on a 5xx, so nothing is marked', async () => {
+    const err = await stubFetch(503, {}).client.revokeToken('rt').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect((err as Error).message).toBe('google revoke 503')
+  })
+})

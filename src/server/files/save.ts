@@ -49,7 +49,7 @@ import {
 // Except for "file saving off", the sender gets a short text reply that saving is paused and
 // why, at most once per group per Bangkok day (#99, ledger row `file_paused:<group>:<day>`).
 //
-// Large files (#99): a file LINE says is over SAVING_NOTICE_BYTES gets "saving…" as a reply at
+// Large files (#99): a file LINE says is over SAVING_NOTICE_BYTES (50 MB) gets "saving…" as a reply at
 // once, sent alongside the download. Its result card then goes out as a push through the
 // budget; skipped near the monthly quota, the file still shows on the Dashboard.
 
@@ -77,8 +77,11 @@ export const MAX_FILE_BYTES = 100 * 1024 * 1024
 export const BATCH_QUIET_MS = 10_000
 /** Share of the monthly quota a saved or failed card leaves unspent: as the Tasks-created post. */
 export const FILE_SAVED_PUSH_RESERVE = 0.1
-/** #99: a file above this gets an immediate "saving…" reply (photos carry no size up front). */
-export const SAVING_NOTICE_BYTES = 10 * 1024 * 1024
+/** #99: a file above this gets an immediate "saving…" reply (photos carry no size up front).
+ *  The notice spends the free reply token, so the result card becomes a push counted per
+ *  group member. 50 MB, not lower: a smaller file usually saves inside the 25 s reply window
+ *  and gets its card as one free reply; a file this large is likely to need a push anyway. */
+export const SAVING_NOTICE_BYTES = 50 * 1024 * 1024
 /** A step needs at least this much time left to start. */
 const MIN_STEP_MS = 1_000
 

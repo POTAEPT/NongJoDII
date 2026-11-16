@@ -240,7 +240,8 @@ export type ProgressYes = {
   promptId: string; taskId: string; fromStatus: TaskStatus; toStatus: ProgressTarget
   byLineUserId: string; assignTo: string | null; at: Date
 }
-export type ProgressYesOutcome = 'updated' | 'already_answered' | 'task_changed'
+/** dismissed: the card's chat message was marked "ไม่ใช่การอัปเดตงาน" (#87); nothing changed. */
+export type ProgressYesOutcome = 'updated' | 'already_answered' | 'task_changed' | 'dismissed'
 // #52 onboarding: the setup form (Figma v4 #2b-#2d2) and the Owner confirm.
 /** The feature toggles of groups. The form's first checkbox sets summarize and draftTasks together. */
 export type GroupFeatures = {
@@ -529,6 +530,8 @@ export interface StorePort {
   /** Insert a mark_done card. prompt null when the Task already has an open one
    *  (unique index task_prompts_one_open_mark_done). */
   createProgressPrompt(p: NewProgressPrompt): Promise<{ prompt: ProgressPromptRow | null }>
+  /** #87: the cards and picks from one chat message that were answered Yes, oldest first. */
+  listYesProgressPrompts(messageId: string): Promise<ProgressPromptRow[]>
   getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null>
   /** No: only while the card is open (answer is null); the first answer wins. */
   answerProgressPrompt(promptId: string, answer: 'no', byLineUserId: string, at: Date): Promise<{ updated: boolean }>

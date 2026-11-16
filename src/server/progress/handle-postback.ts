@@ -2,7 +2,7 @@ import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
 import { log, logError } from '../log'
 import type { Deps, ProgressPromptRow, TaskRow } from '../ports'
-import { PROGRESS_REPLY, pickerCard, resultCard, textMessage } from './card'
+import { PROGRESS_REPLY, alreadyUpdatedCard, pickerCard, resultCard, textMessage } from './card'
 import { canMove } from './decide'
 import { displayName, pickerCandidates } from './handle-text'
 import { parseProgressAction, type ProgressAction } from './postback'
@@ -96,8 +96,19 @@ export async function resolveProgressAction(
       log('progress_refused', { groupId, messageId: msg.id })
       return say('refused', PROGRESS_REPLY.notAllowedDismiss(displayName(members, msg.senderLineUserId)))
     }
+    // Dismiss first, then read the Yes answers: with answer_progress_yes's share lock on the
+    // message, a pick racing this press either lands before (and is read below) or is refused.
     if (!msg.progressDismissedAt) await store.dismissProgressPicker(msg.id, userId, now)
     log('progress_dismissed', { groupId, messageId: msg.id })
+    // #87: a Task from this message was already updated. Say so; nothing is undone.
+    const updates: { task: TaskRow; status: ProgressPromptRow['targetStatus'] }[] = []
+    for (const p of await store.listYesProgressPrompts(msg.id)) {
+      const task = await store.getTask(p.taskId)
+      if (task && !task.deletedAt && !updates.some((u) => u.task.id === task.id)) updates.push({ task, status: p.targetStatus })
+    }
+    if (updates.length > 0) {
+      return { result: 'dismissed', message: alreadyUpdatedCard({ liffId: deps.config.liffId, updates }) }
+    }
     return say('dismissed', PROGRESS_REPLY.notUpdate)
   }
 
@@ -119,6 +130,7 @@ export async function resolveProgressAction(
     })
     if (outcome === 'already_answered') return say('already_answered', PROGRESS_REPLY.alreadyAnswered)
     if (outcome === 'task_changed') return say('gone', PROGRESS_REPLY.taskGone)
+    if (outcome === 'dismissed') return say('already_answered', PROGRESS_REPLY.pickerClosed)
     log('progress_updated', { groupId, taskId: task.id, promptId: prompt.id, target: prompt.targetStatus })
     return {
       result: 'updated',

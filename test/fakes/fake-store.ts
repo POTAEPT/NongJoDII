@@ -58,6 +58,7 @@ import type {
   ProgressYes,
   ProgressYesOutcome,
 } from '@/server/ports'
+import { ownerCountDue } from '@/server/store/mappers'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
 // In-memory StorePort. Tables mirror supabase/migrations/ (camelCase columns,
@@ -1740,30 +1741,45 @@ export class FakeStore implements StorePort {
     return { outcome: 'saved' }
   }
 
-  async detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]> {
+  /** The one UPDATE of SupabaseStore: detach, fresh Owner count and no nominee, only where
+   *  owner_left_at is null or older than `at`. */
+  async detachExpiredTakeovers(askedBefore: Date, at: Date): Promise<DetachedSubGroup[]> {
     this.fault('detachExpiredTakeovers')
     const out: DetachedSubGroup[] = []
     for (const g of this.tables.groups) {
       const asked = this.takeoverAskedAt(g.id)
       if (asked === null || asked >= askedBefore) continue
+      if (g.ownerLeftAt !== null && g.ownerLeftAt >= at) continue
       Object.assign(this.setupOf(g.id), { takeoverAskedAt: null, driveFolderId: null })
       g.projectId = null
-      if (at) g.ownerLeftAt = new Date(at.getTime())
-      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
+      this.clearForOwnerCount(g, at)
+      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
   }
 
-  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]> {
+  /** Same rule as SupabaseStore (ownerCountDue), checked and written in one step. */
+  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<string[]> {
     this.fault('startDetachedOwnerCount')
-    const out: DetachedSubGroup[] = []
+    const out: string[] = []
     for (const g of this.tables.groups) {
-      if (!groupIds.includes(g.id) || g.projectId !== null || g.ownerConfirmedAt !== null) continue
-      if (g.ownerLeftAt !== null && g.ownerLeftAt >= at) continue
-      g.ownerLeftAt = new Date(at.getTime())
-      out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
+      if (!groupIds.includes(g.id)) continue
+      const nominatedAt = this.tables.group_setups.find((r) => r.groupId === g.id)?.ownerNominatedAt ?? null
+      const due = ownerCountDue({
+        project_id: g.projectId, owner_confirmed_at: g.ownerConfirmedAt?.toISOString() ?? null,
+        owner_left_at: g.ownerLeftAt?.toISOString() ?? null, owner_nominated_at: nominatedAt?.toISOString() ?? null,
+      }, at)
+      if (!due) continue
+      this.clearForOwnerCount(g, at)
+      out.push(g.id)
     }
-    return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+    return out.sort()
+  }
+
+  private clearForOwnerCount(g: GroupRow, at: Date): void {
+    g.ownerLeftAt = new Date(at.getTime())
+    g.nominatedOwnerLineUserId = null
+    Object.assign(this.setupOf(g.id), { ownerNominatedByLineUserId: null, ownerNominatedAt: null })
   }
 
   /** Same rule as SupabaseStore.listUnsentTakeoverCards. */
@@ -1876,7 +1892,7 @@ export class FakeStore implements StorePort {
     if (!g || g.projectId === null || this.isMainGroup(groupId) || g.ownerConfirmedAt !== null ||
       g.ownerLeftAt === null || g.ownerLeftAt > leftBefore || this.isLeft(groupId)) return { detached: false }
     g.projectId = null
-    g.ownerLeftAt = new Date(at.getTime())
+    this.clearForOwnerCount(g, at)
     Object.assign(this.setupOf(groupId), { takeoverAskedAt: null, driveFolderId: null })
     return { detached: true }
   }

@@ -333,7 +333,7 @@ describe('no answer: the 7-day rule (tick)', () => {
     await tick(h, new Date(TEST_NOW.getTime() + TAKEOVER_WAIT_MS + 15 * MIN))
     for (const sub of [subA, subB]) {
       expect(groupRow(h, sub.id)).toMatchObject({
-        projectId: null, nominatedOwnerLineUserId: OLD, ownerConfirmedAt: null,
+        projectId: null, nominatedOwnerLineUserId: null, ownerConfirmedAt: null,
         // A fresh 7-day Owner count from the detach (#30 part B).
         ownerLeftAt: new Date(TEST_NOW.getTime() + TAKEOVER_WAIT_MS + 15 * MIN),
       })
@@ -353,9 +353,9 @@ describe('no answer: the 7-day rule (tick)', () => {
     const h = makeTestDeps()
     const { projectId, subA } = seedProject(h)
     await change(h, projectId)
-    await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1))
+    await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1), TEST_NOW)
     expect(await h.store.answerSubgroupTakeover(projectId, [subA.id])).toEqual({ outcome: 'changed' })
-    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, nominatedOwnerLineUserId: OLD })
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, nominatedOwnerLineUserId: null })
   })
 
   it('the cards stop when the tick has no time left; the detach is already saved', async () => {
@@ -363,7 +363,7 @@ describe('no answer: the 7-day rule (tick)', () => {
     const { projectId, subA, subB } = seedProject(h)
     await change(h, projectId)
     h.line.pushes.length = 0
-    const groups = await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1))
+    const groups = await h.store.detachExpiredTakeovers(new Date(TEST_NOW.getTime() + 1), TEST_NOW)
     expect(groups).toHaveLength(2)
     // 15 s left: one card needs two LINE calls of up to 10 s each.
     await announceDetached(h.deps, groups, new Date(h.deps.now().getTime() + 15_000), h.deps.now())
@@ -530,18 +530,17 @@ describe('a manual "detach" answer (#30 part B): the owner_needed flow, as for e
     members: [{ lineUserId: who, nicknames: [], role: '' }], ownerLineUserId: who,
   })
 
-  it('sets owner_left_at, posts one card, and the setup form then needs Drive', async () => {
+  it('sets owner_left_at, clears the nominee, posts one card, and the setup form then needs Drive', async () => {
     const h = makeTestDeps()
     h.store.pushClock = () => h.deps.now()
     const { projectId, main, subA } = seedProject(h)
     await change(h, projectId)
     h.line.pushes.length = 0
     await answer(h, main.id, NEW, 'detach')
-    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerConfirmedAt: null, ownerLeftAt: TEST_NOW })
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerConfirmedAt: null, ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: null })
     expect(h.line.pushes.filter((p) => p.to === 'CsubA')).toHaveLength(1)
-    // The old Owner, still its nominee, has left it; a Member names themselves in the setup
-    // form: no confirm without Drive.
-    await h.store.markMemberLeft({ groupId: subA.id, lineUserId: OLD, at: TEST_NOW })
+    // The previous Owner is still a Member there, yet another Member can claim (option B).
+    // Naming yourself in the setup form is that claim: no confirm without Drive.
     const res = await submitSetup(h.deps, form(subA.id, MEMBER), h.defer)
     await h.runDeferred()
     expect(res).toEqual({ status: 200, body: { state: 'needs_drive' } })
@@ -556,8 +555,95 @@ describe('a manual "detach" answer (#30 part B): the owner_needed flow, as for e
     await answer(h, main.id, NEW, 'detach')
     expect(await answer(h, main.id, NEW, 'detach')).toEqual({ status: 409, body: { error: 'nothing_waiting' } })
     expect(h.line.pushes).toHaveLength(2) // one per Sub group, from the first answer
-    // The store step itself is idempotent too.
-    expect(await h.store.startDetachedOwnerCount([main.id], TEST_NOW)).toEqual([])
+  })
+
+  it('the Owner-count step is idempotent: a repeat with the same time changes nothing and keeps a claim made since', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    await answer(h, main.id, NEW, 'detach')
+    expect((await h.store.claimOwnerChange(subA.id, MEMBER, TEST_NOW)).outcome).toBe('claimed')
+    expect(await h.store.startDetachedOwnerCount([subA.id], TEST_NOW)).toEqual([])
+    expect(await h.store.startDetachedOwnerCount([subA.id], TEST_NOW)).toEqual([])
+    expect(groupRow(h, subA.id)).toMatchObject({ ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: MEMBER })
+  })
+
+  it('the previous Owner, still a Member, can claim too when first', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    await answer(h, main.id, NEW, 'detach')
+    expect((await h.store.claimOwnerChange(subA.id, OLD, TEST_NOW)).outcome).toBe('claimed')
+    expect((await h.store.claimOwnerChange(subA.id, MEMBER, TEST_NOW)).outcome).toBe('taken')
+  })
+
+  it('the take-over expiry never moves owner_left_at back: a newer one waits for a later tick', async () => {
+    const h = makeTestDeps()
+    const { projectId, subA, subB } = seedProject(h)
+    await change(h, projectId)
+    const later = new Date(TEST_NOW.getTime() + 2 * MIN)
+    h.store.seedSchedule(subA.id, { ownerLeftAt: later })
+    const cutoff = new Date(TEST_NOW.getTime() + 1)
+    const detached = await h.store.detachExpiredTakeovers(cutoff, new Date(TEST_NOW.getTime() + MIN))
+    expect(detached.map((g) => g.groupId)).toEqual([subB.id])
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId, ownerLeftAt: later, nominatedOwnerLineUserId: OLD })
+    const next = new Date(TEST_NOW.getTime() + 15 * MIN)
+    expect((await h.store.detachExpiredTakeovers(cutoff, next)).map((g) => g.groupId)).toEqual([subA.id])
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerLeftAt: next, nominatedOwnerLineUserId: null })
+  })
+
+  it('a count, then a claim, then a re-run with a later time keeps the claim', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    await answer(h, main.id, NEW, 'detach')
+    const claimAt = new Date(TEST_NOW.getTime() + MIN)
+    expect((await h.store.claimOwnerChange(subA.id, MEMBER, claimAt)).outcome).toBe('claimed')
+    expect(await h.store.startDetachedOwnerCount([subA.id], new Date(TEST_NOW.getTime() + 2 * MIN))).toEqual([])
+    expect(groupRow(h, subA.id)).toMatchObject({ ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: MEMBER })
+  })
+
+  it('a Sub group whose Owner left long before a manual detach still gets a fresh count', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    // Named Owner 60 days ago, left 30 days ago.
+    setupRow(h, subA.id).ownerNominatedAt = new Date(TEST_NOW.getTime() - 60 * 86_400_000)
+    h.store.seedSchedule(subA.id, { ownerLeftAt: new Date(TEST_NOW.getTime() - 30 * 86_400_000) })
+    await answer(h, main.id, NEW, 'detach')
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId: null, ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: null })
+  })
+
+  it('a failed detach rpc leaves the waiting Sub groups attached and untouched', async () => {
+    const h = makeTestDeps()
+    const { projectId, main, subA } = seedProject(h)
+    await change(h, projectId)
+    h.line.pushes.length = 0
+    h.store.failNext('answerSubgroupTakeover')
+    await expect(answerTakeover(h.deps, { idToken: `tok-${NEW}`, groupId: main.id, choice: 'detach' }, h.defer)).rejects.toThrow()
+    await h.runDeferred()
+    expect(groupRow(h, subA.id)).toMatchObject({ projectId, ownerLeftAt: null, nominatedOwnerLineUserId: OLD })
+    expect(setupRow(h, subA.id).takeoverAskedAt).not.toBeNull()
+    expect(h.line.pushes).toEqual([])
+  })
+
+  it('a Sub group the gate did not see but the rpc detached still gets the count, the card and no nominee', async () => {
+    const h = makeTestDeps()
+    h.store.pushClock = () => h.deps.now()
+    const { projectId, main, subB } = seedProject(h)
+    await change(h, projectId)
+    h.line.pushes.length = 0
+    // The gate's read misses subB (a stale read); the store holds it waiting all along.
+    const read = h.store.getOwnerChange.bind(h.store)
+    let calls = 0
+    h.store.getOwnerChange = async (id) => {
+      const c = await read(id)
+      calls++
+      return calls === 1 && c ? { ...c, waiting: c.waiting.filter((g) => g.groupId !== subB.id) } : c
+    }
+    await answer(h, main.id, NEW, 'detach')
+    expect(groupRow(h, subB.id)).toMatchObject({ projectId: null, ownerLeftAt: TEST_NOW, nominatedOwnerLineUserId: null })
+    expect(h.line.pushes.map((p) => p.to)).toContain('CsubB')
   })
 
   it('with no new Owner 7 days later, the bot leaves', async () => {

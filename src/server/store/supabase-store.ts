@@ -67,6 +67,7 @@ import {
   type DbMember,
   type DbMessage,
   type DbTask,
+  ownerCountDue,
   toCandidateRow,
   toDate,
   toGroupRow,
@@ -147,6 +148,12 @@ function toSavedFile(r: DbFile): SavedFile {
 
 function check(method: keyof StorePort, error: PgError): void {
   if (error) throw new AdapterError(`supabase ${method}: ${error.code}`)
+}
+
+/** #30 part B: the columns every detach with no confirmed Owner writes: a fresh 7-day Owner
+ *  count and no nominee, so any live Member can claim the role (decided 2026-11-15, option B). */
+function OWNER_COUNT(when: string) {
+  return { owner_left_at: when, nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null }
 }
 
 /** IN lists go out this many values at a time, so the request URL stays short
@@ -2117,43 +2124,56 @@ export class SupabaseStore implements StorePort {
     return { outcome: 'saved' }
   }
 
-  async detachExpiredTakeovers(askedBefore: Date, at?: Date): Promise<DetachedSubGroup[]> {
+  async detachExpiredTakeovers(askedBefore: Date, at: Date): Promise<DetachedSubGroup[]> {
     // The documented daily statement (initial schema, change_project_owner):
     //   update groups set project_id = null, takeover_asked_at = null
     //    where takeover_asked_at < <cutoff> returning ...
     // project_id and takeover_asked_at change together (groups_takeover_pending_rules).
-    const { data, error } = await this.db
-      .from('groups')
-      // The folder ID pointed into the old Owner's Drive (#74-4).
-      .update({
-        project_id: null, takeover_asked_at: null, drive_folder_id: null,
-        ...(at ? { owner_left_at: at.toISOString() } : {}),
-      })
-      .lt('takeover_asked_at', askedBefore.toISOString())
-      .select('id, line_group_id, name, nominated_owner_line_user_id')
-    check('detachExpiredTakeovers', error)
-    type Row = { id: string; line_group_id: string; name: string | null; nominated_owner_line_user_id: string | null }
-    return ((data ?? []) as Row[])
-      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name, nominatedOwnerLineUserId: r.nominated_owner_line_user_id }))
-      .sort((a, b) => a.groupId.localeCompare(b.groupId))
-  }
-
-  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<DetachedSubGroup[]> {
-    if (groupIds.length === 0) return []
+    // #30 part B, in the same SET: a waiting Sub group has no confirmed Owner, so it starts a
+    // fresh Owner count with no nominee. The WHERE never moves owner_left_at back: a group
+    // whose owner_left_at is newer (a re-invite since this tick began) detaches on a later tick.
+    // The folder ID pointed into the old Owner's Drive (#74-4).
     const when = at.toISOString()
     const { data, error } = await this.db
       .from('groups')
-      .update({ owner_left_at: when })
-      .in('id', groupIds)
-      .is('project_id', null)
-      .is('owner_confirmed_at', null)
+      .update({ project_id: null, takeover_asked_at: null, drive_folder_id: null, ...OWNER_COUNT(when) })
+      .lt('takeover_asked_at', askedBefore.toISOString())
       .or(`owner_left_at.is.null,owner_left_at.lt.${when}`)
-      .select('id, line_group_id, name, nominated_owner_line_user_id')
-    check('startDetachedOwnerCount', error)
-    type Row = { id: string; line_group_id: string; name: string | null; nominated_owner_line_user_id: string | null }
-    return ((data ?? []) as Row[])
-      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name, nominatedOwnerLineUserId: r.nominated_owner_line_user_id }))
+      .select('id, line_group_id, name')
+    check('detachExpiredTakeovers', error)
+    return ((data ?? []) as { id: string; line_group_id: string; name: string | null }[])
+      .map((r) => ({ groupId: r.id, lineGroupId: r.line_group_id, name: r.name }))
       .sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  async startDetachedOwnerCount(groupIds: string[], at: Date): Promise<string[]> {
+    if (groupIds.length === 0) return []
+    type Row = {
+      id: string; project_id: string | null; owner_confirmed_at: string | null
+      owner_left_at: string | null; owner_nominated_at: string | null
+    }
+    const { data, error } = await this.db
+      .from('groups')
+      .select('id, project_id, owner_confirmed_at, owner_left_at, owner_nominated_at')
+      .in('id', groupIds)
+    check('startDetachedOwnerCount', error)
+    const out: string[] = []
+    for (const r of (data ?? []) as Row[]) {
+      if (!ownerCountDue(r, at)) continue
+      // Compare-and-set on what was read, so a claim landing in between is kept.
+      const { data: done, error: updateError } = await this.db
+        .from('groups')
+        .update(OWNER_COUNT(at.toISOString()))
+        .eq('id', r.id)
+        .is('project_id', null)
+        .is('owner_confirmed_at', null)
+        .filter('owner_left_at', r.owner_left_at === null ? 'is' : 'eq', r.owner_left_at)
+        .filter('owner_nominated_at', r.owner_nominated_at === null ? 'is' : 'eq', r.owner_nominated_at)
+        .select('id')
+      check('startDetachedOwnerCount', updateError)
+      if ((done ?? []).length === 1) out.push(r.id)
+    }
+    return out.sort()
   }
 
   async listUnsentTakeoverCards(askedAfter: Date): Promise<{ projectId: string; askedAt: Date }[]> {
@@ -2351,7 +2371,7 @@ export class SupabaseStore implements StorePort {
     // detachExpiredTakeovers (#31).
     const { data, error } = await this.db
       .from('groups')
-      .update({ project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: at.toISOString() })
+      .update({ project_id: null, takeover_asked_at: null, drive_folder_id: null, ...OWNER_COUNT(at.toISOString()) })
       .eq('id', groupId)
       .not('project_id', 'is', null)
       .eq('is_main', false)

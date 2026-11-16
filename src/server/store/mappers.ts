@@ -72,3 +72,18 @@ export function toTaskRow(r: DbTask): TaskRow {
     announcedAt: toDate(r.announced_at ?? null),
   }
 }
+
+/** startDetachedOwnerCount's rule (shared with the fake store): a group with no Project and
+ *  no confirmed Owner whose count is not newer than `at`, and that has no claim made since
+ *  its count started (owner_nominated_at after owner_left_at); a nominee from before the
+ *  Owner left is cleared. */
+export function ownerCountDue(
+  r: { project_id: string | null; owner_confirmed_at: string | null; owner_left_at: string | null; owner_nominated_at: string | null },
+  at: Date,
+): boolean {
+  if (r.project_id !== null || r.owner_confirmed_at !== null) return false
+  if (r.owner_left_at === null) return true
+  const left = new Date(r.owner_left_at).getTime()
+  if (left >= at.getTime()) return false
+  return r.owner_nominated_at === null || new Date(r.owner_nominated_at).getTime() <= left
+}

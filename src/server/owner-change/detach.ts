@@ -38,11 +38,10 @@ export async function announceDetached(
       break
     }
     if (card === 'owner_needed') {
-      // #30 part B: the owner_needed card (one per detach: its retry key carries `at`). A
-      // manual detach clears the nominee (review-followups migration), so the card may name
-      // nobody: any live Member can claim it.
+      // #30 part B: the owner_needed card, with no nominee (cleared at the detach), once per
+      // detach: its retry key carries `at`.
       const result = await postOwnerNeededCard(deps, {
-        groupId: g.groupId, lineGroupId: g.lineGroupId, ownerLineUserId: g.nominatedOwnerLineUserId ?? null, renewedAt: at,
+        groupId: g.groupId, lineGroupId: g.lineGroupId, ownerLineUserId: null, renewedAt: at,
       })
       if (result === 'pushed') sent++
       log('subgroup_detached_card', { groupId: g.groupId, result })

@@ -25,7 +25,11 @@ import type { TickJob } from '../tick/run-tick'
 // 3. Part B, ownerExitJob below: OWNER_EXIT_AFTER_DAYS after owner_left_at with still no
 //    confirmed Owner (decided 2026-11-15 for Sub groups):
 //    - A Sub group (attached, not the main group) detaches from its Project instead: no
-//      Project, no folder ID, owner_left_at = now (one UPDATE), and a fresh owner_needed card.
+//      Project, no folder ID, no nominee, owner_left_at = now (one UPDATE), and a fresh
+//      owner_needed card. Every detach that leaves a group with no confirmed Owner (this one,
+//      #31's take-over expiry and the new Owner's "detach" answer) clears the nominee, so any
+//      live Member can claim the role, the previous Owner included (decided 2026-11-15,
+//      option B).
 //      As a group with no Project a Member can now take the Owner role (setup/owner-change.ts:
 //      LINE login, then Drive; this creates its own Project). If nobody does within 7 more
 //      days, the next rule applies to it.
@@ -145,11 +149,8 @@ async function detachSubGroup(deps: Deps, g: OwnerlessGroup, leftBefore: Date, n
   const { detached } = await deps.store.detachOwnerlessSubGroup(g.groupId, leftBefore, now)
   if (!detached) return false
   log('owner_exit_detached', { groupId: g.groupId })
-  if (g.nominatedOwnerLineUserId !== null) {
-    await postOwnerNeededCard(deps, {
-      groupId: g.groupId, lineGroupId: g.lineGroupId, ownerLineUserId: g.nominatedOwnerLineUserId, renewedAt: now,
-    })
-  }
+  // The detach cleared the nominee (option B): the card asks every live Member.
+  await postOwnerNeededCard(deps, { groupId: g.groupId, lineGroupId: g.lineGroupId, ownerLineUserId: null, renewedAt: now })
   return true
 }
 

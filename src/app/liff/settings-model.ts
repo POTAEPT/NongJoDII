@@ -54,3 +54,20 @@ export function toSettingsBody(form: SetupForm) {
 export function settingsFieldMessage(field: unknown): string | null {
   return stepForField(field)?.message ?? null
 }
+
+/** #81: a Member (not the Owner) edits only their own row. The same length checks as the
+ *  Owner's save, for that one row; null when it is fine. */
+export function validateMyRow(form: SetupForm, me: string): string | null {
+  const m = form.members.find((x) => x.lineUserId === me)
+  if (!m) return null
+  if (cleanNicknames(m.nicknames).some((n) => n.length > NICKNAME_MAX)) return MSG.nickname
+  if (m.role.trim().length > ROLE_MAX) return MSG.role
+  return null
+}
+
+/** #81: the body of /api/me/save for the requester's own row (the server takes the person
+ *  from the ID token, never from this body), or null when they have no row. */
+export function toMyProfileBody(form: SetupForm, me: string): { nicknames: string[]; role: string } | null {
+  const m = form.members.find((x) => x.lineUserId === me)
+  return m ? { nicknames: cleanNicknames(m.nicknames), role: m.role.trim() } : null
+}

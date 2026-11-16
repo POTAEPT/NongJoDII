@@ -10,7 +10,7 @@ import type { SettingsLoad } from '@/server/settings/types'
 import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
 import { Avatar, Button, Chip, Field, IconCheck, IconLock, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
-import { initialSettingsForm, settingsFieldMessage, toSettingsBody, validateSettings } from './settings-model'
+import { initialSettingsForm, settingsFieldMessage, toMyProfileBody, toSettingsBody, validateMyRow, validateSettings } from './settings-model'
 import { FEATURES, TimeSelect } from './setup-parts'
 import { addNickname, removeNickname, setNickname, setRole, type SetupForm } from './setup-model'
 
@@ -18,10 +18,12 @@ import { addNickname, removeNickname, setNickname, setRole, type SetupForm } fro
 // the group's settings (the confirmed Owner edits, everyone else looks) and a static plan
 // mock with no payment. The Owner can also Stop using (#11): after a confirm step the bot
 // leaves the group, and its data is deleted 7 days later unless the bot is invited back.
-// Changing the Owner (#30, #31) comes later.
+// Changing the Owner (#30, #31) comes later. #81: every Member sees everyone's nicknames and
+// role, and a Member who is not the Owner edits their own row (saved with /api/me/save).
 
 const ERR_403 = 'คุณไม่ได้อยู่ในกลุ่มนี้'
 const ERR_NOT_OWNER = 'เฉพาะเจ้าของบอทของกลุ่มนี้เท่านั้นที่แก้การตั้งค่าได้'
+const MEMBER_NOTE = 'เฉพาะเจ้าของบอทที่แก้การตั้งค่ากลุ่มได้ คุณแก้ชื่อเล่นและหน้าที่ของตัวเองได้'
 const ERR_404 = 'ไม่พบกลุ่มนี้'
 const ERR_400 = 'ข้อมูลไม่ถูกต้อง กรุณาตรวจอีกครั้ง'
 const ERR_LOAD = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
@@ -94,6 +96,29 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     }
   }
 
+  /** #81: a Member who is not the Owner saves only their own row. */
+  const saveMine = async () => {
+    if (!form || !load || load.kind !== 'ready' || inFlight.current) return
+    const me = load.data.requesterLineUserId
+    const problem = validateMyRow(form, me)
+    if (problem) return setError(problem)
+    const mine = toMyProfileBody(form, me)
+    if (!mine) return setError(ERR_403)
+    inFlight.current = true
+    setError(null)
+    setSaving(true)
+    try {
+      const { status, json } = await post('/api/me/save', { idToken, groupId: id, ...mine })
+      if (status === 200) setSaved(true)
+      else setError(errorCopy(status, json, ERR_SAVE))
+    } catch {
+      setError(ERR_SAVE)
+    } finally {
+      inFlight.current = false
+      setSaving(false)
+    }
+  }
+
   const stopUsing = async () => {
     if (inFlight.current) return
     inFlight.current = true
@@ -148,16 +173,22 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     setForm(next)
   }
   const editing = tab === 'settings' && data.canEdit
+  const me = data.requesterLineUserId
+  // #81: the Owner edits every row; anyone else only their own, shown first.
+  const editingMine = tab === 'settings' && !data.canEdit && form.members.some((m) => m.lineUserId === me)
+  const rows = data.canEdit ? form.members : [...form.members].sort((a, b) => Number(b.lineUserId === me) - Number(a.lineUserId === me))
 
   return (
     <Page
       title={data.groupName ? `${TITLE} · ${data.groupName}` : TITLE}
       onBack={close}
-      bottom={editing ? (
+      bottom={editing || editingMine ? (
         <div className="space-y-2">
           {error && <Notice>{error}</Notice>}
           {saved && <Notice tone="success">บันทึกแล้ว</Notice>}
-          <Button disabled={saving} onClick={() => void save()}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
+          <Button disabled={saving} onClick={() => void (editing ? save() : saveMine())}>
+            {saving ? 'กำลังบันทึก...' : editing ? 'บันทึก' : 'บันทึกข้อมูลของฉัน'}
+          </Button>
         </div>
       ) : <Button variant="outline" onClick={close}>กลับไปที่แชต</Button>}
     >
@@ -187,7 +218,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
               <p className="truncate font-semibold">{data.owner?.displayName ?? '-'}</p>
             </div>
           </section>
-          {!data.canEdit && <Notice tone="info">{ERR_NOT_OWNER} คุณดูได้อย่างเดียว</Notice>}
+          {!data.canEdit && <Notice tone="info">{editingMine ? MEMBER_NOTE : `${ERR_NOT_OWNER} คุณดูได้อย่างเดียว`}</Notice>}
 
           <Field label="กลุ่มนี้ทำเรื่องอะไร">
             <textarea
@@ -209,66 +240,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
             <p className="mt-1 text-xs text-ink-3">น้องจดดีจะเลือกแท็กจากชุดนี้ก่อนเวลาสรุปงาน แก้ได้ในหน้าตั้งค่า</p>
           </div>
 
-          <section className="space-y-2">
-            <span className="block text-sm font-semibold">{data.canEdit ? 'ชื่อเล่นและหน้าที่' : 'สมาชิก'}</span>
-            {form.members.map((m) => (
-              <div key={m.lineUserId} className="space-y-3 rounded-2xl border border-line bg-page p-4">
-                <div className="flex items-center gap-3">
-                  <Avatar name={m.displayName} id={m.lineUserId} size="md" />
-                  <span className="min-w-0 flex-1 truncate font-semibold">{m.displayName}</span>
-                  {!data.canEdit && m.role && <Chip>{m.role}</Chip>}
-                </div>
-                {data.canEdit && (
-                  <>
-                    <div className="flex flex-wrap gap-2">
-                      {m.nicknames.map((n, i) => (
-                        <span key={i} className="flex items-center rounded-full border border-line bg-subtle pl-3 pr-1">
-                          <input
-                            type="text"
-                            aria-label="ชื่อเล่น"
-                            placeholder="ชื่อเล่น"
-                            maxLength={NICKNAME_MAX}
-                            className="w-24 bg-transparent py-1 text-sm focus:outline-none"
-                            value={n}
-                            disabled={ro}
-                            onChange={(e) => set(setNickname(form, m.lineUserId, i, e.target.value))}
-                          />
-                          <button
-                            type="button"
-                            aria-label="ลบชื่อเล่น"
-                            className="flex h-7 w-7 items-center justify-center rounded-full text-ink-3"
-                            disabled={ro}
-                            onClick={() => set(removeNickname(form, m.lineUserId, i))}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong px-3 py-1 text-sm font-semibold text-primary"
-                        disabled={ro}
-                        onClick={() => set(addNickname(form, m.lineUserId))}
-                      >
-                        <IconPlus className="h-3.5 w-3.5" /> ชื่อเล่น
-                      </button>
-                    </div>
-                    <Field label="หน้าที่">
-                      <input
-                        type="text"
-                        maxLength={ROLE_MAX}
-                        className={inputClass}
-                        value={m.role}
-                        disabled={ro}
-                        onChange={(e) => set(setRole(form, m.lineUserId, e.target.value))}
-                      />
-                    </Field>
-                  </>
-                )}
-              </div>
-            ))}
-            <p className="text-xs text-ink-3">ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น ทุกหน้าจอแสดงชื่อ LINE</p>
-          </section>
+          <MemberRows rows={rows} me={me} canEdit={data.canEdit} saving={saving} onChange={set} form={form} />
 
           <section className="space-y-2">
             <span className="block text-sm font-semibold">ฟีเจอร์</span>
@@ -411,6 +383,94 @@ function Plans() {
       </section>
       <p className="text-center text-xs text-ink-3">หน้านี้เป็นตัวอย่างแพ็กเกจ ยังไม่มีการเก็บเงิน</p>
     </div>
+  )
+}
+
+
+/** #81: the "ชื่อเล่นและหน้าที่" list. Everyone sees every row's nicknames and role; the Owner
+ *  edits every row, anyone else only their own (marked "คุณ", shown first by the caller). */
+export function MemberRows({ rows, me, canEdit, saving, form, onChange }: {
+  rows: SetupForm['members']; me: string; canEdit: boolean; saving: boolean
+  form: SetupForm; onChange: (next: SetupForm) => void
+}) {
+  const set = onChange
+  const rowEditable = (lineUserId: string) => canEdit || lineUserId === me
+  return (
+          <section className="space-y-2">
+            <span className="block text-sm font-semibold">ชื่อเล่นและหน้าที่</span>
+            {rows.map((m) => {
+              const editable = rowEditable(m.lineUserId)
+              const rowRo = !editable || saving
+              return (
+              <div key={m.lineUserId} className={`space-y-3 rounded-2xl border bg-page p-4 ${editable && !canEdit ? 'border-primary' : 'border-line'}`}>
+                <div className="flex items-center gap-3">
+                  <Avatar name={m.displayName} id={m.lineUserId} size="md" />
+                  <span className="min-w-0 flex-1 truncate font-semibold">{m.displayName}</span>
+                  {m.lineUserId === me && <Chip>คุณ</Chip>}
+                  {!editable && m.role && <Chip>{m.role}</Chip>}
+                </div>
+                {!editable && (
+                  // Read-only row (#81): the nicknames as chips; nothing to press.
+                  <div className="flex flex-wrap gap-2">
+                    {m.nicknames.filter((n) => n.trim() !== '').length > 0
+                      ? m.nicknames.filter((n) => n.trim() !== '').map((n, i) => (
+                        <span key={i} className="rounded-full border border-line bg-subtle px-3 py-1 text-sm">{n}</span>
+                      ))
+                      : <span className="text-sm text-ink-3">ยังไม่มีชื่อเล่น</span>}
+                  </div>
+                )}
+                {editable && (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      {m.nicknames.map((n, i) => (
+                        <span key={i} className="flex items-center rounded-full border border-line bg-subtle pl-3 pr-1">
+                          <input
+                            type="text"
+                            aria-label="ชื่อเล่น"
+                            placeholder="ชื่อเล่น"
+                            maxLength={NICKNAME_MAX}
+                            className="w-24 bg-transparent py-1 text-sm focus:outline-none"
+                            value={n}
+                            disabled={rowRo}
+                            onChange={(e) => set(setNickname(form, m.lineUserId, i, e.target.value))}
+                          />
+                          <button
+                            type="button"
+                            aria-label="ลบชื่อเล่น"
+                            className="flex h-7 w-7 items-center justify-center rounded-full text-ink-3"
+                            disabled={rowRo}
+                            onClick={() => set(removeNickname(form, m.lineUserId, i))}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong px-3 py-1 text-sm font-semibold text-primary"
+                        disabled={rowRo}
+                        onClick={() => set(addNickname(form, m.lineUserId))}
+                      >
+                        <IconPlus className="h-3.5 w-3.5" /> ชื่อเล่น
+                      </button>
+                    </div>
+                    <Field label="หน้าที่">
+                      <input
+                        type="text"
+                        maxLength={ROLE_MAX}
+                        className={inputClass}
+                        value={m.role}
+                        disabled={rowRo}
+                        onChange={(e) => set(setRole(form, m.lineUserId, e.target.value))}
+                      />
+                    </Field>
+                  </>
+                )}
+              </div>
+              )
+            })}
+            <p className="text-xs text-ink-3">ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น ทุกหน้าจอแสดงชื่อ LINE</p>
+          </section>
   )
 }
 

@@ -23,7 +23,9 @@ export type TaskCountHint = 'one' | 'several' | 'many'
 export const TASK_COUNT_HINTS: Record<TaskCountHint, { expect: string; min: number }> = {
   one: { expect: '1', min: 1 },
   several: { expect: '2-3', min: 2 },
-  many: { expect: '4 or more', min: 4 },
+  // many asks for 3, not 4: live, Jev put a clean 3-Task chat (demo script 03) in 'many'
+  // (0.66), so a minimum of 4 would retry and flag a correct answer (decided 2026-11-17).
+  many: { expect: '4 or more', min: 3 },
 }
 
 /** The Jev call gets this long, so the text call(s) keep most of the route's 60 s. */

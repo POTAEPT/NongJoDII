@@ -194,15 +194,26 @@ describe('Summary task check (#157)', () => {
     expect(messagesText(t.replyMessages())).toBe('สรุปแชตล่าสุด\nทีมคุยเรื่องงานพิตช์\n\nไม่พบงานใหม่ในแชตช่วงนี้\nอาจมีงานเพิ่ม')
   })
 
-  it('"many" with 3 Tasks retries; a failed retry keeps the first answer and adds the line', async () => {
+  it('"many" with 3 Tasks is enough: no retry, no "อาจมีงานเพิ่ม" (Jev calls a 3-Task chat "many")', async () => {
     const t = await setup(CHAT_03)
     t.decisions.respond(jev(0.99, 'many'))
     t.answer([DEMO_APP, POSTER, ROOM])
+    await t.summarize()
+
+    expect(t.llm.requests).toHaveLength(1)
+    expect(t.store.tables.task_candidates).toHaveLength(3)
+    expect(messagesText(t.replyMessages())).not.toContain('อาจมีงานเพิ่ม')
+  })
+
+  it('"many" with 2 Tasks retries; a failed retry keeps the first answer and adds the line', async () => {
+    const t = await setup(CHAT_03)
+    t.decisions.respond(jev(0.99, 'many'))
+    t.answer([DEMO_APP, POSTER])
     t.llm.fail(new AdapterError('openrouter timeout'))
     await t.summarize()
 
     expect(t.llm.requests).toHaveLength(2)
-    expect(t.store.tables.task_candidates).toHaveLength(3)
+    expect(t.store.tables.task_candidates).toHaveLength(2)
     expect(messagesText(t.replyMessages())).toContain('อาจมีงานเพิ่ม')
     expect(messagesText(t.replyMessages())).not.toContain('สรุปแชตไม่สำเร็จ')
   })

@@ -105,14 +105,23 @@ describe('SupabaseStore.getOwnerChange', () => {
 })
 
 describe('SupabaseStore.detachExpiredTakeovers', () => {
-  it('is the one documented UPDATE: project_id and takeover_asked_at cleared together, returning the groups', async () => {
+  it('is one UPDATE: the documented detach plus a fresh Owner count with no nominee, never moved back', async () => {
     const { store, chains } = stubDb([ok([{ id: 'g2', line_group_id: 'C2', name: null }])])
     const cutoff = new Date('2026-11-05T03:00:00Z')
-    expect(await store.detachExpiredTakeovers(cutoff)).toEqual([{ groupId: 'g2', lineGroupId: 'C2', name: null }])
+    const now = new Date('2026-11-12T03:00:00Z')
+    expect(await store.detachExpiredTakeovers(cutoff, now)).toEqual([{ groupId: 'g2', lineGroupId: 'C2', name: null }])
+    expect(chains).toHaveLength(1)
     expect(chains[0]).toEqual([
       { method: 'from', args: ['groups'] },
-      { method: 'update', args: [{ project_id: null, takeover_asked_at: null }] },
+      {
+        method: 'update',
+        args: [{
+          project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: now.toISOString(),
+          nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null,
+        }],
+      },
       { method: 'lt', args: ['takeover_asked_at', cutoff.toISOString()] },
+      { method: 'or', args: [`owner_left_at.is.null,owner_left_at.lt.${now.toISOString()}`] },
       { method: 'select', args: ['id, line_group_id, name'] },
     ])
   })

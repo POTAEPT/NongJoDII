@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   calendarWeek, canCompare, countByStatus, dueLabel, filterTasks, initialScope, memberCards, nextDueTask,
-  progressPercent, scopeAfterRefresh, summarizeGroups, tasksDueOn, unownedTasks,
+  overviewGroups, progressPercent, scopeAfterRefresh, summarizeGroups, tasksDueOn, unownedTasks,
   type DashboardData, type DashboardGroup, type DashboardTask,
 } from '@/app/liff/dashboard-model'
 import { readLiffParams } from '@/app/liff/params'
@@ -26,8 +26,11 @@ const dii: DashboardGroup = {
     task('t5', 'not_assigned', null, '2026-11-13T17:00:00+07:00'),
   ],
   insight: null,
+  files: [],
+  access: 'overview',
+  ownerLineUserId: null,
 }
-const design: DashboardGroup = { groupId: 'g2', name: null, members: [], tasks: [task('t6', 'done', null, null)], insight: null }
+const design: DashboardGroup = { groupId: 'g2', name: null, members: [], tasks: [task('t6', 'done', null, null)], insight: null, files: [], access: 'overview', ownerLineUserId: null }
 
 describe('Dashboard model (#18)', () => {
   it('counts the three status labels and the progress percent', () => {
@@ -92,6 +95,15 @@ describe('Dashboard model (#18)', () => {
     expect(canCompare(pm)).toBe(true)
     expect(canCompare({ role: 'member', groups: [dii, design] })).toBe(false)
     expect(canCompare({ role: 'pm', groups: [dii] })).toBe(false)
+  })
+
+  it('compares only the groups seen whole: a "mine" group never counts (#90)', () => {
+    const mine = { ...design, access: 'mine' as const }
+    const data: DashboardData = { role: 'pm', groups: [dii, mine] }
+    expect(overviewGroups(data).map((g) => g.groupId)).toEqual([dii.groupId])
+    expect(canCompare(data)).toBe(false)
+    expect(initialScope(data, null)).toBe(dii.groupId)
+    expect(summarizeGroups([mine])[0].access).toBe('mine')
   })
 
   it('opens on the linked group when it is allowed, else the comparison or the first group', () => {

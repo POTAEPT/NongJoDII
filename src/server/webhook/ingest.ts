@@ -24,19 +24,32 @@ export type Job =
       kind: 'member_left'; groupId: string; lineGroupId: string
       released: { lineUserId: string; tasks: TaskRow[] }[]; eventId: string; ownerLeft: string | null
     }
-  | { kind: 'user_chat'; lineUserId: string; replyToken: string | null } // 1:1 follow or message (#12, Task 5)
+  | {
+      // #4: a file or image sent in a group. LINE sends only the ID and metadata; the job
+      // downloads the content. receivedAt: when the webhook request came in, which times
+      // the reply token (one minute) and the route's limit.
+      kind: 'group_file'; groupId: string; lineGroupId: string; storedMessageId: string; lineMessageId: string
+      messageType: 'file' | 'image'; fileName: string | null; fileSize: number | null
+      imageSet: { id: string; index: number | null; total: number | null } | null
+      senderLineUserId: string | null; sentAt: Date; receivedAt: Date; replyToken: string | null
+    }
+  // 1:1 follow or message (#12, Task 5). text: a text message's text, for the chat menu (#84); null otherwise.
+  | { kind: 'user_chat'; lineUserId: string; replyToken: string | null; text: string | null }
   | { kind: 'group_join'; groupId: string; lineGroupId: string; replyToken: string | null } // bot joined (#52)
   // #29: people who joined a group, already saved as Members at ingest. The Job answers with
   // the welcome reply and fetches their LINE names so pickers can tell new Members apart.
-  | { kind: 'member_joined'; groupId: string; lineGroupId: string; lineUserIds: string[]; replyToken: string | null }
+  // returning (#83): every joiner had left this group before, so the reply welcomes them back.
+  | { kind: 'member_joined'; groupId: string; lineGroupId: string; lineUserIds: string[]; replyToken: string | null; returning: boolean }
 
 /** Stops at the first event that throws and returns the jobs collected before it,
  *  plus that error. Never throws itself. */
-export async function ingestEvents(deps: Deps, events: LineEvent[]): Promise<{ jobs: Job[]; error: unknown | null }> {
+export async function ingestEvents(
+  deps: Deps, events: LineEvent[], receivedAt: Date = deps.now(),
+): Promise<{ jobs: Job[]; error: unknown | null }> {
   const jobs: Job[] = []
   try {
     for (const event of events) {
-      const job = await ingestEvent(deps, event)
+      const job = await ingestEvent(deps, event, receivedAt)
       if (job) jobs.push(job)
     }
     return { jobs, error: null }
@@ -45,7 +58,7 @@ export async function ingestEvents(deps: Deps, events: LineEvent[]): Promise<{ j
   }
 }
 
-async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
+async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Promise<Job | null> {
   const { store } = deps
   const { source, message } = event
   const eventTimestamp = new Date(event.timestamp)
@@ -71,9 +84,21 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
       imageSetId: imageSet?.id ?? null, imageSetIndex: imageSet?.index ?? null, imageSetTotal: imageSet?.total ?? null,
       mentions: text === null ? null : readMentions((message as { mention?: unknown }).mention),
     })
-    // Gate on the message row, not the ledger row: a half-failed first delivery is
-    // retried, and a redelivery never runs twice.
+    // Gate on the message row, not the ledger row: a delivery that failed before the row
+    // was stored is retried, and a redelivery never runs twice. A file or photo save (#4)
+    // runs after the 200 answer, so a redelivery never retries a save that failed then: the
+    // save posts its own "couldn't save" card instead (files/save.ts).
     if (!inserted || storedMessageId === null) return null
+    const file = readFileMessage(message)
+    if (file) {
+      return {
+        kind: 'group_file', groupId: group.id, lineGroupId: source.groupId, storedMessageId, lineMessageId: message.id,
+        ...file, imageSet: imageSet && typeof imageSet.id === 'string'
+          ? { id: imageSet.id, index: intOrNull(imageSet.index), total: intOrNull(imageSet.total) }
+          : null,
+        senderLineUserId: userId, sentAt: eventTimestamp, receivedAt, replyToken: event.replyToken ?? null,
+      }
+    }
     return {
       kind: 'group_message', groupId: group.id, lineGroupId: source.groupId, messageId: message.id,
       storedMessageId, sentAt: eventTimestamp,
@@ -104,11 +129,14 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   if (source.type === 'group' && event.type === 'join') {
     // The group row first (idempotent), the ledger claim last, as for a postback: a
     // redelivered join answers once.
-    let group = await store.ensureGroup(source.groupId)
+    const found = await store.ensureGroup(source.groupId)
     // #11 re-invite. Data already past its delete date goes now, whatever the purge's
     // timing, and the group starts fresh; inside the 7 days the mark is cleared (and,
     // with no confirmed Owner, the 7-day Owner count starts again). Both idempotent.
-    if ((await store.purgeGroup(group.id, eventTimestamp)).purged) group = await store.ensureGroup(source.groupId)
+    await store.purgeGroup(found.id, eventTimestamp)
+    // Looked up again whatever the purge answered: the daily purge may have deleted the row
+    // between the two calls (purged: false here), and the old ID would then point nowhere.
+    const group = await store.ensureGroup(source.groupId)
     await store.markBotJoined({ groupId: group.id, at: eventTimestamp })
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'join', lineGroupId: source.groupId,
@@ -177,9 +205,12 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     // A redelivered join cannot undo a later leave: it only clears a left_at older than itself.
     const group = await store.ensureGroup(source.groupId)
     const lineUserIds: string[] = []
+    let returning = true
     for (const m of event.joined?.members ?? []) {
       if (m.type !== 'user' || typeof m.userId !== 'string') continue
       await store.upsertLineUser({ lineUserId: m.userId, displayName: null })
+      // Read before the join is written: a person who left this group before is coming back.
+      if ((await store.getMembership(group.id, m.userId)) !== 'left') returning = false
       await store.markMemberJoined({ groupId: group.id, lineUserId: m.userId, at: eventTimestamp })
       lineUserIds.push(m.userId)
     }
@@ -189,6 +220,7 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
     })
     return inserted && lineUserIds.length > 0 ? {
       kind: 'member_joined', groupId: group.id, lineGroupId: source.groupId, lineUserIds, replyToken: event.replyToken ?? null,
+      returning,
     } : null
   }
 
@@ -198,11 +230,34 @@ async function ingestEvent(deps: Deps, event: LineEvent): Promise<Job | null> {
   })
   // 1:1 follow or message. No messages row: messages.group_id is NOT NULL.
   if (inserted && source.type === 'user' && (event.type === 'follow' || event.type === 'message')) {
-    return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null }
+    const text = event.type === 'message' && message?.type === 'text' && typeof message.text === 'string' ? message.text : null
+    return { kind: 'user_chat', lineUserId: source.userId, replyToken: event.replyToken ?? null, text }
   }
   // Every other event (room...) is only recorded. Join and leave (#52, #11), unsend (#24),
   // memberLeft and memberJoined (#29) are handled above.
   return null
+}
+
+/** #4: a file message (fileName, fileSize) or an image whose content LINE holds. An image
+ *  with contentProvider.type 'external' has no content to download (only bots send those). */
+function readFileMessage(message: { type: string; [k: string]: unknown }): { messageType: 'file' | 'image'; fileName: string | null; fileSize: number | null } | null {
+  if (message.type === 'file') {
+    return {
+      messageType: 'file',
+      fileName: typeof message.fileName === 'string' && message.fileName !== '' ? message.fileName : null,
+      fileSize: intOrNull(message.fileSize),
+    }
+  }
+  if (message.type === 'image') {
+    const provider = (message.contentProvider as { type?: unknown } | undefined)?.type
+    if (provider === 'external') return null
+    return { messageType: 'image', fileName: null, fileSize: null }
+  }
+  return null
+}
+
+function intOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null
 }
 
 /** Keeps LINE's mention entries in the stored shape. The body passed the signature

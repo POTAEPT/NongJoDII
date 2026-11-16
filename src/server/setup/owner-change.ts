@@ -53,6 +53,8 @@ function answer(outcome: CompleteOwnerChangeOutcome): ApiResult {
 /** Step 2 for one main group. On 'changed' it calls onMainGroupOwnerChanged. The caller
  *  defers the Drive run. Throws on a store failure. */
 export async function applyOwnerChange(deps: Deps, groupId: string, lineUserId: string, defer: Defer): Promise<CompleteOwnerChangeOutcome> {
+  // #30 part B: a Sub group detached for having no Owner has no Project.
+  if ((await deps.store.getGroupById(groupId))?.projectId === null) return confirmStandaloneOwner(deps, groupId, lineUserId)
   const { outcome } = await deps.store.completeOwnerChange(groupId, lineUserId, deps.now())
   log('owner_change', { groupId, outcome })
   if (outcome === 'changed') {
@@ -60,6 +62,34 @@ export async function applyOwnerChange(deps: Deps, groupId: string, lineUserId: 
     if (projectId !== null) await onMainGroupOwnerChanged(deps, { projectId, groupId, ownerLineUserId: lineUserId }, defer)
   }
   return outcome
+}
+
+/** #30 part B: a group with no Project whose Owner left (a Sub group that detached after 7
+ *  days with no Owner). The same two steps as for a main group: the presser already holds
+ *  the nomination (claimOwnerChange), and the change waits for their Drive connection. It
+ *  then runs through confirm_group_owner, the setup confirm, which creates the group's own
+ *  Project with it as the main group and confirms the Owner (groups_owner_rules clears
+ *  owner_left_at); a repeat answers already_confirmed. The old Project's Drive connection
+ *  is not this group's any more, so there is nothing to retire. */
+async function confirmStandaloneOwner(deps: Deps, groupId: string, lineUserId: string): Promise<CompleteOwnerChangeOutcome> {
+  const account = await deps.store.findGoogleAccountByLineUser(lineUserId)
+  const now = deps.now()
+  if (account?.tokenStatus !== 'valid') {
+    const g = await deps.store.getGroupById(groupId)
+    if (g && g.ownerConfirmedAt !== null && g.nominatedOwnerLineUserId === lineUserId) return 'already_owner'
+    return g?.nominatedOwnerLineUserId === lineUserId ? 'needs_drive' : 'not_nominee'
+  }
+  const { outcome } = await deps.store.confirmGroupOwner(groupId, lineUserId, now)
+  log('owner_change', { groupId, outcome, standalone: true })
+  switch (outcome) {
+    case 'confirmed':
+      await deps.store.answerOwnerNeededPrompt(groupId, lineUserId, now)
+      return 'changed'
+    case 'already_confirmed': return 'already_owner'
+    case 'not_nominee': return 'not_nominee'
+    case 'not_member': return 'not_member'
+    case 'closed': return 'not_pending'
+  }
 }
 
 /** The Google callback, after the sign-in is stored: finishes every Owner change this person
@@ -72,18 +102,21 @@ export async function completePendingOwnerChanges(deps: Deps, lineUserId: string
 }
 
 /** The main group's Owner changed (complete_owner_change ran). That transaction already
- *  started the take-over question for every attached Sub group (takeover_asked_at set, Sub
- *  groups paused, still naming their old Owner). This posts the question (#31): one card in
- *  the main group that opens the LIFF take-over view, after the response. Without it the
- *  Sub groups would wait unasked and the 7-day rule would detach them. A failed push is
- *  logged; the question still waits in the LIFF view. */
+ *  started the take-over question for the Sub groups still waiting or not running on the new
+ *  Owner (takeover_asked_at set, paused, still naming their old Owner). This posts the
+ *  question (#31): one card in the main group that opens the LIFF take-over view, after the
+ *  response. Without it the Sub groups would wait unasked and the 7-day rule would detach
+ *  them. A push skipped near the quota or failed is logged, and the tick posts it later
+ *  (owner-change/takeover-retry.ts); the question also waits in the LIFF view. */
 export async function onMainGroupOwnerChanged(
   deps: Deps, change: { projectId: string; groupId: string; ownerLineUserId: string }, defer: Defer,
 ): Promise<void> {
   log('main_group_owner_changed', { projectId: change.projectId, groupId: change.groupId })
   defer(async () => {
     try {
-      await askTakeoverQuestion(deps, { projectId: change.projectId, newOwnerLineUserId: change.ownerLineUserId })
+      const { card } = await askTakeoverQuestion(deps, { projectId: change.projectId, newOwnerLineUserId: change.ownerLineUserId })
+      // Not sent (quota, LINE refused or failed): the tick's takeoverCardRetryJob posts it.
+      if (card === 'skipped_quota' || card === 'failed') log('owner_takeover_card_not_sent', { projectId: change.projectId, card })
     } catch (err) {
       logError('owner_takeover_card_failed', { projectId: change.projectId }, err)
     }

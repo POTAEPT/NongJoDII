@@ -23,7 +23,9 @@ const ERR_404 = 'ไม่พบกลุ่มนี้'
 const ERR_400 = 'ข้อมูลไม่ถูกต้อง กรุณาตรวจอีกครั้ง'
 const ERR_LOAD = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
 const ERR_SAVE = 'บันทึกไม่สำเร็จ กรุณาลองใหม่'
-const ERR_STOP = 'น้องจดดียังออกจากกลุ่มไม่ได้ กรุณาลองใหม่'
+// 502: LINE failed, or the bot already left but the leave was not saved yet. Trying again
+// finishes it in both cases (LINE then answers 404 and the leave is saved).
+const ERR_STOP = 'ยังบันทึกการเลิกใช้ไม่สำเร็จ น้องจดดีอาจออกจากกลุ่มไปแล้ว กรุณากดยืนยันอีกครั้งเพื่อให้เสร็จ'
 
 function errorCopy(status: number, json: unknown, fallback: string): string {
   if (status === 401) return ERR_401
@@ -332,7 +334,7 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
                   <button
                     type="button"
                     className="flex min-h-12 w-full items-center justify-center rounded-xl bg-danger px-4 text-base font-semibold text-white disabled:opacity-50"
-                    disabled={stop.kind === 'leaving'}
+                    disabled={stop.kind === 'leaving' || saving}
                     onClick={() => void stopUsing()}
                   >
                     {stop.kind === 'leaving' ? 'กำลังออกจากกลุ่ม...' : 'ยืนยัน เลิกใช้'}

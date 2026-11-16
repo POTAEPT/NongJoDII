@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { liffUrl } from '@/server/liff-links'
 import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { ERR_401, post } from './api'
@@ -8,7 +9,7 @@ import type { LiffViewProps } from './liff-sdk'
 import { FEATURES, TimeSelect } from './setup-parts'
 import {
   addNickname, initialSetupForm, removeNickname, setNickname, setRole, SETUP_STEPS, stepForField, toSubmitBody,
-  validateAll, validateStep, type SetupForm,
+  submitView, validateAll, validateStep, type SetupForm,
 } from './setup-model'
 import { Avatar, Button, Field, IconCheck, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
 
@@ -46,13 +47,15 @@ const STEP_TITLES = [
 
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SetupLoad }
 
-export function SetupView({ liff, idToken, id }: LiffViewProps) {
+export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
   const [form, setForm] = useState<SetupForm | null>(null)
   const [step, setStep] = useState(1)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [done, setDone] = useState<SetupSubmitResult | null>(null)
+  /** #30: the submit answered needs_drive (a claim waiting for Drive) or owner_needed. */
+  const [ownerFlow, setOwnerFlow] = useState<'needs_drive' | 'owner_needed' | null>(null)
   /** The nominee a resend reported: the saved one, which may differ from this page's form. */
   const [resentOwnerName, setResentOwnerName] = useState<string | null>(null)
   const started = useRef(false)
@@ -90,7 +93,9 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
     setSubmitting(true)
     try {
       const { status, json } = await post('/api/setup/submit', { idToken, groupId: id, ...toSubmitBody(form) })
-      if (status === 200) setDone(json as SetupSubmitResult)
+      const view = submitView(status, json)
+      if (view === 'needs_drive' || view === 'owner_needed') setOwnerFlow(view)
+      else if (view === 'done') setDone(json as SetupSubmitResult)
       else {
         // A 400 names the refused field: its message goes on the step that owns it.
         const problem = status === 400 ? stepForField((json as { field?: unknown } | null)?.field) : null
@@ -137,6 +142,41 @@ export function SetupView({ liff, idToken, id }: LiffViewProps) {
     )
   }
   const { data } = load
+  // #30: the Owner of this group left (for example a Sub group that detached): the Owner role
+  // goes through the Owner page, which asks for Google Drive before it takes effect.
+  if (ownerFlow === 'needs_drive' && id) {
+    // Never the done screen: the role waits for the person's Google Drive.
+    return (
+      <Page title={TITLE} onBack={close}
+        bottom={
+          <div className="space-y-2">
+            <a className="flex min-h-12 w-full items-center justify-center rounded-xl bg-primary px-4 text-base font-semibold text-white"
+              href={liffUrl(liffId, 'google')}>เชื่อม Google Drive</a>
+            <a className="flex min-h-12 w-full items-center justify-center rounded-xl border border-line px-4 text-base font-semibold text-primary"
+              href={liffUrl(liffId, 'owner', id)}>ไปหน้าเจ้าของบอท</a>
+          </div>
+        }>
+        <div className="pt-6 text-center">
+          <h2 className="text-[22px] font-semibold leading-snug">อีกขั้นเดียว เชื่อม Google Drive ของคุณ</h2>
+          <p className="mt-2 text-sm text-ink-2">คุณจะเป็นเจ้าของบอทของกลุ่มนี้เมื่อเชื่อม Google Drive ของตัวเองแล้ว ยังไม่ได้บันทึกการตั้งค่าในฟอร์มนี้ แก้ได้ในหน้าตั้งค่าเมื่อเป็นเจ้าของบอทแล้ว</p>
+        </div>
+      </Page>
+    )
+  }
+  if ((data.ownerNeeded || ownerFlow === 'owner_needed') && id) {
+    return (
+      <Page title={TITLE} onBack={close}
+        bottom={
+          <a className="flex min-h-12 w-full items-center justify-center rounded-xl bg-primary px-4 text-base font-semibold text-white"
+            href={liffUrl(liffId, 'owner', id)}>เป็นเจ้าของบอทแทน</a>
+        }>
+        <div className="pt-6 text-center">
+          <h2 className="text-[22px] font-semibold leading-snug">กลุ่มนี้ยังไม่มีเจ้าของบอท</h2>
+          <p className="mt-2 text-sm text-ink-2">เจ้าของบอทคนใหม่ยืนยันด้วย LINE แล้วเชื่อม Google Drive ของตัวเอง จากนั้นแก้การตั้งค่าได้ในหน้าตั้งค่า</p>
+        </div>
+      </Page>
+    )
+  }
   if (data.state === 'confirmed' || data.state === 'in_project') {
     return <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="ตั้งค่าเสร็จแล้ว" message={ERR_409} onClose={close} />
   }

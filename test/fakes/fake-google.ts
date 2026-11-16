@@ -1,5 +1,5 @@
 import { AdapterError, GoogleTokenRevoked } from '@/server/log'
-import type { DriveFolderState, GooglePort, GoogleTokenResult } from '@/server/ports'
+import type { DriveFolderState, DriveUpload, GooglePort, GoogleTokenResult } from '@/server/ports'
 
 /** createdWith: the access token that made it, so a test can tell which Google account
  *  a folder belongs to ('at:' + that account's refresh token). */
@@ -120,6 +120,42 @@ export class FakeGoogle implements GooglePort {
     if (this.shareError) throw this.shareError
     if (!this.folders.has(fileId)) throw new AdapterError('google drive share 404')
     this.shares.push({ fileId, role: 'reader', type: 'anyone' })
+  }
+
+  // ---- #4 file uploads ----
+  /** Files uploaded to Drive, in order. createdWith: the access token used. */
+  uploads: (DriveUpload & { id: string; webViewLink: string; createdWith: string })[] = []
+  /** How long an upload takes on `clock`, on top of callMs; 0 = instant. An upload longer
+   *  than its timeout rejects at the timeout, as the real adapter does. */
+  uploadMs = 0
+  uploadError: Error | null = null
+  uploadTimeouts: number[] = []
+
+  async uploadFile(accessToken: string, f: DriveUpload, opts: { timeoutMs: number }): Promise<{ id: string; webViewLink: string }> {
+    this.uploadTimeouts.push(opts.timeoutMs)
+    if (this.uploadMs > opts.timeoutMs) {
+      this.driveCalls.push(`upload:${f.name}`)
+      this.clock?.advance(opts.timeoutMs)
+      throw new AdapterError('google timeout')
+    }
+    await this.drive(`upload:${f.name}`, accessToken)
+    if (this.uploadMs > 0) this.clock?.advance(this.uploadMs)
+    if (this.uploadError) throw this.uploadError
+    if (!this.folders.has(f.parentId)) throw new AdapterError('google drive upload 404')
+    const id = `file-${++this.seq}`
+    const webViewLink = `https://drive.google.com/file/d/${id}/view`
+    this.uploads.push({ ...f, id, webViewLink, createdWith: accessToken })
+    return { id, webViewLink }
+  }
+
+  /** Folders checked with folderShared, in order. */
+  /** When set, folderShared rejects with it. */
+  permsError: Error | null = null
+
+  async folderShared(accessToken: string, folderId: string): Promise<boolean> {
+    await this.drive(`perms:${folderId}`, accessToken)
+    if (this.permsError) throw this.permsError
+    return this.shares.some((x) => x.fileId === folderId)
   }
 
   // ---- test helpers ----

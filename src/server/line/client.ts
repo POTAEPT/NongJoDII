@@ -1,8 +1,10 @@
-import { AdapterError, LinePushRejected } from '../log'
+import { AdapterError, ContentTooLarge, LinePushRejected } from '../log'
 import type { LinePort, LinePushResult } from '../ports'
 import type { LineMessage } from './types'
 
 const API = 'https://api.line.me'
+/** Content downloads have their own host (Messaging API reference, "Get content"). */
+const DATA_API = 'https://api-data.line.me'
 
 /** LINE Messaging API (reply, push, quota, group member profile, group summary, leave group) and LINE Login ID token verify.
  *  Errors carry the HTTP status only, never the response body. */
@@ -10,6 +12,7 @@ export class LineHttpClient implements LinePort {
   private readonly token: string
   private readonly loginChannelId: string
   private readonly fetchImpl: typeof fetch
+  private readonly rawFetch: typeof fetch
   private readonly timeoutMs: number
 
   constructor(opts: { channelAccessToken: string; loginChannelId: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
@@ -17,6 +20,7 @@ export class LineHttpClient implements LinePort {
     this.loginChannelId = opts.loginChannelId
     // Resolve the global at call time, so a fetch replaced after construction is used.
     const fetchImpl = opts.fetchImpl ?? ((...args) => fetch(...args))
+    this.rawFetch = fetchImpl
     // Every LINE call is cut at 10 s, so a slow LINE answer cannot use up the webhook
     // route's 60 s budget (a Summary's model call takes up to 45 s of it).
     this.timeoutMs = opts.timeoutMs ?? 10_000
@@ -106,8 +110,40 @@ export class LineHttpClient implements LinePort {
     return { limit: q.value, used: u.totalUsage }
   }
 
-  /** POST /v2/bot/group/{groupId}/leave (LINE answers 200, 400 or 404). 404: the bot is
-   *  not in the group. */
+  /** #4. The caller's timeout covers the body read too (the content can be large), so a
+   *  slow transfer stops by the caller's deadline. 404: the content is gone (LINE keeps it
+   *  only for a while). Any other non-200 (202 while a video is still being prepared, a 5xx)
+   *  throws. */
+  async getMessageContent(
+    messageId: string, opts: { timeoutMs: number; maxBytes: number },
+  ): Promise<{ data: Uint8Array; contentType: string | null } | null> {
+    const signal = AbortSignal.timeout(Math.max(1, opts.timeoutMs))
+    try {
+      const res = await this.rawFetch(`${DATA_API}/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
+        method: 'GET', headers: { Authorization: `Bearer ${this.token}` }, signal,
+      })
+      if (res.status === 404) return null
+      if (res.status !== 200) throw new AdapterError(`line content ${res.status}`)
+      // An image message carries no fileSize, so the cap is checked here: first by the
+      // announced length, then while reading, so an oversize body is never held whole.
+      const announced = Number(res.headers.get('content-length'))
+      if (Number.isFinite(announced) && announced > opts.maxBytes) {
+        await res.body?.cancel().catch(() => {})
+        throw new ContentTooLarge()
+      }
+      const data = await readCapped(res, opts.maxBytes)
+      return { data, contentType: res.headers.get('content-type') }
+    } catch (err) {
+      const name = (err as { name?: unknown } | null)?.name
+      if (name === 'TimeoutError' || name === 'AbortError') throw new AdapterError('line timeout')
+      throw err
+    }
+  }
+
+  /** POST /v2/bot/group/{groupId}/leave. LINE's reference (line-openapi messaging-api.yml)
+   *  lists 200, 400 (Bad Request) and 404 (Not Found); it does not say 400 can mean the bot
+   *  already left. So only 404 answers 'not_in_group' (the bot is not in the group); 400
+   *  and any other status throw, as a failure the caller may retry. */
   async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
     const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/leave`
     const res = await this.fetchImpl(url, { method: 'POST', headers: { Authorization: `Bearer ${this.token}` } })
@@ -130,4 +166,29 @@ export class LineHttpClient implements LinePort {
     if (typeof body.sub !== 'string' || body.sub === '') return null
     return { lineUserId: body.sub, displayName: typeof body.name === 'string' ? body.name : null }
   }
+}
+
+/** The response body, stopping with ContentTooLarge once it passes `maxBytes`. */
+async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!res.body) return new Uint8Array()
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {})
+      throw new ContentTooLarge()
+    }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const c of chunks) {
+    out.set(c, at)
+    at += c.byteLength
+  }
+  return out
 }

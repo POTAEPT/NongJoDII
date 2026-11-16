@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } fr
 import { finishGoogleSignIn } from '@/server/google/callback'
 import {
   DRIVE_CALL_MAX_MS, DRIVE_HARD_STOP_MS, driveDeadline, driveSetupJob, DriveTimeUp, ensureDriveFolders,
-  ensureGroupFolder, FINISH_AFTER_MS, FINISH_WITHIN_MS, MAIN_GROUP_FOLDER, ROOT_FOLDER,
+  ensureGroupFolder, FINISH_AFTER_MS, MAIN_GROUP_FOLDER, ROOT_FOLDER,
 } from '@/server/google/drive-folders'
 import { startGoogleSignIn } from '@/server/google/start'
-import { AdapterError } from '@/server/log'
+import { AdapterError, DriveShareRefused } from '@/server/log'
+import { SHARE_REFUSED_TEXT } from '@/server/google/share-refused'
 import { open, seal } from '@/server/crypto/secretbox'
 import { confirmOwner } from '@/server/setup/confirm'
 import { submitSetup } from '@/server/setup/submit'
@@ -726,20 +727,23 @@ describe('tick finisher: the 15-minute tick finishes what a request could not', 
     expect(h.store.tables.drive_connections).toHaveLength(1)
   })
 
-  it('stops retrying 2 hours after the latest sign-in or confirm, so a share that keeps failing leaves about 8 more empty folders', async () => {
+  it('a share refused by a Workspace policy keeps the Project folder, posts one Owner card, and later runs make no more folders', async () => {
     const h = setup()
     const { projectId } = await seedProject(h)
-    // A Google Workspace policy that blocks link sharing: each run makes a Project folder it cannot share.
-    h.google.shareError = new AdapterError('google drive share 403')
+    // A Google Workspace policy that blocks link sharing: Google answers the share with 403.
+    h.google.shareError = new DriveShareRefused()
     await signIn(h)
     expect(h.google.foldersNamed('ทีมหลัก')).toHaveLength(1)
+    // Stored though unshared, so nothing is orphaned and the layout finishes.
+    expect(projectRow(h, projectId).driveProjectFolderId).toBe(h.google.foldersNamed('ทีมหลัก')[0].id)
+    expect(driveFolderIds(h)).toEqual(storedFolderIds(h))
+    expect(h.store.tables.drive_connections).toHaveLength(1)
     for (let k = 1; k <= 16; k++) await tick(h, after(k * 15 * MIN), [driveSetupJob])
-    // One more per tick while the sign-in was 2 minutes to 2 hours old: 15, 30, ... 120 minutes.
-    expect(FINISH_WITHIN_MS / (15 * MIN)).toBe(8)
-    expect(h.google.foldersNamed('ทีมหลัก')).toHaveLength(1 + 8)
-    expect(h.google.callLog.filter((c) => c.at > after(FINISH_WITHIN_MS).getTime())).toEqual([])
-    expect(projectRow(h, projectId).driveProjectFolderId ?? null).toBeNull()
-    expect(h.store.tables.drive_connections).toHaveLength(0)
+    expect(h.google.foldersNamed('ทีมหลัก')).toHaveLength(1)
+    // One Owner card in the main group.
+    const cards = h.line.pushes.filter((p) => JSON.stringify(p.messages).includes(SHARE_REFUSED_TEXT.title))
+    expect(cards).toHaveLength(1)
+    expect(cards[0].to).toBe(MAIN_LINE_GROUP)
   })
 
   it('leaves alone a Project whose Owner has no Google account, or whose latest one is revoked', async () => {

@@ -44,3 +44,23 @@ export function logError(event: string, fields: Fields, err: unknown): void {
   const error = err instanceof AdapterError ? err.message : err instanceof Error ? err.name : 'unknown'
   console.error(JSON.stringify({ event, ...fields, error }))
 }
+
+/** Google refused the "anyone with the link" share with an explicit sharing-policy reason
+ *  (google/client.ts SHARE_POLICY_REASONS): a Google Workspace policy blocks link sharing,
+ *  so retrying cannot help until an admin changes it (#4). */
+export class DriveShareRefused extends AdapterError {
+  name = 'DriveShareRefused'
+
+  constructor(status: number = 403) {
+    super(`google drive share ${status}`)
+  }
+}
+
+/** LINE content bigger than the caller's byte cap (#4): stopped before it was all read. */
+export class ContentTooLarge extends AdapterError {
+  name = 'ContentTooLarge'
+
+  constructor() {
+    super('line content too large')
+  }
+}

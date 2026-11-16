@@ -76,7 +76,9 @@ function shared(): Shared {
 export function getDemo(): Demo {
   const s = shared()
   // A demo built by older code (kept on globalThis across a hot reload) has another shape.
-  if (!s.demo || !Array.isArray(s.demo.world.groups) || !Array.isArray(s.demo.llm.calls)) s.demo = buildDemo(s, {})
+  if (!s.demo || !Array.isArray(s.demo.world.groups) || !Array.isArray(s.demo.llm.calls) || !s.demo.deps.decisions) {
+    s.demo = buildDemo(s, {})
+  }
   return s.demo
 }
 

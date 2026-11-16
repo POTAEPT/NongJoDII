@@ -12,6 +12,7 @@ import { setupCard } from '../setup/card'
 import { isSetupOpen, setupState } from '../setup/rules'
 import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
+import { summaryFailedText, summaryFailure } from './failure'
 
 export type SummaryJob = { groupId: string; lineGroupId: string; replyToken: string | null; requesterLineUserId: string | null }
 
@@ -23,7 +24,6 @@ const DETAILS_MAX = 2000
 const REPLY_FEATURE_OFF = 'ฟีเจอร์สรุปแชตปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า'
 const REPLY_NO_OWNER = 'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชตไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน'
 const REPLY_NO_MESSAGES = 'ยังไม่มีข้อความให้สรุป'
-const REPLY_FAILED = 'ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง'
 
 /** "NongJoDII summarize": summarizes recent chat into a Summary with Task candidates
  *  (proposals only; a Task exists only after confirm) and replies in the group that asked. */
@@ -36,8 +36,9 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
     await summarize(deps, job, replyToken, sent)
   } catch (err) {
     // A store failure outside the AI step (group, usage, messages, members, createSummary) must still answer the group.
-    logError('summary_failed', { groupId }, err)
-    if (!sent.value) await replyText(deps, replyToken, groupId, REPLY_FAILED, sent)
+    const reason = summaryFailure(err, false)
+    logError('summary_failed', { groupId, reason }, err)
+    if (!sent.value) await replyText(deps, replyToken, groupId, summaryFailedText(reason, deps.now()), sent)
   }
 }
 
@@ -96,8 +97,10 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
       return reply(deps, replyToken, groupId, [capMessage(await getFairUseStatus(store, ownerLineUserId, deps.now()))], sent)
     }
     // Any error: AdapterError, a raw TimeoutError/SyntaxError from the client, or ModelOutputError.
-    logError('summary_ai_failed', { groupId }, err)
-    return replyText(deps, replyToken, groupId, REPLY_FAILED, sent)
+    // The reply says why, with a code and the time to find this log line (summary/failure.ts).
+    const reason = summaryFailure(err, true)
+    logError('summary_ai_failed', { groupId, reason }, err)
+    return replyText(deps, replyToken, groupId, summaryFailedText(reason, deps.now()), sent)
   }
 
   // H1: the model writes {mN}; code swaps in LINE names, so a nickname never reaches a screen.

@@ -1,4 +1,5 @@
-import { badge, bubble, button, buttonRow, caption, column, header, postback, statusChange, text, title } from '../line/flex-ui'
+import { badge, bubble, button, buttonRow, caption, column, header, postback, statusChange, text, title, uri } from '../line/flex-ui'
+import { liffUrl } from '../liff-links'
 import type { LineMessage } from '../line/types'
 import type { ProgressPromptRow, ProgressTarget, TaskRow } from '../ports'
 import { bangkokParts, formatThaiShort } from '../time/bangkok'
@@ -28,6 +29,11 @@ export const PROGRESS_TEXT = {
   closed: (t: string) => `ปิดงาน “${t}” แล้ว`,
   taken: (t: string) => `รับงาน “${t}” แล้ว`,
   confirmedBy: (name: string, at: string) => `ยืนยันโดย ${name} · ${at}`,
+  alreadyUpdatedTitle: 'อัปเดตไปแล้ว ยังไม่ได้ยกเลิก',
+  alreadyUpdated: (t: string, status: ProgressTarget) => `อัปเดต “${t}” เป็น${status === 'done' ? 'เสร็จ' : 'กำลังทำ'}ไปแล้ว`,
+  alreadyUpdatedHint: 'น้องจดดีปิดรายการนี้แล้ว แต่ไม่ได้ย้อนสถานะงานให้ ถ้าอัปเดตผิด กดแก้ไขงานได้เลย',
+  editTask: 'แก้ไขงาน',
+  editTaskNamed: (t: string) => `แก้ไข “${t}”`,
 } as const
 
 export function hhmm(d: Date): string {
@@ -102,6 +108,28 @@ export function resultCard(p: {
       header('success', headline),
       ...(status === 'in_process' ? [{ type: 'box', layout: 'horizontal', contents: [badge('in_process'), { type: 'filler' }] }] : []),
       caption(`${who}${PROGRESS_TEXT.confirmedBy(confirmedByName, hhmm(at))}`),
+    ]),
+  }
+}
+
+/** #87: "ไม่ใช่การอัปเดตงาน" pressed after a Task from the same message was already updated.
+ *  Nothing is undone: the card says what was updated and opens each Task's LIFF page to fix it. */
+export function alreadyUpdatedCard(p: { liffId: string; updates: { task: TaskRow; status: ProgressTarget }[] }): LineMessage {
+  const { liffId, updates } = p
+  const lines = updates.map((u) => PROGRESS_TEXT.alreadyUpdated(u.task.title, u.status))
+  const one = updates.length === 1
+  return {
+    type: 'flex', altText: lines.join('\n'),
+    contents: bubble([
+      header('warning', PROGRESS_TEXT.alreadyUpdatedTitle),
+      // One row per updated Task: its name and the status it now has.
+      column(updates.map((u) => ({
+        type: 'box', layout: 'horizontal', spacing: 'sm', alignItems: 'center',
+        contents: [text(u.task.title, { weight: 'bold', size: 'md', flex: 1 }), badge(u.status)],
+      }))),
+      caption(PROGRESS_TEXT.alreadyUpdatedHint),
+      column(updates.map((u) => button(one ? 'primary' : 'secondary',
+        uri(clip(one ? PROGRESS_TEXT.editTask : PROGRESS_TEXT.editTaskNamed(u.task.title)), liffUrl(liffId, 'task', u.task.id))))),
     ]),
   }
 }

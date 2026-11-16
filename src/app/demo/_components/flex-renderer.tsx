@@ -84,15 +84,17 @@ function positionStyle(node: Json): CSSProperties {
 export function FlexMessage({ contents }: { contents: Json }) {
   if (contents.type === 'carousel' && Array.isArray(contents.contents)) {
     return (
-      <div className="demo-scroll -mr-3 flex gap-2 overflow-x-auto pr-3 pb-1">
-        {(contents.contents as Json[]).map((b, i) => <FlexBubble key={i} bubble={b} />)}
+      // LINE: a carousel runs past the message column and scrolls sideways; every bubble keeps
+      // its own fixed width (never squeezed by the row) and the row's bubbles share one height.
+      <div data-flex-carousel className="demo-scroll flex w-full items-stretch gap-2 overflow-x-auto pb-1">
+        {(contents.contents as Json[]).map((b, i) => <FlexBubble key={i} bubble={b} inCarousel />)}
       </div>
     )
   }
   return <FlexBubble bubble={contents} />
 }
 
-function FlexBubble({ bubble }: { bubble: Json }) {
+export function FlexBubble({ bubble, inCarousel = false }: { bubble: Json; inCarousel?: boolean }) {
   const width = BUBBLE_W[str(bubble.size) ?? 'mega'] ?? 300
   const styles = (bubble.styles ?? {}) as Record<string, Json | undefined>
   const section = (name: 'header' | 'hero' | 'body' | 'footer') => {
@@ -109,7 +111,9 @@ function FlexBubble({ bubble }: { bubble: Json }) {
   return (
     <Card data-flex-bubble
       className="shrink-0 gap-0 overflow-hidden rounded-[18px] border-0 bg-white p-0 py-0 text-[#12294D] shadow-none ring-0"
-      style={{ width: `min(${width}px, 100%)`, maxWidth: '100%' }}>
+      style={inCarousel
+        ? { width: `${width}px`, minWidth: `${width}px`, flex: '0 0 auto' }
+        : { width: `min(${width}px, 100%)`, maxWidth: '100%' }}>
       {section('header')}
       {section('hero')}
       {section('body')}

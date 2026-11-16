@@ -73,17 +73,10 @@ export function DirectBottom({ onSent }: { onSent: () => void }) {
   }
 
   return (
+    // LINE order: the Rich Menu image sits above the "เมนู" bar, which stays at the bottom.
     <div className="border-t border-black/5 bg-white">
-      <div className="flex h-11 items-center gap-1 px-2">
-        <BarButton label="พิมพ์ข้อความ" onClick={() => setMode('keyboard')}><Keyboard /></BarButton>
-        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
-          className="flex h-9 flex-1 items-center justify-center gap-1 rounded-lg text-[14px] font-semibold text-[#33435C] hover:bg-black/[0.04]">
-          เมนู {open ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
-        </button>
-        <span className="size-9 shrink-0" />
-      </div>
       {open && (
-        <div className="relative border-t border-black/5">
+        <div data-rich-menu className="relative border-b border-black/5">
           {/* eslint-disable-next-line @next/next/no-img-element -- a static demo asset at its own size */}
           <img src={RICH_MENU_IMAGE} alt="เมนูน้องจดดี" className="block w-full select-none" draggable={false} />
           {AREAS.map((a) => (
@@ -94,6 +87,14 @@ export function DirectBottom({ onSent }: { onSent: () => void }) {
           ))}
         </div>
       )}
+      <div data-rich-menu-bar className="flex h-11 items-center gap-1 px-2">
+        <BarButton label="พิมพ์ข้อความ" onClick={() => setMode('keyboard')}><Keyboard /></BarButton>
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
+          className="flex h-9 flex-1 items-center justify-center gap-1 rounded-lg text-[14px] font-semibold text-[#33435C] hover:bg-black/[0.04]">
+          เมนู {open ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
+        </button>
+        <span className="size-9 shrink-0" />
+      </div>
     </div>
   )
 }

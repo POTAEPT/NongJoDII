@@ -148,7 +148,8 @@ export type DashboardMembership = {
 }
 /** #84: one group in the 1:1 chat menu. */
 export type UserGroup = { groupId: string; name: string | null; isOwner: boolean }
-export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
+/** ownerLineUserId (#90): the group's confirmed Owner, or null while none is confirmed. */
+export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null; ownerLineUserId: string | null }
 export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
 /** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
 export type DashboardTaskRow = {

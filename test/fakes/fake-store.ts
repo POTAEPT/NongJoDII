@@ -850,7 +850,10 @@ export class FakeStore implements StorePort {
       .filter(({ g }) => (this.tables.group_schedules.find((r) => r.groupId === g.id)?.leftAt ?? null) === null)
     // main group first, then insertion order (the fake's join order)
     rows.sort((a, b) => Number(isMain(b.g.id)) - Number(isMain(a.g.id)) || a.order - b.order)
-    return rows.map(({ g }) => ({ groupId: g.id, projectId: g.projectId as string, name: g.name }))
+    return rows.map(({ g }) => ({
+      groupId: g.id, projectId: g.projectId as string, name: g.name,
+      ownerLineUserId: g.ownerConfirmedAt !== null ? g.nominatedOwnerLineUserId : null,
+    }))
   }
 
   async listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]> {

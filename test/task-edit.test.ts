@@ -17,7 +17,8 @@ function setup(task: { status?: 'not_assigned' | 'in_process' | 'done'; assignee
   h.line.idTokens.set('tok-out', { lineUserId: 'Uoutsider', displayName: 'Outsider' })
   const row = h.store.seedTask({
     groupId: group.id, title: 'ทำสไลด์', createdByLineUserId: 'Upim',
-    status: task.status ?? 'in_process', assigneeLineUserId: task.assignee === undefined ? 'Upim' : task.assignee,
+    // The requester (Bank) holds the Task by default, so moving it is allowed (#121).
+    status: task.status ?? 'in_process', assigneeLineUserId: task.assignee === undefined ? 'Ubank' : task.assignee,
     deletedAt: task.deleted ? new Date(TEST_NOW.getTime()) : null,
   })
   const stored = () => h.store.tables.tasks.find((t) => t.id === row.id)!
@@ -54,8 +55,8 @@ describe('updateTaskFromLiff', () => {
 
   it('a done task stays done when reassigned', async () => {
     const s = setup({ status: 'done' })
-    expect((await s.edit({ assigneeLineUserId: 'Ubank' })).status).toBe(200)
-    expect(s.stored()).toMatchObject({ assigneeLineUserId: 'Ubank', status: 'done' })
+    expect((await s.edit({ assigneeLineUserId: 'Upim' })).status).toBe(200)
+    expect(s.stored()).toMatchObject({ assigneeLineUserId: 'Upim', status: 'done' })
   })
 
   it('rejects an outsider with 403, a deleted task with 404, an empty title with 400', async () => {
@@ -105,11 +106,12 @@ describe('updateTaskFromLiff', () => {
 
 describe('loadTask', () => {
   it('returns the task with members carrying LINE names only', async () => {
-    const s = setup()
+    const s = setup({ assignee: 'Upim' })
     const res = await loadTask(s.deps, { idToken: 'tok-bank', taskId: s.row.id })
     expect(res.status).toBe(200)
     const view = res.body as TaskView
-    expect(view).toMatchObject({ taskId: s.row.id, title: 'ทำสไลด์', status: 'in_process', assigneeLineUserId: 'Upim' })
+    // #121: Bank is not the assignee, the Owner or a PM, so the assignee is locked for them.
+    expect(view).toMatchObject({ taskId: s.row.id, title: 'ทำสไลด์', status: 'in_process', assigneeLineUserId: 'Upim', canChangeAssignee: false })
     expect(view.members).toContainEqual({ lineUserId: 'Upim', displayName: 'Pim Sirin' })
     for (const m of view.members) expect(Object.keys(m).sort()).toEqual(['displayName', 'lineUserId'])
     expect(JSON.stringify(view)).not.toContain('พิม')

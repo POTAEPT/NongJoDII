@@ -198,6 +198,7 @@ export type PushPurpose =
   | 'owner_needed'                           // #30
   | 'file_saved' | 'file_failed' | 'drive_share_refused'   // #4
   | 'drive_disconnected'                     // #82
+  | 'task_reassigned'                        // #121
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month

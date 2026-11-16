@@ -35,7 +35,11 @@ export type LinePostbackAction = { type: 'postback'; label: string; data: string
 export type LineDatePickerAction = {
   type: 'datetimepicker'; label: string; data: string; mode: 'date'; initial?: string; min?: string; max?: string
 }
+/** A quick reply button that sends `text` as the person's own message (LINE quick reply). The
+ *  bot then gets a normal message event with a reply token, so no push is used. */
+export type LineMessageAction = { type: 'message'; label: string; text: string }
+export type LineQuickReply = { items: { type: 'action'; action: LineMessageAction }[] }
 export type LineMessage =
-  | { type: 'text'; text: string }
-  | { type: 'flex'; altText: string; contents: Record<string, unknown> }
+  | { type: 'text'; text: string; quickReply?: LineQuickReply }
+  | { type: 'flex'; altText: string; contents: Record<string, unknown>; quickReply?: LineQuickReply }
   | { type: 'template'; altText: string; template: { type: 'buttons'; text: string; actions: LineUriAction[] } }

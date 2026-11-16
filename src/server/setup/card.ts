@@ -1,4 +1,5 @@
-import { bubble, button, caption, column, header, numbered, panel, text, uri } from '../line/flex-ui'
+import { COMMAND_TEXT, commandQuickReply } from '../commands/quick-reply'
+import { bubble, button, caption, column, commandRow, header, numbered, panel, text, uri } from '../line/flex-ui'
 import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
 
@@ -20,8 +21,12 @@ export const SETUP_CARD_TEXT = {
 export const SETUP_DONE_TEXT = {
   title: 'ตั้งค่าเสร็จแล้ว',
   known: 'น้องจดดีรู้จักกลุ่มและทีมแล้ว',
-  next: 'จากนี้น้องจดดีจะอ่านแชตและร่างงานให้กดยืนยันนะ',
-  change: 'เปลี่ยนการตั้งค่าได้ทุกเมื่อ',
+  // UX review 1.1: say what to type. The Summary runs only when someone asks for it.
+  ready: 'พร้อมใช้แล้ว ลองพิมพ์ในกลุ่มนี้ได้เลย',
+  readyAfter: (name: string) => `พอ ${name} ยืนยันแล้ว ลองพิมพ์ในกลุ่มนี้ได้เลย`,
+  summarize: 'สรุปแชตเป็นงาน ให้ทีมกดยืนยัน',
+  settingsWhat: 'แก้การตั้งค่าได้ทุกเมื่อ',
+  requestFile: 'ตอบกลับไฟล์ แล้วพิมพ์คำนี้ เพื่อขอลิงก์ไฟล์',
   pending: (name: string) => `รอ ${name} ยืนยันเป็นเจ้าของบอท`,
   button: 'ยืนยันเจ้าของบอท',
   settings: 'เปิดการตั้งค่า',
@@ -53,15 +58,20 @@ export function setupCard(p: { liffId: string; groupId: string }): LineMessage {
  *  The card always links the group's Settings (#80), since it says the settings can change
  *  any time: the main button once the Owner is confirmed, a second one while it is pending. */
 export function setupDoneCard(p: { liffId: string; groupId: string; pendingOwnerName: string | null }): LineMessage {
+  const pending = p.pendingOwnerName
   const body = [
     header('success', SETUP_DONE_TEXT.title),
-    text(`${SETUP_DONE_TEXT.known} ${SETUP_DONE_TEXT.next}`, { color: '#545454' }),
-    caption(SETUP_DONE_TEXT.change),
+    text(pending !== null ? SETUP_DONE_TEXT.readyAfter(pending) : SETUP_DONE_TEXT.ready, { color: '#545454' }),
+    panel([
+      commandRow(COMMAND_TEXT.summarize, SETUP_DONE_TEXT.summarize),
+      commandRow(COMMAND_TEXT.settings, SETUP_DONE_TEXT.settingsWhat),
+      commandRow(COMMAND_TEXT.requestFile, SETUP_DONE_TEXT.requestFile),
+    ]),
   ]
   const footer = []
   const settings = uri(SETUP_DONE_TEXT.settings, liffUrl(p.liffId, 'settings', p.groupId))
-  if (p.pendingOwnerName !== null) {
-    body.push(panel([text(SETUP_DONE_TEXT.pending(p.pendingOwnerName), { weight: 'bold', color: '#1F5FB0' })]))
+  if (pending !== null) {
+    body.splice(1, 0, panel([text(SETUP_DONE_TEXT.pending(pending), { weight: 'bold', color: '#1F5FB0' })]))
     footer.push(button('primary', uri(SETUP_DONE_TEXT.button, liffUrl(p.liffId, 'owner', p.groupId))))
     footer.push(button('secondary', settings))
   } else {
@@ -70,5 +80,6 @@ export function setupDoneCard(p: { liffId: string; groupId: string; pendingOwner
   const altText = p.pendingOwnerName !== null
     ? `${SETUP_DONE_TEXT.title} ${SETUP_DONE_TEXT.pending(p.pendingOwnerName)}`
     : `${SETUP_DONE_TEXT.title} ${SETUP_DONE_TEXT.known}`
-  return { type: 'flex', altText, contents: bubble(body, footer) }
+  // UX review 1.2: the everyday commands one tap away (a push may carry a quick reply too).
+  return { type: 'flex', altText, contents: bubble(body, footer), quickReply: commandQuickReply() }
 }

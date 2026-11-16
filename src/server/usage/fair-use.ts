@@ -28,10 +28,6 @@ export async function getFairUseStatus(store: StorePort, ownerLineUserId: string
   return { tokens, costMicroUsd, fraction, level, resetAt: range.end, monthStartBkk: range.monthStartBkk }
 }
 
-function usageLine(s: FairUseStatus): string {
-  return `ใช้ไป ${s.tokens.toLocaleString('en-US')} / ${FAIR_USE_CAP_TOKENS.toLocaleString('en-US')} โทเคน และ $${(s.costMicroUsd / 1e6).toFixed(4)} / $${FAIR_USE_CAP_USD.toFixed(2)}`
-}
-
 export const FAIR_USE_TEXT = {
   warnTitle: 'ใกล้ถึงขีดจำกัดแผนฟรี',
   capTitle: 'ใช้ AI ครบโควตาฟรีของเดือนนี้แล้ว',
@@ -54,7 +50,8 @@ function usageCard(s: FairUseStatus, altText: string, capped: boolean): LineMess
       progressBar(pct / 100, STATUS.not_assigned.dot),
       text(capped ? FAIR_USE_TEXT.capBody(reset) : FAIR_USE_TEXT.warnBody, { color: '#545454' }),
       ...(capped ? [] : [caption(FAIR_USE_TEXT.resetLine(reset))]),
-      caption(usageLine(s), { size: 'xxs' }),
+      // UX review 3.2: no token or dollar figures in the group: the percentage and the reset
+      // date say it. The exact figures stay in the logs and the store.
     ]),
   }
 }

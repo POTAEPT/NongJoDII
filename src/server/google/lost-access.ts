@@ -1,4 +1,5 @@
 import { liffUrl } from '../liff-links'
+import { nextStepCard, uri } from '../line/flex-ui'
 import { type GroupPushResult, pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import type { LineMessage } from '../line/types'
 import { log } from '../log'
@@ -24,19 +25,22 @@ export const LOST_ACCESS_PUSH_RESERVE = 0.02
  *  member count and quota reads run together, then the push. */
 export const LOST_ACCESS_CALLS = 2
 
-/** A buttons card: text at most 160 characters, label at most 20 (LINE's limits). The
- *  button opens the LIFF Google view, which shows the sign-in notice. No name is on it. */
+/** The button opens the LIFF Google view, which shows the sign-in notice. */
 export function signInAgainCard(liffId: string): LineMessage {
-  return {
-    type: 'template',
-    altText: 'กรุณาเข้าสู่ระบบ Google อีกครั้ง',
-    template: {
-      type: 'buttons',
-      text: 'น้องจดดีเข้าถึง Google Drive ของเจ้าของบอทไม่ได้แล้ว จึงยังเก็บไฟล์ใหม่ไม่ได้ งานทั้งหมดยังอยู่ครบ เจ้าของบอทกดปุ่มด้านล่างเพื่อเข้าสู่ระบบ Google อีกครั้ง',
-      actions: [{ type: 'uri', label: 'เข้าสู่ระบบ Google', uri: liffUrl(liffId, 'google') }],
-    },
-  }
+  return nextStepCard({
+    tone: 'warning', title: SIGN_IN_AGAIN_TEXT.title, body: SIGN_IN_AGAIN_TEXT.body, note: SIGN_IN_AGAIN_TEXT.note,
+    button: uri(SIGN_IN_AGAIN_TEXT.button, liffUrl(liffId, 'google')), altText: SIGN_IN_AGAIN_TEXT.altText,
+  })
 }
+
+/** UX review 2.2: a Flex card like every other card, not a LINE template. No name is on it. */
+export const SIGN_IN_AGAIN_TEXT = {
+  title: 'ต้องเข้าสู่ระบบ Google อีกครั้ง',
+  body: 'น้องจดดีเข้าถึง Google Drive ของเจ้าของบอทไม่ได้แล้ว จึงพักเก็บไฟล์ใหม่ไว้ก่อน',
+  note: 'งานทั้งหมดยังอยู่ครบ',
+  button: 'เข้าสู่ระบบ Google',
+  altText: 'กรุณาเข้าสู่ระบบ Google อีกครั้ง',
+} as const
 
 /** Called by a Drive run whose refresh was answered invalid_grant, with the ciphertext of
  *  the token it tried. Marks the account and, only if this call did the marking, posts the

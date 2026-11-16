@@ -1,4 +1,4 @@
-import type { LineDatePickerAction, LinePostbackAction, LineUriAction } from './types'
+import type { LineDatePickerAction, LineMessage, LinePostbackAction, LineUriAction } from './types'
 
 // Shared building blocks of the LINE Flex cards, after the Figma "UI v4" design system
 // (file Yi9FCN94TrLPOmfw6f2kuT): the colour variables, the Card Header with its tone icon,
@@ -8,7 +8,7 @@ import type { LineDatePickerAction, LinePostbackAction, LineUriAction } from './
 export const COLOR = {
   ink: '#12294D', // text/primary
   ink2: '#545454', // text/secondary
-  ink3: '#7A879C', // text/tertiary
+  ink3: '#5F6B7E', // text/tertiary (darker than Figma's #7A879C: 5.6:1 on white, UX review 6.2)
   primary: '#1F5FB0', // action/primary-bg
   primarySoft: '#DCE9F8', // action/secondary-bg
   line: '#D5E2F3', // border/default
@@ -144,6 +144,14 @@ export function iconRow(glyph: string, t: string, color: string = COLOR.ink2): J
   }
 }
 
+/** A command people can type (bold, primary colour) with what it does under it (UX review 1.1). */
+export function commandRow(command: string, what: string): Json {
+  return {
+    type: 'box', layout: 'vertical', spacing: 'none',
+    contents: [text(command, { weight: 'bold', color: COLOR.primary }), caption(what)],
+  }
+}
+
 export function bullet(t: string, color: string = COLOR.ink2): Json {
   return iconRow('•', t, color)
 }
@@ -207,6 +215,19 @@ export function bubble(body: Json[], footer?: Json[], extra: Json = {}): Json {
       ? { footer: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: 'lg', paddingTop: 'none', contents: footer } }
       : {}),
     ...extra,
+  }
+}
+
+/** UX review 2.1 / 2.3: something cannot happen yet. One line on why, an optional small note,
+ *  and the one button that fixes it, so no notice leaves people without a next step. */
+export function nextStepCard(p: {
+  tone: Tone; title: string; body: string; note?: string; button?: FlexAction; altText?: string
+}): LineMessage {
+  const body = [header(p.tone, p.title), text(p.body, { color: COLOR.ink2 }), ...(p.note ? [caption(p.note)] : [])]
+  return {
+    type: 'flex',
+    altText: p.altText ?? `${p.title}: ${p.body}`,
+    contents: bubble(body, p.button ? [button('primary', p.button)] : undefined),
   }
 }
 

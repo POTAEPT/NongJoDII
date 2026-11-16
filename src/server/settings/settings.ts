@@ -8,7 +8,8 @@ import { parseGroupValues } from '../setup/submit'
 import type { SettingsLoad, SettingsMember } from './types'
 
 // #28 Settings: everything the setup form set, edited later by the group's confirmed Owner.
-// Every live Member may look; only the Owner may change. The Owner is the person the group
+// Every live Member may look; only the Owner may change, except that each Member edits their
+// own nicknames and role through /api/me/save (#81, members/profile.ts). The Owner is the person the group
 // names (groups.nominated_owner_line_user_id) once they confirmed (owner_confirmed_at); every
 // group of a Project names the same person, so this covers Sub groups too. Changing the
 // Owner belongs to the Owner change flow (#30, #31). Stop using (#11) is stopUsing below.
@@ -24,20 +25,30 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
   const { group, requester } = gate
   const canEdit = isConfirmedOwner(group, requester)
   const live = await deps.store.listLiveMembers(group.groupId)
-  // Nicknames are for the AI only; the Owner edits them here, everyone else sees LINE names.
+  // #81: every live Member sees everyone's nicknames and role here; the Owner edits every
+  // row, a Member only their own. Nicknames still never show outside Settings and the form.
   const members: SettingsMember[] = live
     .map((m) => ({
-      lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME,
-      nicknames: canEdit ? m.nicknames : [], role: canEdit ? m.role : null,
+      lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME, nicknames: m.nicknames, role: m.role,
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, 'th'))
   const ownerId = group.ownerConfirmedAt !== null ? group.nominatedOwnerLineUserId : null
+  // #80: a nominee who has not confirmed yet, only before the group has a Project (the only
+  // time the setup form's Owner confirm applies). In two other states the nominee column
+  // still names a previous Owner, so nobody is "pending": after an Owner left (#30), and a
+  // Sub group waiting on the take-over question (#31: a Project, no confirmed Owner).
+  const pendingId = setupState(group) === 'pending_owner' && group.ownerLeftAt === null
+    ? group.nominatedOwnerLineUserId : null
   const view: SettingsLoad = {
     groupId: group.groupId,
     groupName: group.name,
     state: setupState(group) === 'confirmed' ? 'ready' : 'not_set_up',
     canEdit,
+    requesterLineUserId: requester,
     owner: ownerId ? { lineUserId: ownerId, displayName: await lineNameOf(deps, ownerId, live) } : null,
+    pendingOwner: pendingId
+      ? { lineUserId: pendingId, displayName: await lineNameOf(deps, pendingId, live), isRequester: pendingId === requester }
+      : null,
     values: {
       workDescription: group.workDescription ?? '',
       features: {

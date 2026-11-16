@@ -10,8 +10,8 @@ import { LegalPage, List, Section, linkClass } from "../legal";
 // in Settings (#11), unsend (#24), the Owner-left rule (#30) and the Dashboard roles (#90).
 // Known gap (#77): purging a main group keeps its Project row and the Owner's Drive
 // connection history, so the "Google" line under การลบข้อมูล says that connection stays.
-// The Clarity line follows src/app/clarity.tsx, which skips every /liff page; update it if
-// #19 (Clarity funnel) changes that.
+// The Clarity line follows src/app/clarity.tsx and src/app/liff/analytics.ts (#19): the LIFF
+// pages are recorded too, only after liff.init() removed the LINE credentials from the URL.
 
 export const metadata: Metadata = {
   title: "นโยบายความเป็นส่วนตัว · น้องจดดี",
@@ -99,7 +99,7 @@ export default function Privacy() {
           "Vercel: โฮสต์เว็บและเซิร์ฟเวอร์",
           "OpenRouter: ส่งข้อความไปยังโมเดล AI",
           "Google Drive: เก็บไฟล์ของกลุ่มใน Drive ของเจ้าของกลุ่ม",
-          "Microsoft Clarity: สถิติการใช้หน้าเว็บของน้องจดดี เช่น หน้านี้และหน้าแรก โดยซ่อนข้อความทั้งหมดบนหน้า ไม่บันทึกหน้าที่เปิดในแอป LINE (LIFF) เพราะลิงก์ของหน้าเหล่านั้นมีรหัสยืนยันตัวตนของ LINE",
+          "Microsoft Clarity: สถิติการใช้หน้าเว็บและหน้าที่เปิดในแอป LINE (LIFF) ของน้องจดดี เช่น เปิด Dashboard หรือกดยืนยันงาน โดยซ่อนข้อความทั้งหมดบนหน้า และลบข้อมูลยืนยันตัวตนของ LINE ออกจากลิงก์ก่อนบันทึก",
         ]} />
       </Section>
 

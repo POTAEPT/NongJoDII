@@ -72,9 +72,14 @@ describe('SupabaseStore files (#4)', () => {
   it('countImageSet counts the set messages and their settled rows in webhook_events', async () => {
     const { store, requests } = standIn([
       { data: [{ line_message_id: 'm1' }, { line_message_id: 'm2' }, { line_message_id: 'm3' }], error: null },
-      { data: [{ webhook_event_id: 'file:m1', event_type: 'file_saved' }, { webhook_event_id: 'file:m3', event_type: 'file_save_failed' }], error: null },
+      { data: [
+        { webhook_event_id: 'file:m1', event_type: 'file_saved' },
+        { webhook_event_id: 'file:m2', event_type: 'file_save_failed:timeout' },
+        // A row written before #99 carries no reason.
+        { webhook_event_id: 'file:m3', event_type: 'file_save_failed' },
+      ], error: null },
     ])
-    expect(await store.countImageSet('g1', 'set-1')).toEqual({ messages: 3, saved: 1, failed: 1 })
+    expect(await store.countImageSet('g1', 'set-1')).toEqual({ messages: 3, saved: 1, failed: 2, failedReasons: ['timeout', 'failed'] })
     expect(requests[0].calls).toContainEqual(['eq', 'image_set_id', 'set-1'])
     expect(requests[1].table).toBe('webhook_events')
     expect(requests[1].calls).toContainEqual(['in', 'webhook_event_id', ['file:m1', 'file:m2', 'file:m3']])
@@ -87,14 +92,14 @@ describe('SupabaseStore files (#4)', () => {
       { data: [{ webhook_event_id: 'file:m0', event_type: 'file_saved' }], error: null },
       { data: [{ webhook_event_id: `file:m${IN_CHUNK}`, event_type: 'file_save_failed' }], error: null },
     ])
-    expect(await store.countImageSet('g1', 'set-big')).toEqual({ messages: IN_CHUNK + 50, saved: 1, failed: 1 })
+    expect(await store.countImageSet('g1', 'set-big')).toEqual({ messages: IN_CHUNK + 50, saved: 1, failed: 1, failedReasons: ['failed'] })
     const ins = requests.slice(1).map((r) => (r.calls.find((c) => c[0] === 'in')![2] as string[]).length)
     expect(ins).toEqual([IN_CHUNK, 50])
   })
 
   it('countImageSet of an empty set reads no ledger', async () => {
     const { store, requests } = standIn([{ data: [], error: null }])
-    expect(await store.countImageSet('g1', 'set-x')).toEqual({ messages: 0, saved: 0, failed: 0 })
+    expect(await store.countImageSet('g1', 'set-x')).toEqual({ messages: 0, saved: 0, failed: 0, failedReasons: [] })
     expect(requests).toHaveLength(1)
   })
 

@@ -15,7 +15,9 @@ export type SettingsValues = {
   tagSet: string[]                 // #110
 }
 
-/** Nicknames and role are filled only for the Owner, who edits them; a Member sees LINE names. */
+/** Every live Member's nicknames and role, for everyone (#81). The Owner edits every row; a
+ *  Member edits only their own (through /api/me/save). Settings and the setup form are the
+ *  only screens that show nicknames: pickers, cards and the Dashboard show LINE names. */
 export type SettingsMember = { lineUserId: string; displayName: string; nicknames: string[]; role: string | null }
 
 export type SettingsLoad = {
@@ -24,7 +26,12 @@ export type SettingsLoad = {
   state: SettingsState
   /** The requester is the group's confirmed Owner, so the values can be edited. */
   canEdit: boolean
+  /** The person who opened Settings (from the verified ID token), so the page knows their own row (#81). */
+  requesterLineUserId: string
   owner: { lineUserId: string; displayName: string } | null
+  /** #80: the setup form named an Owner who has not confirmed yet (and no Owner left), so
+   *  Settings waits for them. `isRequester`: the person opening Settings is that nominee. */
+  pendingOwner: { lineUserId: string; displayName: string; isRequester: boolean } | null
   values: SettingsValues
   members: SettingsMember[]
 }

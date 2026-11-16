@@ -56,6 +56,16 @@ export class DriveShareRefused extends AdapterError {
   }
 }
 
+/** #99: Drive refused an upload because the Owner's storage is full (403 storageQuotaExceeded).
+ *  The message keeps the plain upload wording, so logs read as before. */
+export class DriveStorageFull extends AdapterError {
+  name = 'DriveStorageFull'
+
+  constructor(status: number = 403) {
+    super(`google drive upload ${status}`)
+  }
+}
+
 /** LINE content bigger than the caller's byte cap (#4): stopped before it was all read. */
 export class ContentTooLarge extends AdapterError {
   name = 'ContentTooLarge'

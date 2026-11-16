@@ -22,6 +22,11 @@ export const FILE_SAVED_TEXT = {
   photosFailedTitle: (n: number) => `น้องจดดีบันทึกรูป ${n} รูปไม่ได้`,
   failedBody: 'กรุณาบันทึกไฟล์เองก่อนที่ไฟล์ใน LINE จะหมดอายุ',
   tooLarge: 'ไฟล์ใหญ่เกิน 100 MB',
+  // #99: why the save failed, shown above failedBody.
+  timeout: 'ไฟล์ใหญ่หรือเครือข่ายช้า บันทึกไม่ทันเวลา ลองส่งใหม่อีกครั้ง',
+  gone: 'LINE ไม่มีไฟล์นี้แล้ว อาจถูกยกเลิกการส่ง',
+  driveFull: 'Google Drive ของเจ้าของบอทเต็ม ให้เจ้าของบอทลบไฟล์หรือเพิ่มพื้นที่',
+  failed: 'ระบบขัดข้องชั่วคราว ลองส่งใหม่อีกครั้ง',
   openFile: 'เปิดไฟล์',
   openFolder: 'เปิดโฟลเดอร์',
 } as const
@@ -72,6 +77,8 @@ export function fileSavedCard(p: {
  *  and the group's folder (or a saved photo when the folder ID is not known). */
 export function photosSavedCard(p: {
   count: number; failed: number; link: string | null; isFolder: boolean; linkShared: boolean | null
+  /** #99: why the failed photos were not saved (sharedReason); only read when failed > 0. */
+  failedReason?: string
 }): LineMessage {
   const t = FILE_SAVED_TEXT.photosTitle(p.count)
   return {
@@ -80,12 +87,30 @@ export function photosSavedCard(p: {
     contents: bubble(
       [
         header('success', t),
-        ...(p.failed > 0 ? [caption(FILE_SAVED_TEXT.photosFailedToo(p.failed))] : []),
+        ...(p.failed > 0
+          ? [caption(`${FILE_SAVED_TEXT.photosFailedToo(p.failed)}: ${failReasonCaption(p.failedReason ?? 'failed')}`)]
+          : []),
         ...accessCaption(p.linkShared),
       ],
       p.link ? [button('primary', uri(p.isFolder ? FILE_SAVED_TEXT.openFolder : FILE_SAVED_TEXT.openFile, p.link))] : [],
     ),
   }
+}
+
+/** #99: the caption that says why a save failed. An unknown reason reads as `failed`. */
+export function failReasonCaption(reason: string): string {
+  switch (reason) {
+    case 'too_large': return FILE_SAVED_TEXT.tooLarge
+    case 'timeout': return FILE_SAVED_TEXT.timeout
+    case 'gone': return FILE_SAVED_TEXT.gone
+    case 'drive_full': return FILE_SAVED_TEXT.driveFull
+    default: return FILE_SAVED_TEXT.failed
+  }
+}
+
+/** #99: the one reason a batch's failed photos share, else the generic `failed`. */
+export function sharedReason(reasons: string[]): string {
+  return reasons.length > 0 && reasons.every((r) => r === reasons[0]) ? reasons[0] : 'failed'
 }
 
 /** A file or a photo sent alone that could not be saved (no retry). */
@@ -98,21 +123,31 @@ export function fileFailedCard(p: { kind: 'file' | 'image'; fileName: string | n
     contents: bubble([
       header('danger', t),
       ...(name ? [text(name, { weight: 'bold' })] : []),
-      ...(p.reason === 'too_large' ? [caption(FILE_SAVED_TEXT.tooLarge)] : []),
+      caption(failReasonCaption(p.reason)),
       caption(FILE_SAVED_TEXT.failedBody),
     ]),
   }
 }
 
 /** A photo batch none of whose photos could be saved. */
-export function photosFailedCard(p: { count: number }): LineMessage {
+export function photosFailedCard(p: { count: number; reason: string }): LineMessage {
   const t = FILE_SAVED_TEXT.photosFailedTitle(p.count)
   return {
     type: 'flex',
     altText: t,
-    contents: bubble([header('danger', t), caption(FILE_SAVED_TEXT.failedBody)]),
+    contents: bubble([header('danger', t), caption(failReasonCaption(p.reason)), caption(FILE_SAVED_TEXT.failedBody)]),
   }
 }
+
+const PAUSE_TAIL = 'บันทึกไฟล์เองก่อนที่ไฟล์ใน LINE จะหมดอายุนะ'
+
+/** #99: text replies. The pause notice goes out at most once per group per Bangkok day;
+ *  "saving" answers a large file at once, before the download. */
+export const FILE_NOTICE_TEXT = {
+  noOwner: `ยังบันทึกไฟล์ไม่ได้ เพราะกลุ่มนี้ยังไม่มีเจ้าของบอท\n${PAUSE_TAIL}`,
+  noDrive: `ยังบันทึกไฟล์ไม่ได้ เพราะเจ้าของบอทยังไม่ได้เชื่อม Google Drive\n${PAUSE_TAIL}`,
+  saving: (name: string) => `กำลังบันทึก ${name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1)}…` : name} ลง Google Drive…`,
+} as const
 
 export function driveFolderLink(folderId: string): string {
   return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`

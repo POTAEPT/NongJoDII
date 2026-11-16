@@ -194,9 +194,11 @@ export type AiUsageActual = { model: string; inputTokens: number; outputTokens: 
 export type PushPurpose =
   | 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
   | 'owner_takeover' | 'subgroup_detached'   // #31
+  | 'owner_insight'                          // #120: the Owner's 1:1 weekly card
   | 'owner_needed'                           // #30
   | 'file_saved' | 'file_failed' | 'drive_share_refused'   // #4
   | 'drive_disconnected'                     // #82
+  | 'task_reassigned'                        // #121
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -401,8 +403,8 @@ export interface StorePort {
   findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null>
   /** A photo batch (#4): how many messages of the group carry this imageSet ID, and how many
    *  of those are settled, by their webhook_events row `file:<LINE message ID>`: event type
-   *  file_saved or file_save_failed (files/save.ts). */
-  countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number; failed: number }>
+   *  file_saved, or file_save_failed / file_save_failed:<reason> (files/save.ts, #99). */
+  countImageSet(groupId: string, imageSetId: string): Promise<ImageSetCount>
   /** INSERT INTO image_set_cards ... ON CONFLICT DO NOTHING: claimed true for the one caller
    *  that inserted the row, so one batch gets one "saved N photos" card. */
   claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }>
@@ -780,3 +782,14 @@ export type Deps = {
 }
 export type Defer = (job: () => Promise<void>) => void
 export type ApiResult = { status: number; body: unknown }
+
+/** #99: a photo batch's count. failedReasons: one per failed photo, from its settled row's
+ *  event type; a row written before #99 (no reason) reads as 'failed'. */
+export type ImageSetCount = { messages: number; saved: number; failed: number; failedReasons: string[] }
+
+/** The reason in a failed settled row's event type (`file_save_failed:<reason>`), or null when
+ *  the row is not a failure. */
+export function failedReasonOf(eventType: string): string | null {
+  if (eventType === 'file_save_failed') return 'failed'
+  return eventType.startsWith('file_save_failed:') ? eventType.slice('file_save_failed:'.length) : null
+}

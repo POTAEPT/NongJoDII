@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent } from '@/server/line/types'
 import { liffUrl } from '@/server/liff-links'
+import { saveMyProfile } from '@/server/members/profile'
 import { SETTINGS_CARD_TEXT } from '@/server/settings/card'
 import { loadSettings, submitSettings } from '@/server/settings/settings'
 import type { SettingsLoad } from '@/server/settings/types'
@@ -67,11 +68,52 @@ describe('loadSettings (#28)', () => {
     expect(view.members.find((m) => m.lineUserId === BIW)).toEqual({ lineUserId: BIW, displayName: 'บิว', nicknames: ['บิว', 'Bew'], role: 'ออกแบบ' })
   })
 
-  it('a Member may look but not edit, and sees LINE names without nicknames or roles', async () => {
+  // #81: every Member sees everyone's nicknames and role; the group values stay the Owner's.
+  it('a Member sees every Member\'s nicknames and role, cannot edit the group, and knows their own row', async () => {
     const t = setup()
     const view = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
     expect(view.canEdit).toBe(false)
-    expect(view.members.map((m) => [m.displayName, m.nicknames, m.role])).toEqual([['บิว', [], null], ['โอ๋', [], null]])
+    expect(view.requesterLineUserId).toBe(BIW)
+    expect(view.members.map((m) => [m.displayName, m.nicknames, m.role])).toEqual([
+      ['บิว', ['บิว', 'Bew'], 'ออกแบบ'], ['โอ๋', ['โอ๋'], 'หัวหน้า'],
+    ])
+  })
+
+  it('a Member saves their own nicknames and role, and everyone then sees them', async () => {
+    const t = setup()
+    const res = await saveMyProfile(t.deps, { idToken: 'tok-biw', groupId: t.group.id, nicknames: [' บิ๋ว ', 'Bew'], role: 'กราฟิก' })
+    expect(res).toEqual({ status: 200, body: { nicknames: ['บิ๋ว', 'Bew'], role: 'กราฟิก' } })
+    const byOwner = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(byOwner.members.find((m) => m.lineUserId === BIW)).toMatchObject({ nicknames: ['บิ๋ว', 'Bew'], role: 'กราฟิก' })
+  })
+
+  it('a Member cannot change another row: the save writes only the requester, and the group save is the Owner\'s', async () => {
+    const t = setup()
+    // A body naming someone else is ignored: the person comes from the ID token.
+    await saveMyProfile(t.deps, { idToken: 'tok-biw', groupId: t.group.id, lineUserId: OWNER, nicknames: ['แฮก'], role: 'x' })
+    const view = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(view.members.find((m) => m.lineUserId === OWNER)).toMatchObject({ nicknames: ['โอ๋'], role: 'หัวหน้า' })
+    expect(view.members.find((m) => m.lineUserId === BIW)).toMatchObject({ nicknames: ['แฮก'], role: 'x' })
+
+    // The Settings save (every row and the group values) stays the Owner's.
+    const res = await submitSettings(t.deps, { ...t.body(), idToken: 'tok-biw' })
+    expect(res).toEqual({ status: 403, body: { error: 'not_owner' } })
+    const still = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(still.members.find((m) => m.lineUserId === OWNER)).toMatchObject({ nicknames: ['โอ๋'], role: 'หัวหน้า' })
+  })
+
+  it('a Member who was in the group before the bot (never welcomed) sets their nickname through Settings', async () => {
+    const t = setup()
+    // Known only from a chat message: no welcome reply, no setup form row.
+    await t.send(ev.groupText({ text: 'สวัสดี', userId: 'Uold' }))
+    t.line.idTokens.set('tok-old', { lineUserId: 'Uold', displayName: 'เก่า' })
+    const before = (await loadSettings(t.deps, { idToken: 'tok-old', groupId: t.group.id })).body as SettingsLoad
+    expect(before.requesterLineUserId).toBe('Uold')
+    expect(before.members.find((m) => m.lineUserId === 'Uold')).toMatchObject({ nicknames: [], role: null })
+
+    expect((await saveMyProfile(t.deps, { idToken: 'tok-old', groupId: t.group.id, nicknames: ['เก่า'], role: '' })).status).toBe(200)
+    const after = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(after.members.find((m) => m.lineUserId === 'Uold')).toMatchObject({ nicknames: ['เก่า'], role: null })
   })
 
   it('a group without a confirmed Owner is not set up yet', async () => {
@@ -79,6 +121,49 @@ describe('loadSettings (#28)', () => {
     t.store.tables.groups.find((g) => g.id === t.group.id)!.ownerConfirmedAt = null
     const view = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
     expect(view).toMatchObject({ state: 'not_set_up', canEdit: false, owner: null })
+  })
+
+  // #80: the setup-done card links Settings while the named Owner has not confirmed yet.
+  it('names the Owner it waits for, and tells the nominee it is them', async () => {
+    const t = setup()
+    // Sent setup form, no Project yet: the only time the form's Owner confirm applies.
+    const g = t.store.tables.groups.find((row) => row.id === t.group.id)!
+    g.ownerConfirmedAt = null
+    g.projectId = null
+    g.nominatedOwnerLineUserId = BIW
+    const byOwner = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(byOwner).toMatchObject({ state: 'not_set_up', owner: null })
+    expect(byOwner.pendingOwner).toEqual({ lineUserId: BIW, displayName: 'บิว', isRequester: false })
+    const byNominee = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
+    expect(byNominee.pendingOwner).toEqual({ lineUserId: BIW, displayName: 'บิว', isRequester: true })
+  })
+
+  it('names no pending Owner once the Owner is confirmed, or after the Owner left (#30)', async () => {
+    const t = setup()
+    const ready = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
+    expect(ready).toMatchObject({ state: 'ready', pendingOwner: null })
+
+    // The Owner left: the nominee column still names them, but nobody is "pending".
+    const g = t.store.tables.groups.find((row) => row.id === t.group.id)!
+    g.ownerConfirmedAt = null
+    g.ownerLeftAt = new Date('2026-11-15T03:00:00Z')
+    const left = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
+    expect(left).toMatchObject({ state: 'not_set_up', pendingOwner: null })
+  })
+
+  // Review of #107: a Sub group waiting on the take-over question (#31) has a Project and no
+  // confirmed Owner, and its nominee column still names the previous Owner. Nobody is pending.
+  it('names no pending Owner for a Sub group waiting on the take-over question (#31)', async () => {
+    const t = setup()
+    const g = t.store.tables.groups.find((row) => row.id === t.group.id)!
+    g.ownerConfirmedAt = null // change_project_owner cleared it; projectId stays
+    t.store.tables.group_setups.push({
+      groupId: t.group.id, isMain: false, featureSaveFiles: true, ownerNominatedByLineUserId: OWNER,
+      ownerNominatedAt: null, takeoverAskedAt: new Date('2026-11-15T03:00:00Z'),
+    })
+    expect(g.projectId).not.toBeNull()
+    const view = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(view).toMatchObject({ state: 'not_set_up', pendingOwner: null })
   })
 })
 

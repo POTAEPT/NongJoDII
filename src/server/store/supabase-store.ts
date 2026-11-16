@@ -1,7 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { AdapterError, logError } from '../log'
 import { BOT_DELETE_AFTER_MS } from '../removal/leave'
+import { failedReasonOf } from '../ports'
 import type {
+  ImageSetCount,
   AiUsageActual,
   AiUsageCap,
   AnnounceClaim,
@@ -376,7 +378,7 @@ export class SupabaseStore implements StorePort {
     return row ? { id: row.id, googleAccountId: row.google_account_id } : null
   }
 
-  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number; failed: number }> {
+  async countImageSet(groupId: string, imageSetId: string): Promise<ImageSetCount> {
     // A batch is a handful of photos (LINE sends at most a few dozen at once), so one page.
     const { data, error } = await this.db
       .from('messages')
@@ -387,7 +389,7 @@ export class SupabaseStore implements StorePort {
       .limit(PAGE_SIZE)
     check('countImageSet', error)
     const keys = ((data ?? []) as { line_message_id: string }[]).map((r) => `file:${r.line_message_id}`)
-    if (keys.length === 0) return { messages: 0, saved: 0, failed: 0 }
+    if (keys.length === 0) return { messages: 0, saved: 0, failed: 0, failedReasons: [] }
     const rows: { event_type: string }[] = []
     // IN_CHUNK keys per request, so the URL stays short.
     for (const part of chunks(keys)) {
@@ -398,10 +400,12 @@ export class SupabaseStore implements StorePort {
       check('countImageSet', settledError)
       rows.push(...((settled ?? []) as { event_type: string }[]))
     }
+    const failedReasons = rows.map((r) => failedReasonOf(r.event_type)).filter((r): r is string => r !== null)
     return {
       messages: keys.length,
       saved: rows.filter((r) => r.event_type === 'file_saved').length,
-      failed: rows.filter((r) => r.event_type === 'file_save_failed').length,
+      failed: failedReasons.length,
+      failedReasons,
     }
   }
 

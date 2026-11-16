@@ -210,6 +210,10 @@ describe('setup send, self as Owner', () => {
       expect(json).toContain(s)
     }
     expect(json).not.toContain('ยืนยันเจ้าของบอท')
+    // #80: the card says settings can change any time, so it opens the group's Settings.
+    expect(json).toContain('เปิดการตั้งค่า')
+    expect(uris(t.line.delivered[0].messages)).toEqual([liffUrl(TEST_LIFF_ID, 'settings', t.group.id)])
+    expect(json).toContain(`https://liff.line.me/${TEST_LIFF_ID}?view=settings&id=${t.group.id}`)
     expect(t.store.tables.push_log.map((p) => p.purpose)).toEqual(['setup_done'])
 
     // Closed: the load no longer hands out nicknames or roles.
@@ -247,7 +251,8 @@ describe('setup send, another Owner', () => {
     const { messages } = t.line.delivered[0]
     expect(flexJson(messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
     expect(flexJson(messages)).toContain('ยืนยันเจ้าของบอท')
-    expect(uris(messages)).toEqual([liffUrl(TEST_LIFF_ID, 'owner', t.group.id)])
+    // The Owner confirm stays the main button; Settings (#80) is the second one.
+    expect(uris(messages)).toEqual([liffUrl(TEST_LIFF_ID, 'owner', t.group.id), liffUrl(TEST_LIFF_ID, 'settings', t.group.id)])
 
     const loaded = (await t.load('tok-pim')).body as SetupLoad
     expect(loaded.state).toBe('pending_owner')
@@ -308,7 +313,7 @@ describe('setup send, another Owner', () => {
     // The Owner confirm link reaches the group after all.
     expect(t.line.delivered).toHaveLength(1)
     expect(flexJson(t.line.delivered[0].messages)).toContain('รอ Pim Sirin ยืนยันเป็นเจ้าของบอท')
-    expect(uris(t.line.delivered[0].messages)).toEqual([liffUrl(TEST_LIFF_ID, 'owner', t.group.id)])
+    expect(uris(t.line.delivered[0].messages)).toEqual([liffUrl(TEST_LIFF_ID, 'owner', t.group.id), liffUrl(TEST_LIFF_ID, 'settings', t.group.id)])
   })
 
   it('resend-card pushes the saved nomination\'s card again, under its key, without saving the form', async () => {
@@ -468,6 +473,7 @@ describe('setup send, another Owner', () => {
     expect(t.line.pushes[1].retryKey).not.toBe(t.line.pushes[0].retryKey)
     expect(t.line.delivered).toHaveLength(2)
     expect(flexJson(t.line.delivered[1].messages)).not.toContain('ยืนยันเจ้าของบอท')
+    expect(uris(t.line.delivered[1].messages)).toEqual([liffUrl(TEST_LIFF_ID, 'settings', t.group.id)])
     expect(t.store.tables.projects).toEqual([{ id: t.row().projectId, ownerLineUserId: 'Upim' }])
   })
 

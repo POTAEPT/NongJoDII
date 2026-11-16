@@ -24,6 +24,7 @@ export const SETUP_DONE_TEXT = {
   change: 'เปลี่ยนการตั้งค่าได้ทุกเมื่อ',
   pending: (name: string) => `รอ ${name} ยืนยันเป็นเจ้าของบอท`,
   button: 'ยืนยันเจ้าของบอท',
+  settings: 'เปิดการตั้งค่า',
 } as const
 
 /** #2a: the reply to a join event. `groupId` is groups.id; the button opens the form. */
@@ -48,7 +49,9 @@ export function setupCard(p: { liffId: string; groupId: string }): LineMessage {
 }
 
 /** #2e: pushed after the form is sent. `pendingOwnerName` is the nominee's LINE name while
- *  the Owner has not confirmed; the card then names them and links the Owner confirm page. */
+ *  the Owner has not confirmed; the card then names them and links the Owner confirm page.
+ *  The card always links the group's Settings (#80), since it says the settings can change
+ *  any time: the main button once the Owner is confirmed, a second one while it is pending. */
 export function setupDoneCard(p: { liffId: string; groupId: string; pendingOwnerName: string | null }): LineMessage {
   const body = [
     header('success', SETUP_DONE_TEXT.title),
@@ -56,9 +59,13 @@ export function setupDoneCard(p: { liffId: string; groupId: string; pendingOwner
     caption(SETUP_DONE_TEXT.change),
   ]
   const footer = []
+  const settings = uri(SETUP_DONE_TEXT.settings, liffUrl(p.liffId, 'settings', p.groupId))
   if (p.pendingOwnerName !== null) {
     body.push(panel([text(SETUP_DONE_TEXT.pending(p.pendingOwnerName), { weight: 'bold', color: '#1F5FB0' })]))
     footer.push(button('primary', uri(SETUP_DONE_TEXT.button, liffUrl(p.liffId, 'owner', p.groupId))))
+    footer.push(button('secondary', settings))
+  } else {
+    footer.push(button('primary', settings))
   }
   const altText = p.pendingOwnerName !== null
     ? `${SETUP_DONE_TEXT.title} ${SETUP_DONE_TEXT.pending(p.pendingOwnerName)}`

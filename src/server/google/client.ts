@@ -1,4 +1,4 @@
-import { AdapterError, DriveShareRefused, GoogleTokenRevoked } from '../log'
+import { AdapterError, DriveShareRefused, DriveStorageFull, GoogleTokenRevoked } from '../log'
 import type { DriveFolderState, DriveUpload, GooglePort, GoogleTokenResult } from '../ports'
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
@@ -210,13 +210,14 @@ export class GoogleHttpClient implements GooglePort {
         },
         body: meta,
       }, left())
+      if (!session.ok) await throwUploadError(session, 'google drive upload session')
       const location = session.headers.get('location')
-      if (!session.ok || !location) throw new AdapterError(`google drive upload session ${session.status}`)
+      if (!location) throw new AdapterError(`google drive upload session ${session.status}`)
       res = await this.call(location, {
         method: 'PUT', headers: { 'Content-Type': f.mimeType }, body: new Blob([f.data as Uint8Array<ArrayBuffer>]),
       }, left())
     }
-    if (!res.ok) throw new AdapterError(`google drive upload ${res.status}`)
+    if (!res.ok) await throwUploadError(res, 'google drive upload')
     const json = (await res.json()) as { id?: unknown; webViewLink?: unknown }
     if (typeof json.id !== 'string' || json.id === '') throw new AdapterError('google drive upload no id')
     const webViewLink = typeof json.webViewLink === 'string' && json.webViewLink !== ''
@@ -254,6 +255,15 @@ const SHARE_POLICY_REASONS = new Set([
   'shareInNotPermitted', 'publishOutNotPermitted', 'teamDriveDomainUsersOnlyRestriction',
   'cannotShareTeamDriveWithNonGoogleAccounts',
 ])
+
+/** #99: a failed upload step. Drive answers a full storage with 403 storageQuotaExceeded
+ *  (the "Resolve errors" guide); that one becomes DriveStorageFull, so the group is told why.
+ *  Only the reason is read; the body is never logged. */
+async function throwUploadError(res: Response, what: string): Promise<never> {
+  const reasons = await errorReasons(res)
+  if (reasons.includes('storageQuotaExceeded')) throw new DriveStorageFull(res.status)
+  throw new AdapterError(`${what} ${res.status}`)
+}
 
 /** The `reason` of each entry in a Google API error body (error.errors[]). */
 async function errorReasons(res: Response): Promise<string[]> {

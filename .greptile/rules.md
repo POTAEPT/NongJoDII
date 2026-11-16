@@ -22,6 +22,7 @@ Apply each rule to the code a pull request adds or changes. The code is still a 
 - At the Fair-use cap, the group gets a message with the reset time, and summarizing stops until the month resets (#6).
 - Progress detection is a keyword gate in code first (`src/server/progress/keywords.ts`): a chat line without a progress word makes no AI call. Only a match goes to the decision model (#132).
 - The decision model is TypeSafe Jev (`typesafe/jev-1.14`) through OpenRouter's Decisions API (`DecisionsPort`), never chat completions. A refused or missing answer means "not answered", never "not progress" (decided 2026-11-17).
+- Before a Summary's text call, one decision-model call checks the same chat window: `has_task` below 0.5 means a summary-only text call with no Task candidates and no review button; otherwise the prompt carries the count hint, and fewer Tasks than the hint's minimum gives one retry for the missed Tasks, then "อาจมีงานเพิ่ม" if still short. At most 1 decision call and 2 text calls per Summary, each metered and cap-checked. A refused or failed check keeps the single text call with the prompt used before (#157, decided 2026-11-17).
 - When the decision model does not answer (refusal, missing answer, error or the Fair-use cap), the bot asks the user with the free picker, and the message is kept; there is no chat-model fallback (#7, decided 2026-11-17).
 
 ## Google Drive and files (#3, #4, #11)

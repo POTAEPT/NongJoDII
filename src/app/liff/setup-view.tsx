@@ -5,6 +5,7 @@ import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
+import { MembersHint } from './members-hint'
 import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { ERR_401, post } from './api'
 import { track } from './analytics'
@@ -360,6 +361,7 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
               </section>
             )
           })}
+          <MembersHint known={form.members.length} total={data.lineMemberCount ?? null} />
           <p className="text-xs text-ink-3">
             เจ้าของบอทต้องกดยืนยันเองด้วยบัญชี LINE ก่อนจึงจะมีผล ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น
           </p>

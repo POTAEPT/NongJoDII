@@ -34,4 +34,6 @@ export type SettingsLoad = {
   pendingOwner: { lineUserId: string; displayName: string; isRequester: boolean } | null
   values: SettingsValues
   members: SettingsMember[]
+  /** #142: LINE's member count of the group (null when LINE did not answer). */
+  lineMemberCount: number | null
 }

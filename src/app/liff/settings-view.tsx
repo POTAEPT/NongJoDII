@@ -1,5 +1,6 @@
 'use client'
 
+import { MembersHint } from './members-hint'
 import { TAG_SET_MAX } from '@/server/tasks/tags'
 import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -241,6 +242,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
           </div>
 
           <MemberRows rows={rows} me={me} canEdit={data.canEdit} saving={saving} onChange={set} form={form} />
+          <MembersHint known={form.members.length} total={data.lineMemberCount ?? null} />
 
           <section className="space-y-2">
             <span className="block text-sm font-semibold">ฟีเจอร์</span>

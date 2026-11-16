@@ -9,6 +9,7 @@ export type CandidateForm = {
   assigneeLineUserId: string | ''
   dueDate: string // 'YYYY-MM-DD'
   dueTime: string // 'HH:mm'
+  tags: string[]  // #109: the model's suggestion, as the person edits it
 }
 
 const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000
@@ -40,6 +41,7 @@ export function initialForms(view: ReviewView): CandidateForm[] {
       assigneeLineUserId: c.suggestedAssigneeLineUserId ?? '',
       dueDate: date,
       dueTime: time,
+      tags: [...c.suggestedTags],
     }
   })
 }
@@ -56,6 +58,7 @@ export function toDecisions(forms: CandidateForm[]): Decision[] {
             details: f.details === '' ? null : f.details,
             assigneeLineUserId: f.assigneeLineUserId === '' ? null : f.assigneeLineUserId,
             dueAt: toBangkokIso(f.dueDate, f.dueTime),
+            tags: f.tags,
           }
         : { candidateId: f.candidateId, action: 'decline' },
     )

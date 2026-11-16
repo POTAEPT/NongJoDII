@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AdapterError } from '@/server/log'
 import { SupabaseStore } from '@/server/store/supabase-store'
 
@@ -30,6 +30,11 @@ function stubDb(results: Result[]) {
         },
       })
       return builder
+    },
+    // #109: an rpc answers the next queued result too.
+    rpc: (name: string, args: unknown) => {
+      chains.push([{ method: 'rpc', args: [name, args] }])
+      return { then: (ok: (r: Result) => unknown, bad: (e: unknown) => unknown) => Promise.resolve(results.shift() ?? { data: null, error: null }).then(ok, bad) }
     },
   }
   return { store: new SupabaseStore(db as unknown as SupabaseClient), chains }
@@ -67,5 +72,47 @@ describe('#108 Summary reads', () => {
 
   it('throws an AdapterError on a database error', async () => {
     await expect(stubDb([{ data: null, error: { code: 'XX000' } }]).store.getLatestSummaryEnd('g1')).rejects.toBeInstanceOf(AdapterError)
+  })
+})
+
+describe('#109 tags in the store', () => {
+  const task = {
+    groupId: 'g1', candidateId: 'c1', title: 't', details: null, status: 'not_assigned' as const,
+    assigneeLineUserId: null, createdByLineUserId: 'U1', dueAt: null, tags: ['ออกแบบ'],
+  }
+
+  it('confirmCandidate sets the tags on a created Task in a second statement', async () => {
+    const { store, chains } = stubDb([ok([{ outcome: 'created', task_id: 't1' }]), ok(null)])
+    expect(await store.confirmCandidate(task, new Date())).toEqual({ outcome: 'created', taskId: 't1' })
+    expect(chains[1]).toEqual([
+      { method: 'from', args: ['tasks'] },
+      { method: 'update', args: [{ tags: ['ออกแบบ'] }] },
+      { method: 'eq', args: ['id', 't1'] },
+    ])
+  })
+
+  it('a failed tag write is logged and never fails the confirm; no tags or already decided writes nothing', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failed = stubDb([ok([{ outcome: 'created', task_id: 't1' }]), { data: null, error: { code: '23514' } }])
+    expect(await failed.store.confirmCandidate(task, new Date())).toEqual({ outcome: 'created', taskId: 't1' })
+    expect(errors.mock.calls.map((c) => String(c[0])).join()).toContain('task_tags_failed')
+    const none = stubDb([ok([{ outcome: 'created', task_id: 't1' }])])
+    await none.store.confirmCandidate({ ...task, tags: [] }, new Date())
+    expect(none.chains).toHaveLength(1)
+    const decided = stubDb([ok([{ outcome: 'already_decided', task_id: 't1' }])])
+    await decided.store.confirmCandidate(task, new Date())
+    expect(decided.chains).toHaveLength(1)
+    errors.mockRestore()
+  })
+
+  it('updateTask writes the tags, and listDashboardTasks reads them', async () => {
+    const { store, chains } = stubDb([ok([{ id: 't1' }]), ok([])])
+    await store.updateTask('t1', {
+      title: 't', details: null, assigneeLineUserId: null, status: 'not_assigned', dueAt: null,
+      lastEditedByLineUserId: 'U1', lastActivityAt: new Date('2026-11-16T00:00:00Z'), tags: ['ด่วน'],
+    })
+    expect(chains[0][1]).toMatchObject({ method: 'update', args: [expect.objectContaining({ tags: ['ด่วน'] })] })
+    await store.listDashboardTasks(['g1'])
+    expect(chains[1]).toContainEqual({ method: 'select', args: [expect.stringContaining(' tags,')] })
   })
 })

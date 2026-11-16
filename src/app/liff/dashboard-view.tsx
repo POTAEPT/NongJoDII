@@ -638,6 +638,14 @@ function TaskRow({ task, now, onOpen, sub }: { task: DashboardTask; now: Date; o
         <span className={`block text-xs ${late ? 'text-[#B42318]' : 'text-[#8A94A6]'}`}>
           {sub ?? (task.dueAt ? `ส่ง ${dueLabel(task.dueAt, now)}` : STATUS_LABEL[task.status])}
         </span>
+        {task.tags.length > 0 && (
+          // #109: the Task's tags.
+          <span className="mt-1 flex flex-wrap gap-1">
+            {task.tags.map((t) => (
+              <span key={t} className="rounded-full bg-[#EAF1FB] px-2 py-0.5 text-[11px] font-semibold text-[#1F5BAD]">{t}</span>
+            ))}
+          </span>
+        )}
       </span>
       <StatusPill status={task.status} />
     </button>

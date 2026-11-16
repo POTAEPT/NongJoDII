@@ -87,6 +87,13 @@ describe('DemoLlm', () => {
     }
     const llm = new DemoLlm({ inner: null, decisions: real })
     await llm.decide(ask0())
+    // Without a reported cost, the dated slug OpenRouter echoes is priced as Jev, not the text model.
+    const unpriced: DecisionsPort = {
+      decide: async () => ({ model: 'typesafe/jev-1.14-20261014', answers: {}, usage: { inputTokens: 1_000_000, outputTokens: 87, costUsd: null } }),
+    }
+    const other = new DemoLlm({ inner: null, decisions: unpriced })
+    await other.decide(ask0())
+    expect(other.calls).toMatchObject([{ kind: 'progress', costUsd: 0.042, estimated: true }])
     expect(llm.lastCallFallback).toBe(false)
     expect(llm.calls).toMatchObject([
       { kind: 'progress', model: 'typesafe/jev-1.14', inputTokens: 400, outputTokens: 0, costUsd: 0.0000168, estimated: false, fallback: false },

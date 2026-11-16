@@ -130,6 +130,13 @@ describe('runMeteredDecisions', () => {
     expect(t.store.tables.ai_usage[0].settledAt).not.toBeNull()
   })
 
+  it('without a reported cost, prices by the slug asked for, not the dated slug OpenRouter echoes', async () => {
+    const t = await setup()
+    t.decisions.respond({ model: 'typesafe/jev-1.14-20261014', answers: {}, usage: { inputTokens: 1_000_000, outputTokens: 87, costUsd: null } })
+    await runMeteredDecisions(t.deps, t.ctx, DREQ)
+    expect(t.store.tables.ai_usage[0]).toMatchObject({ model: 'typesafe/jev-1.14-20261014', costUsd: 0.042 })
+  })
+
   it('releases the claim when the port throws', async () => {
     const t = await setup()
     t.decisions.fail(new Error('openrouter decisions 500'))

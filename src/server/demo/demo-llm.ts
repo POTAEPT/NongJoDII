@@ -85,7 +85,8 @@ export class DemoLlm implements LlmPort, DecisionsPort {
       const result = await withTimeout(this.decisionsInner.decide({ ...req, timeoutMs }), timeoutMs)
       this.lastCallFallback = false
       this.model = result.model
-      this.recordUsage('progress', result.model, result.usage, false)
+      // Priced by the slug asked for: OpenRouter echoes a dated one (typesafe/jev-1.14-20261014).
+      this.recordUsage('progress', result.model, result.usage, false, req.model)
       return result
     } catch {
       this.lastCallFallback = true

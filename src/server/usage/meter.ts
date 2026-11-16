@@ -88,9 +88,13 @@ function estimateUsage(req: LlmRequest): AiUsageActual {
   return { model: req.model, inputTokens, outputTokens, costUsd: priceTokens(req.model, inputTokens, outputTokens) }
 }
 
-/** Decision models answer with probabilities, not text: the docs' example bills 0 output
- *  tokens, so the estimate is the input alone (the state and every question, as sent). */
+/** Decision models answer with probabilities, not text. A live Jev call with three questions
+ *  reported 87 output tokens (billed at $0), so the estimate allows this many. */
+const DECISIONS_OUTPUT_ESTIMATE = 256
+
+/** The input is the state and every question, as sent. */
 function estimateDecisionsUsage(req: DecisionsRequest): AiUsageActual {
   const inputTokens = Math.ceil((req.state.length + JSON.stringify(req.questions).length) / 2)
-  return { model: req.model, inputTokens, outputTokens: 0, costUsd: priceTokens(req.model, inputTokens, 0) }
+  const outputTokens = DECISIONS_OUTPUT_ESTIMATE
+  return { model: req.model, inputTokens, outputTokens, costUsd: priceTokens(req.model, inputTokens, outputTokens) }
 }

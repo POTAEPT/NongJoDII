@@ -469,7 +469,9 @@ export class SupabaseStore implements StorePort {
   async listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]> {
     const { data, error } = await this.db
       .from('messages')
-      .select('id, sender_line_user_id, text, sent_at, mentions, line_users(display_name)')
+      // Hint the FK: messages also references line_users through progress_dismissed_by_line_user_id
+      // (20261115150000), so a bare line_users(...) embed is ambiguous (PostgREST PGRST201).
+      .select('id, sender_line_user_id, text, sent_at, mentions, line_users!sender_line_user_id(display_name)')
       .eq('group_id', groupId)
       .eq('message_type', 'text')
       .not('text', 'is', null)

@@ -5,6 +5,7 @@ import { badRequest, field } from '../review/load'
 export type TaskView = {
   taskId: string; title: string; details: string | null; status: TaskStatus
   assigneeLineUserId: string | null; dueAt: string | null                      // ISO
+  tags: string[]                                                               // #109
   members: { lineUserId: string; displayName: string }[]                       // LINE names
 }
 
@@ -36,6 +37,7 @@ export async function taskView(deps: Deps, task: TaskRow): Promise<TaskView> {
   return {
     taskId: task.id, title: task.title, details: task.details, status: task.status,
     assigneeLineUserId: task.assigneeLineUserId, dueAt: task.dueAt ? task.dueAt.toISOString() : null,
+    tags: task.tags,
     members: members.map((m) => ({ lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME })),
   }
 }

@@ -145,6 +145,7 @@ export type GroupSetupRecord = {
   ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
   driveFolderId?: string | null   // groups.drive_folder_id; absent = null (#13)
   takeoverAskedAt?: Date | null   // groups.takeover_asked_at; absent = null (#31, set by change_project_owner)
+  tagSet?: string[]               // groups.tag_set; absent = [] (#110)
 }
 /** task_prompts rows of kind owner_needed (#30). */
 export type OwnerPromptRecord = {
@@ -419,6 +420,7 @@ export class FakeStore implements StorePort {
       .map((c) => ({
         id: c.id, summaryId: c.summaryId, state: c.state, title: c.title, details: c.details,
         suggestedAssigneeLineUserId: c.suggestedAssigneeLineUserId, suggestedDueAt: c.suggestedDueAt,
+        suggestedTags: [...(c.suggestedTags ?? [])],
       }))
   }
 
@@ -474,6 +476,7 @@ export class FakeStore implements StorePort {
       id: t.id, groupId: t.groupId, lineGroupId: this.groupOf(t.groupId).lineGroupId, candidateId: t.candidateId,
       title: t.title, details: t.details, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
       createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt, announcedAt: t.announcedAt,
+      tags: [...(t.tags ?? [])],
     }
   }
 
@@ -574,6 +577,26 @@ export class FakeStore implements StorePort {
   }
 
   // ---- #7 Track progress ----
+  async getLatestSummaryEnd(groupId: string): Promise<Date | null> {
+    this.fault('getLatestSummaryEnd')
+    const rows = this.tables.summaries.filter((s) => s.groupId === groupId)
+    if (rows.length === 0) return null
+    const latest = rows.reduce((a, b) => (b.createdAt.getTime() >= a.createdAt.getTime() ? b : a))
+    return latest.lastMessageAt ? new Date(latest.lastMessageAt.getTime()) : null
+  }
+
+  async listTasksForSummary(groupId: string, doneSince: Date, limit: number): Promise<TaskRow[]> {
+    this.fault('listTasksForSummary')
+    const recent = (d: Date | null) => d !== null && d.getTime() >= doneSince.getTime()
+    return this.tables.tasks
+      .map((t, i) => ({ t, i }))
+      .filter(({ t }) => t.groupId === groupId && t.deletedAt === null
+        && (t.status !== 'done' || recent(t.doneAt) || recent(t.lastActivityAt)))
+      .reverse() // newest first (rows are stored in creation order)
+      .slice(0, limit)
+      .map(({ t }) => this.toTaskRow(t))
+  }
+
   async listOpenTasks(groupId: string): Promise<TaskRow[]> {
     this.fault('listOpenTasks')
     return this.tables.tasks
@@ -894,7 +917,7 @@ export class FakeStore implements StorePort {
       .map((t) => ({
         id: t.id, groupId: t.groupId, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
         assigneeName: this.tables.line_users.find((u) => u.lineUserId === t.assigneeLineUserId)?.displayName ?? null,
-        dueAt: t.dueAt,
+        dueAt: t.dueAt, tags: [...(t.tags ?? [])],
       }))
   }
 
@@ -1414,6 +1437,7 @@ export class FakeStore implements StorePort {
       weeklySummaryTime: s.weeklySummaryTime.slice(0, 5),
       nominatedOwnerLineUserId: g.nominatedOwnerLineUserId, ownerConfirmedAt: g.ownerConfirmedAt,
       ownerNominatedAt: x.ownerNominatedAt, ownerLeftAt: g.ownerLeftAt,
+      tagSet: [...(x.tagSet ?? [])],
     }
   }
 
@@ -1458,8 +1482,10 @@ export class FakeStore implements StorePort {
       // setup_group returns that answer and SupabaseStore.saveGroupSetup throws on it (it is
       // not a setup_group outcome); the fake throws here instead, with the same result.
       if (outcome !== 'confirmed') throw new Error(`FakeStore: setup self-confirm ${outcome}`)
+      if (w.tagSet.length > 0) this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
       return { outcome: 'confirmed' }
     }
+    if (w.tagSet.length > 0) this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
     return { outcome: 'pending' }
   }
 
@@ -1482,6 +1508,7 @@ export class FakeStore implements StorePort {
       const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
       if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
     }
+    this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
     return { saved: true }
   }
 
@@ -2032,7 +2059,7 @@ export class FakeStore implements StorePort {
     fk(this.hasGroup(partial.groupId), 'tasks.group_id')
     const row: TaskRecord = {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
-      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null,
+      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null, tags: [],
       lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       announcePendingToken: null, announcePendingAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,

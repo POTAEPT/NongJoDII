@@ -1,3 +1,4 @@
+import { personTags, TAG_SET_MAX } from '../tasks/tags'
 import { driveDeadline, syncDriveForOwner } from '../google/drive-folders'
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import { log, logError } from '../log'
@@ -21,6 +22,8 @@ export const SETUP_PUSH_RESERVE = 0.02
 export type GroupValues = {
   workDescription: string | null; features: SetupFeatures; dailyReminderTime: string
   weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]
+  /** #110: the group's starting tags, optional (missing = none). */
+  tagSet: string[]
 }
 type Parsed = GroupValues & { ownerLineUserId: string }
 
@@ -66,9 +69,14 @@ export function parseGroupValues(body: unknown): { ok: true; value: GroupValues 
     members.push({ lineUserId: m.lineUserId, nicknames, role: role === '' ? null : role })
   }
 
+  // #110: the starting tags; the field may be missing (an older page, or skipped).
+  const tagSet = personTags(field(body, 'tagSet'), TAG_SET_MAX)
+  if (tagSet === null) return { ok: false, field: 'tagSet' }
+
   return {
     ok: true,
     value: {
+      tagSet,
       workDescription: wd.trim() === '' ? null : wd.trim(),
       features: {
         summarize: features.summarize as boolean, saveFiles: features.saveFiles as boolean,
@@ -135,7 +143,7 @@ export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Prom
       trackRemind: v.features.trackRemind, weeklySummary: v.features.weeklySummary,
     },
     dailyReminderTime: v.dailyReminderTime, weeklySummaryWeekday: v.weeklySummaryWeekday,
-    weeklySummaryTime: v.weeklySummaryTime, members, ownerLineUserId: v.ownerLineUserId, at,
+    weeklySummaryTime: v.weeklySummaryTime, members, ownerLineUserId: v.ownerLineUserId, at, tagSet: v.tagSet,
   })
   // Rechecked under the row lock: another form or a confirm got in first, or the Owner left.
   if (outcome === 'closed') return closed

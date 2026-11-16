@@ -1,0 +1,54 @@
+{
+  "name": "01-clear-task",
+  "feature": "Summary and Task candidates (#5, #15)",
+  "description": "Three people agree on one piece of work with a clear owner and due time, then one asks for a Summary. Expected: one Task candidate and the review button.",
+  "startAt": "2026-11-16T03:00:00Z",
+  "group": {
+    "lineGroupId": "Ce2e00000000000000000000000000001",
+    "name": "E2E ทีมพิตช์",
+    "workDescription": "เตรียมงานพิตช์รอบสุดท้ายของทีม"
+  },
+  "personas": {
+    "ploy": { "lineName": "Ploy", "role": "manager", "owner": true, "lineUserId": "Ue2e00000000000000000000000000a01" },
+    "ton": { "lineName": "Ton", "role": "developer", "lineUserId": "Ue2e00000000000000000000000000a02" },
+    "mint": { "lineName": "Mint", "role": "designer", "lineUserId": "Ue2e00000000000000000000000000a03" }
+  },
+  "messages": [
+    { "id": "m1", "persona": "ploy", "minute": 0, "text": "ทุกคน วันพฤหัสนี้เราต้องพิตช์รอบสุดท้ายแล้วนะ สไลด์ยังเป็นของรอบแรกอยู่เลย" },
+    { "id": "m2", "persona": "ton", "minute": 1, "text": "ใช่ครับ ตัวเลข break-even ในสไลด์ก็ยังไม่ได้แก้ตามที่กรรมการ comment มา" },
+    { "id": "m3", "persona": "mint", "minute": 2, "text": "เดี๋ยวมิ้นท์ทำสไลด์ใหม่ให้เองค่ะ แก้ดีไซน์ทั้งเด็คเลย" },
+    { "id": "m4", "persona": "ploy", "minute": 3, "text": "ดีเลย งั้นฝากมิ้นท์อัปเดตสไลด์พิตช์ทั้งเด็ค ใส่ตัวเลข break-even ใหม่ด้วยนะ" },
+    { "id": "m5", "persona": "mint", "minute": 4, "text": "ได้ค่ะ ต้องเสร็จเมื่อไหร่คะ" },
+    { "id": "m6", "persona": "ploy", "minute": 5, "text": "ขอภายในวันพุธที่ 18 ห้าโมงเย็นนะ จะได้มีเวลาซ้อมก่อนวันจริง" },
+    { "id": "m7", "persona": "mint", "minute": 6, "text": "โอเคค่ะ พุธ 5 โมงเย็นส่งให้ดูในกลุ่มนี้เลย" },
+    { "id": "m8", "persona": "ton", "minute": 7, "text": "ตัวเลขใหม่ผมส่งไว้ในแชตเมื่อวานแล้วนะครับ ใช้ชุดนั้นได้เลย" },
+    { "id": "m9", "persona": "ploy", "minute": 8, "text": "ขอบคุณทั้งสองคนมาก 🙏" }
+  ],
+  "summaryCommand": { "persona": "ploy", "minute": 9, "text": "NongJoDII สรุปหน่อย" },
+  "expectedTasks": [
+    {
+      "title": "อัปเดตสไลด์พิตช์ทั้งเด็ค พร้อมตัวเลข break-even ใหม่",
+      "assignee": "mint",
+      "due": "2026-11-18T17:00:00+07:00",
+      "sourceMessage": "m4"
+    }
+  ],
+  "fakeModelAnswer": {
+    "summary": "ทีมเตรียมพิตช์รอบสุดท้ายวันพฤหัส {ploy} มอบหมายให้ {mint} อัปเดตสไลด์พิตช์ทั้งเด็คและใส่ตัวเลข break-even ใหม่ ส่งภายในวันพุธ 17:00 น. โดยใช้ตัวเลขที่ {ton} ส่งไว้แล้ว",
+    "tasks": [
+      {
+        "title": "อัปเดตสไลด์พิตช์ทั้งเด็ค พร้อมตัวเลข break-even ใหม่",
+        "details": "แก้ดีไซน์ทั้งเด็คและใช้ตัวเลข break-even ชุดใหม่ที่ {ton} ส่งไว้ในแชต",
+        "assignee": "mint",
+        "due": "2026-11-18T17:00:00+07:00",
+        "source": "m4"
+      }
+    ]
+  },
+  "expect": {
+    "storedMessages": 10,
+    "summaries": 1,
+    "candidates": 1,
+    "replyHasReviewButton": true
+  }
+}

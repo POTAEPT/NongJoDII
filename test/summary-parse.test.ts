@@ -11,7 +11,7 @@ describe('parseSummaryOutput', () => {
     const out = parseSummaryOutput(json([task({ details: 'รายละเอียด' })]))
     expect(out).toEqual({
       summary: 'สรุป',
-      tasks: [{ title: 'ทำสไลด์', details: 'รายละเอียด', assigneeRef: 'm1', due: null, sourceRef: 'msg1' }],
+      tasks: [{ title: 'ทำสไลด์', details: 'รายละเอียด', assigneeRef: 'm1', due: null, sourceRef: 'msg1', tags: [] }],
     })
   })
 

@@ -1,4 +1,4 @@
-import type { Member, MessageMention, StoredMessage } from '../ports'
+import type { Member, MessageMention, StoredMessage, TaskStatus } from '../ports'
 import { bangkokTodayLabel, formatPromptTime } from '../time/bangkok'
 
 export type PromptRef = { ref: string; lineUserId: string }          // 'm1', 'm2', ...
@@ -6,11 +6,25 @@ export type MessageRef = { ref: string; message: StoredMessage }     // 'msg1', 
 
 const MESSAGE_TEXT_MAX = 500
 
+/** #108: a Task the group already has, which the Summary must not propose again. */
+export type ExistingTask = { title: string; status: TaskStatus; tags?: string[] }
+
+const STATUS_WORD: Record<TaskStatus, string> = { not_assigned: 'no assignee', in_process: 'in progress', done: 'done' }
+
 /** Builds the Summary prompt. People appear only as member refs (mN); nicknames
- *  appear only here, never on a screen (rule 9). */
+ *  appear only here, never on a screen (rule 9).
+ *  #108: `messages` is the chat since the group's last Summary, the only source of tasks.
+ *  `context` is chat an earlier Summary already covered, given for understanding only and
+ *  without message refs (so no task can point at it). `existingTasks` are the group's open
+ *  and recently done Tasks, which the model must not propose again. */
 export function buildSummaryPrompt(p: {
   now: Date; workDescription: string | null; members: Member[]; messages: StoredMessage[]
+  context?: StoredMessage[]; existingTasks?: ExistingTask[]
+  /** #110: the group's starting tags, set by the Owner; the model picks from these first. */
+  groupTags?: string[]
 }): { system: string; user: string; memberRefs: PromptRef[]; messageRefs: MessageRef[] } {
+  const context = p.context ?? []
+  const existingTasks = p.existingTasks ?? []
   const memberRefs: PromptRef[] = []
   const refByUser = new Map<string, string>()
   const lines: string[] = []
@@ -30,26 +44,36 @@ export function buildSummaryPrompt(p: {
     lines.push(memberLine(ref, m.displayName, m.nicknames, m.role))
   }
   // Senders who are not live Members (left or unknown) still get a ref.
-  for (const msg of p.messages) {
+  for (const msg of [...context, ...p.messages]) {
     if (msg.senderLineUserId === null || refByUser.has(msg.senderLineUserId)) continue
     const ref = addRef(msg.senderLineUserId)
     lines.push(memberLine(ref, msg.senderDisplayName, [], null))
   }
 
-  const messageRefs: MessageRef[] = p.messages.map((message, i) => ({ ref: `msg${i + 1}`, message }))
-  const chat = messageRefs.map(({ ref, message }) => {
+  const line = (message: StoredMessage): string => {
     const sender = message.senderLineUserId === null ? '?' : refByUser.get(message.senderLineUserId)
     // Tags first: their offsets point into the raw stored text.
     const text = withMentionRefs(message.text, message.mentions, liveRefByUser)
       .replace(/\r\n|\r|\n/g, ' ')
       .slice(0, MESSAGE_TEXT_MAX)
-    return `${ref} [${formatPromptTime(message.sentAt)}] ${sender}: ${text}`
-  })
+    return `[${formatPromptTime(message.sentAt)}] ${sender}: ${text}`
+  }
+  const messageRefs: MessageRef[] = p.messages.map((message, i) => ({ ref: `msg${i + 1}`, message }))
+  const chat = messageRefs.map(({ ref, message }) => `${ref} ${line(message)}`)
 
   const user = [
     `Group context: ${p.workDescription ?? '-'}`,
     'Members:',
     ...lines,
+    ...(existingTasks.length > 0
+      ? ['Existing tasks (already in the group; never propose these again):',
+        ...existingTasks.map((t) => `- [${STATUS_WORD[t.status]}] ${t.title.replace(/\r\n|\r|\n/g, ' ').slice(0, 200)}`)]
+      : []),
+    ...((p.groupTags ?? []).length > 0 ? [`Group tags (set by the Owner; use these first): ${(p.groupTags ?? []).join(', ')}`] : []),
+    ...(tagsInUse(existingTasks).length > 0 ? [`Tags in use: ${tagsInUse(existingTasks).join(', ')}`] : []),
+    ...(context.length > 0
+      ? ['Earlier chat (already summarized before; context only, oldest first):', ...context.map(line)]
+      : []),
     'Chat (oldest first, Asia/Bangkok time):',
     ...chat,
   ].join('\n')
@@ -57,16 +81,19 @@ export function buildSummaryPrompt(p: {
   const system = [
     'You are NongJoDII (น้องจดดี), an assistant in a Thai student team\'s LINE group.',
     'Read the chat and reply with ONLY a JSON object of this shape:',
-    '{"summary": string, "tasks": [{"title": string, "details": string|null, "assignee": string|null, "due": string|null, "source": string|null}]}',
+    '{"summary": string, "tasks": [{"title": string, "details": string|null, "assignee": string|null, "due": string|null, "source": string|null, "tags": string[]}]}',
     'Rules:',
     '- Write summary, title and details in Thai. summary: at most 800 characters.',
     '- A task is concrete work that someone should still do according to the chat. Skip work the chat marks as finished. At most 10 tasks. Never invent tasks.',
+    '- Summarize and take tasks ONLY from the "Chat" section. "Earlier chat" was summarized before: use it only to understand the new chat, and never take a task from it.',
+    '- Never propose a task that is already in "Existing tasks", whatever its status and even if the chat words it differently.',
     '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname in those fields.',
     '- Never write a message ref (such as msg14) in summary, title or details; readers never see message refs. Use message refs only in source.',
     '- In the chat, @{m2} means the sender tagged that member; trust a tag over a name, since two members can share a LINE name.',
     '- assignee: the member ref (such as "m2") of the person who should do it. Match people by tag, LINE name or nickname. null when unclear.',
     `- due: ISO 8601 date-time with +07:00 offset when the chat states a deadline, else null. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok).`,
     '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
+    '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Pick from "Group tags" first, then reuse "Tags in use"; a new tag only when none fits. Never a person\'s name or nickname. [] when none fits.',
   ].join('\n')
 
   return { system, user, memberRefs, messageRefs }
@@ -123,4 +150,14 @@ export function stripMessageRefs(text: string): string {
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/[ \t]+([,.)])/g, '$1')
     .trim()
+}
+
+/** #109: the distinct tags on the group's existing Tasks, so the model reuses them. */
+function tagsInUse(tasks: ExistingTask[]): string[] {
+  const seen = new Map<string, string>()
+  for (const t of tasks) for (const tag of t.tags ?? []) {
+    const k = tag.toLocaleLowerCase('th')
+    if (!seen.has(k)) seen.set(k, tag)
+  }
+  return [...seen.values()].slice(0, 30)
 }

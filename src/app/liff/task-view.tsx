@@ -1,5 +1,6 @@
 'use client'
 
+import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TaskView as TaskData } from '@/server/tasks/load'
 import { ERR_400, errorCopy, post } from './api'
@@ -24,11 +25,11 @@ type Load =
   | { kind: 'loading' }
   | { kind: 'error'; status: number; message: string }
   | { kind: 'ready'; data: TaskData }
-type Form = { title: string; details: string; assignee: string; dueDate: string; dueTime: string }
+type Form = { title: string; details: string; assignee: string; dueDate: string; dueTime: string; tags: string[] }
 
 function toForm(t: TaskData): Form {
   const { date, time } = splitBangkokIso(t.dueAt)
-  return { title: t.title, details: t.details ?? '', assignee: t.assigneeLineUserId ?? '', dueDate: date, dueTime: time }
+  return { title: t.title, details: t.details ?? '', assignee: t.assigneeLineUserId ?? '', dueDate: date, dueTime: time, tags: [...(t.tags ?? [])] }
 }
 
 export function TaskView({ liff, idToken, id }: LiffViewProps) {
@@ -83,6 +84,7 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
         details: form.details === '' ? null : form.details,
         assigneeLineUserId: form.assignee === '' ? null : form.assignee,
         dueAt: toBangkokIso(form.dueDate, form.dueTime),
+        tags: form.tags,
       })
       if (status !== 200) setFormError(errorCopy(status, COPY))
       else {
@@ -138,6 +140,9 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
         <Field label="รายละเอียด">
           <textarea maxLength={2000} rows={2} className={inputClass} value={form.details} disabled={submitting}
             placeholder="ยังไม่มีรายละเอียด" onChange={(e) => set({ details: e.target.value })} />
+        </Field>
+        <Field label="แท็ก">
+          <TagsEditor tags={form.tags} disabled={submitting} onChange={(tags) => set({ tags })} />
         </Field>
         <div>
           <span className="mb-2 block text-sm font-semibold">ผู้รับ</span>

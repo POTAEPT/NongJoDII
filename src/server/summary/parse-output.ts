@@ -1,5 +1,8 @@
+import { suggestedTags } from '../tasks/tags'
+
 export type ParsedTask = {
   title: string; details: string | null; assigneeRef: string | null; due: Date | null; sourceRef: string | null
+  tags: string[]   // #109: cleaned by tasks/tags.ts; [] when the model gave none
 }
 
 /** Constant message: never include the model's content (it quotes chat). */
@@ -8,6 +11,38 @@ export class ModelOutputError extends Error {
   constructor() {
     super('model output invalid')
   }
+}
+
+/** #111: the shape parseSummaryOutput reads, sent as the request's JSON Schema (strict:
+ *  every property required, nullable ones typed [..., 'null'], no extra properties). The
+ *  parser still checks every field: the schema lowers bad output, it does not replace the
+ *  check. test/ai-schemas.test.ts keeps the two in step. */
+export const SUMMARY_SCHEMA = {
+  name: 'summary',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['summary', 'tasks'],
+    properties: {
+      summary: { type: 'string' },
+      tasks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'details', 'assignee', 'due', 'source', 'tags'],
+          properties: {
+            title: { type: 'string' },
+            details: { type: ['string', 'null'] },
+            assignee: { type: ['string', 'null'] },
+            due: { type: ['string', 'null'] },
+            source: { type: ['string', 'null'] },
+            tags: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  },
 }
 
 const SUMMARY_MAX = 1500
@@ -53,7 +88,7 @@ function parseTask(item: unknown): ParsedTask | null {
     const d = new Date(t.due)
     if (!Number.isNaN(d.getTime())) due = d
   }
-  return { title, details, assigneeRef, due, sourceRef }
+  return { title, details, assigneeRef, due, sourceRef, tags: suggestedTags(t.tags) }
 }
 
 /** "msg14" is the prompt's form; "{msg14}" and the older "#14" are accepted and

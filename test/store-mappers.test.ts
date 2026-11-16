@@ -56,7 +56,7 @@ describe('toCandidateRow', () => {
   it('maps suggested_due_at to a Date', () => {
     expect(toCandidateRow(row)).toEqual({
       id: 'c1', summaryId: 's1', state: 'proposed', title: 'T', details: null,
-      suggestedAssigneeLineUserId: null, suggestedDueAt: new Date('2026-11-20T10:00:00Z'),
+      suggestedAssigneeLineUserId: null, suggestedDueAt: new Date('2026-11-20T10:00:00Z'), suggestedTags: [],
     })
   })
 
@@ -74,7 +74,7 @@ describe('toTaskRow', () => {
     })).toEqual({
       id: 't1', groupId: 'g1', lineGroupId: 'C1', candidateId: 'c1', title: 'T', details: null,
       status: 'in_process', assigneeLineUserId: 'U2', createdByLineUserId: 'U1',
-      dueAt: new Date('2026-11-20T10:00:00Z'), deletedAt: null, announcedAt: new Date('2026-11-12T10:00:00Z'),
+      dueAt: new Date('2026-11-20T10:00:00Z'), deletedAt: null, announcedAt: new Date('2026-11-12T10:00:00Z'), tags: [],
     })
   })
 })

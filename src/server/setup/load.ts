@@ -67,6 +67,7 @@ export async function loadSetup(deps: Deps, body: unknown): Promise<ApiResult> {
       weeklySummaryWeekday: group.weeklySummaryWeekday,
       weeklySummaryTime: group.weeklySummaryTime,
       ownerLineUserId: nomineeId,
+      tagSet: group.tagSet,
     },
     members,
     nominee: nomineeId ? { lineUserId: nomineeId, displayName: await lineNameOf(deps, nomineeId, live) } : null,

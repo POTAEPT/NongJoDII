@@ -16,15 +16,15 @@ const view: ReviewView = {
   summaryId: 's1',
   summaryText: 'สรุป',
   candidates: [
-    { id: 'c1', state: 'proposed', title: 'งานหนึ่ง', details: 'รายละเอียด', suggestedAssigneeLineUserId: 'U1', suggestedDueAt: '2026-11-21T02:00:00.000Z' },
-    { id: 'c2', state: 'proposed', title: 'งานสอง', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null },
-    { id: 'c3', state: 'confirmed', title: 'งานสาม', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null },
+    { id: 'c1', state: 'proposed', title: 'งานหนึ่ง', details: 'รายละเอียด', suggestedAssigneeLineUserId: 'U1', suggestedDueAt: '2026-11-21T02:00:00.000Z', suggestedTags: [] },
+    { id: 'c2', state: 'proposed', title: 'งานสอง', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] },
+    { id: 'c3', state: 'confirmed', title: 'งานสาม', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] },
   ],
   members: [{ lineUserId: 'U1', displayName: 'Ann' }],
 }
 
 const form = (over: Partial<CandidateForm> = {}): CandidateForm => ({
-  candidateId: 'c', selected: true, editable: true, title: 't', details: '', assigneeLineUserId: '', dueDate: '', dueTime: '', ...over,
+  candidateId: 'c', selected: true, editable: true, title: 't', details: '', assigneeLineUserId: '', dueDate: '', dueTime: '', tags: [], ...over,
 })
 
 describe('toBangkokIso', () => {
@@ -54,7 +54,7 @@ describe('splitBangkokIso', () => {
 describe('initialForms', () => {
   it('makes proposed candidates selected and editable with suggestions filled', () => {
     const [a, b] = initialForms(view)
-    expect(a).toEqual({ candidateId: 'c1', selected: true, editable: true, title: 'งานหนึ่ง', details: 'รายละเอียด', assigneeLineUserId: 'U1', dueDate: '2026-11-21', dueTime: '09:00' })
+    expect(a).toEqual({ candidateId: 'c1', selected: true, editable: true, title: 'งานหนึ่ง', details: 'รายละเอียด', assigneeLineUserId: 'U1', dueDate: '2026-11-21', dueTime: '09:00', tags: [] })
     expect(b).toMatchObject({ details: '', assigneeLineUserId: '', dueDate: '', dueTime: '' })
   })
   it('makes decided candidates read-only and unselected', () => {
@@ -65,12 +65,12 @@ describe('initialForms', () => {
 describe('toDecisions', () => {
   it('confirms selected editable forms with explicit nulls', () => {
     expect(toDecisions([form({ candidateId: 'a', title: '  ชื่อ  ' })])).toEqual([
-      { candidateId: 'a', action: 'confirm', title: 'ชื่อ', details: null, assigneeLineUserId: null, dueAt: null },
+      { candidateId: 'a', action: 'confirm', title: 'ชื่อ', details: null, assigneeLineUserId: null, dueAt: null, tags: [] },
     ])
   })
   it('carries details, assignee and due', () => {
     expect(toDecisions([form({ candidateId: 'a', details: 'x', assigneeLineUserId: 'U1', dueDate: '2026-11-21', dueTime: '09:00' })])).toEqual([
-      { candidateId: 'a', action: 'confirm', title: 't', details: 'x', assigneeLineUserId: 'U1', dueAt: '2026-11-21T09:00:00+07:00' },
+      { candidateId: 'a', action: 'confirm', title: 't', details: 'x', assigneeLineUserId: 'U1', dueAt: '2026-11-21T09:00:00+07:00', tags: [] },
     ])
   })
   it('declines unselected editable forms and omits read-only ones', () => {
@@ -115,7 +115,7 @@ describe('edit then submit', () => {
     forms[0] = { ...forms[0], title: 'ชื่อใหม่' }
     forms[1] = { ...forms[1], selected: false }
     expect(toDecisions(forms)).toEqual([
-      { candidateId: 'c1', action: 'confirm', title: 'ชื่อใหม่', details: 'รายละเอียด', assigneeLineUserId: 'U1', dueAt: '2026-11-21T09:00:00+07:00' },
+      { candidateId: 'c1', action: 'confirm', title: 'ชื่อใหม่', details: 'รายละเอียด', assigneeLineUserId: 'U1', dueAt: '2026-11-21T09:00:00+07:00', tags: [] },
       { candidateId: 'c2', action: 'decline' },
     ])
   })

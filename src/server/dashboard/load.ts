@@ -30,6 +30,7 @@ export type DashboardTask = {
   assigneeLineUserId: string | null
   assigneeName: string | null // LINE name; kept for a Member who left, so Done Tasks keep it
   dueAt: string | null // ISO
+  tags: string[] // #109
 }
 export type DashboardMember = { lineUserId: string; displayName: string | null }
 /** #22: the group's latest weekly insight (counts saved on its weekly day). posted false: it
@@ -131,7 +132,7 @@ export async function loadDashboard(deps: Deps, body: unknown): Promise<ApiResul
             (access === 'overview' || t.assigneeLineUserId === user.lineUserId || t.assigneeLineUserId === null))
           .map((t) => ({
             taskId: t.id, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
-            assigneeName: t.assigneeName, dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+            assigneeName: t.assigneeName, dueAt: t.dueAt ? t.dueAt.toISOString() : null, tags: t.tags,
           })),
         insight: insightOf(insights.find((i) => i.groupId === g.groupId)),
         files: files.filter((f) => f.groupId === g.groupId).map((f) => ({

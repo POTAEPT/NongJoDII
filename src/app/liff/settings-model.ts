@@ -22,6 +22,7 @@ export function initialSettingsForm(view: SettingsLoad): SetupForm {
       lineUserId: m.lineUserId, displayName: m.displayName, nicknames: [...m.nicknames], role: m.role ?? '',
     })),
     ownerLineUserId: view.owner?.lineUserId ?? '',
+    tagSet: [...(view.values.tagSet ?? [])],
   }
 }
 
@@ -45,6 +46,7 @@ export function toSettingsBody(form: SetupForm) {
     weeklySummaryWeekday: form.weeklySummaryWeekday,
     weeklySummaryTime: form.weeklySummaryTime,
     members: form.members.map((m) => ({ lineUserId: m.lineUserId, nicknames: cleanNicknames(m.nicknames), role: m.role.trim() })),
+    tagSet: form.tagSet,
   }
 }
 

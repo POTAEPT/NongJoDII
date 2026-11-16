@@ -19,6 +19,7 @@ export type SetupValues = {
   weeklySummaryWeekday: number     // ISO 1..7
   weeklySummaryTime: string        // 'HH:MM' Bangkok, quarter hour
   ownerLineUserId: string | null   // the current nominee
+  tagSet: string[]                 // #110: the group's starting tags
 }
 
 export type SetupMember = { lineUserId: string; displayName: string; nicknames: string[]; role: string | null }
@@ -48,6 +49,8 @@ export type SetupSubmitBody = {
   weeklySummaryTime: string
   members: { lineUserId: string; nicknames: string[]; role: string }[]
   ownerLineUserId: string
+  /** #110: optional; missing = no starting tags. */
+  tagSet?: string[]
 }
 
 /** The #2e card's push result: skipped or failed still means the setup is saved, and a

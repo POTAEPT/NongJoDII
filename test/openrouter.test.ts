@@ -34,6 +34,15 @@ describe('OpenRouterClient.complete', () => {
     expect(calls[0].init.signal).toBeInstanceOf(AbortSignal)
   })
 
+  it('with a schema, asks for strict structured output from providers that support it (#111)', async () => {
+    const { client, calls } = stubFetch(200, { choices: [{ message: { content: '{}' } }] })
+    const schema = { type: 'object', additionalProperties: false, required: ['a'], properties: { a: { type: 'string' } } }
+    await client.complete({ ...REQ, schema: { name: 'thing', schema } })
+    const body = JSON.parse(calls[0].init.body as string)
+    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'thing', strict: true, schema } })
+    expect(body.provider).toEqual({ require_parameters: true })
+  })
+
   it('parses content, model and usage', async () => {
     const { client } = stubFetch(200, {
       model: 'openai/gpt-oss-20b',

@@ -1,5 +1,6 @@
 'use client'
 
+import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import type { NotifyResult, ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
@@ -281,6 +282,9 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
                   <Field label="รายละเอียด">
                     <textarea maxLength={2000} rows={3} className={inputClass} value={f.details} disabled={disabled}
                       onChange={(e) => update(f.candidateId, { details: e.target.value })} />
+                  </Field>
+                  <Field label="แท็ก">
+                    <TagsEditor tags={f.tags} disabled={disabled} onChange={(tags) => update(f.candidateId, { tags })} />
                   </Field>
                   <div className="flex gap-2">
                     <div className="flex-1"><Field label="กำหนดส่ง">

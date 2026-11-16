@@ -162,7 +162,7 @@ describe('setup load', () => {
     expect(body.members.map((m) => [m.lineUserId, m.displayName])).toEqual([['Ume', 'Me Myself'], ['Upim', 'Pim Sirin']])
     expect(body.values).toEqual({
       workDescription: '', features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
-      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00', ownerLineUserId: null,
+      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00', ownerLineUserId: null, tagSet: [],
     })
     expect(body.nominee).toBeNull()
   })
@@ -402,7 +402,7 @@ describe('setup send, another Owner', () => {
       groupId: t.group.id, byLineUserId: 'Upim', workDescription: null,
       features: { summarize: true, draftTasks: true, saveFiles: true, trackRemind: true, weeklySummary: true },
       dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
-      members: [], ownerLineUserId: 'Ucarol', at: new Date(TEST_NOW.getTime() + MIN),
+      members: [], ownerLineUserId: 'Ucarol', at: new Date(TEST_NOW.getTime() + MIN), tagSet: [],
     }))
     const second = new Date(TEST_NOW.getTime() + 2 * MIN)
     t.setNow(second)
@@ -692,5 +692,32 @@ describe('second way to the setup card: the no-Owner Summary reply', () => {
     await h.runDeferred()
     expect(h.line.replies).toHaveLength(1)
     expectSetupCard(h.line.replies[0].messages, group.id)
+  })
+})
+
+describe('#110 the setup form\'s starting tags', () => {
+  const setOf = (t: Setup) => t.store.tables.group_setups.find((r) => r.groupId === t.group.id)?.tagSet ?? []
+
+  it('saves the tags entered, cleaned', async () => {
+    const t = await setup()
+    expect((await t.submit({ tagSet: ['#ออกแบบ', 'เอกสาร', 'ออกแบบ'] })).status).toBe(200)
+    expect(setOf(t)).toEqual(['ออกแบบ', 'เอกสาร'])
+    const view = (await t.load()).body as SetupLoad
+    expect(view.values.tagSet).toEqual(['ออกแบบ', 'เอกสาร'])
+  })
+
+  it('can be skipped: no field, or an empty list, saves no tags', async () => {
+    const t = await setup()
+    expect((await t.submit()).status).toBe(200)
+    expect(setOf(t)).toEqual([])
+  })
+
+  it('refuses a list that is not text, too long, or over 20 tags, and saves nothing', async () => {
+    for (const tagSet of ['ออกแบบ', [''], ['ก'.repeat(21)], Array.from({ length: 21 }, (_, i) => `t${i}`)]) {
+      const t = await setup()
+      expect(await t.submit({ tagSet })).toEqual({ status: 400, body: { error: 'bad_request', field: 'tagSet' } })
+      expect(setOf(t)).toEqual([])
+      expect(t.row().nominatedOwnerLineUserId).toBeNull()
+    }
   })
 })

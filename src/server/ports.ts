@@ -41,7 +41,12 @@ export interface LinePort {
 // ---- OpenRouter ----
 /** timeoutMs (optional) shortens the adapter's own timeout for this call, so a caller
  *  that makes several calls can keep them all inside the route's time budget. */
-export type LlmRequest = { model: string; system: string; user: string; maxTokens: number; timeoutMs?: number }
+/** schema (#111): a JSON Schema the answer must follow (OpenRouter structured outputs, strict).
+ *  Without it the adapter asks only for a JSON object. */
+export type LlmRequest = {
+  model: string; system: string; user: string; maxTokens: number; timeoutMs?: number
+  schema?: { name: string; schema: Record<string, unknown> }
+}
 export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: number | null }
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }
@@ -131,6 +136,8 @@ export type NewSummary = {
 }
 export type NewCandidate = {
   title: string; details: string | null; suggestedAssigneeLineUserId: string | null; suggestedDueAt: Date | null
+  /** #109: the model's tags for it (tasks/tags.ts rules), empty when none. */
+  suggestedTags: string[]
 }
 export type CandidateState = 'proposed' | 'confirmed' | 'declined'
 export type CandidateRow = NewCandidate & { id: string; summaryId: string; state: CandidateState }
@@ -139,16 +146,20 @@ export type TaskStatus = 'not_assigned' | 'in_process' | 'done'
 export type NewTask = {
   groupId: string; candidateId: string; title: string; details: string | null; status: TaskStatus
   assigneeLineUserId: string | null; createdByLineUserId: string; dueAt: Date | null
+  /** #109: the tags the person confirmed. */
+  tags: string[]
 }
 export type TaskRow = {
   id: string; groupId: string; lineGroupId: string; candidateId: string | null; title: string
   details: string | null; status: TaskStatus; assigneeLineUserId: string | null
   createdByLineUserId: string; dueAt: Date | null; deletedAt: Date | null
   announcedAt: Date | null   // when the group was told about it (null = not yet)
+  tags: string[]             // #109
 }
 export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
   dueAt: Date | null; lastEditedByLineUserId: string; lastActivityAt: Date
+  tags: string[]             // #109
 }
 // #17 Dashboard read. Names are LINE names (line_users.display_name), never nicknames.
 /** One of the requester's group_members rows, for a group that is in a Project and still
@@ -165,6 +176,7 @@ export type DashboardMemberRow = { groupId: string; lineUserId: string; displayN
 export type DashboardTaskRow = {
   id: string; groupId: string; title: string; status: TaskStatus
   assigneeLineUserId: string | null; assigneeName: string | null; dueAt: Date | null
+  tags: string[]             // #109
 }
 export type DashboardFileRow = {
   id: string; groupId: string; fileName: string; driveLink: string; sizeBytes: number | null
@@ -262,17 +274,21 @@ export type GroupSetup = {
   ownerNominatedAt: Date | null
   /** #30: when the confirmed Owner left; set while the group needs a new Owner. */
   ownerLeftAt: Date | null
+  /** #110: the group's starting tags (groups.tag_set). */
+  tagSet: string[]
 }
 export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
 /** #28 Settings: the setup form's values, written by the group's confirmed Owner. */
 export type GroupSettingsWrite = {
   groupId: string; ownerLineUserId: string; workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]
+  tagSet: string[]   // #110
 }
 export type GroupSetupWrite = {
   groupId: string; byLineUserId: string; workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
   members: SetupMemberWrite[]; ownerLineUserId: string; at: Date
+  tagSet: string[]   // #110
 }
 /** 'closed': the group has a confirmed Owner or already belongs to a Project. */
 export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'
@@ -396,6 +412,13 @@ export interface StorePort {
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null
   createSummary(s: NewSummary, candidates: NewCandidate[]): Promise<{ summaryId: string; candidateIds: string[] }>
+  /** #108: where the group's latest Summary ended (summaries.last_message_at of the newest
+   *  row by created_at); null when the group has none. */
+  getLatestSummaryEnd(groupId: string): Promise<Date | null>
+  /** #108: the group's live Tasks a Summary must not propose again: every open one, and the
+   *  Done ones with done_at or last_activity_at at or after `doneSince`. Newest first, at
+   *  most `limit`. */
+  listTasksForSummary(groupId: string, doneSince: Date, limit: number): Promise<TaskRow[]>
   // #16 confirm / edit
   getSummary(summaryId: string): Promise<SummaryRow | null>
   listCandidates(summaryId: string): Promise<CandidateRow[]>                         // ordered by created_at, then id

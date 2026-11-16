@@ -1,5 +1,7 @@
 'use client'
 
+import { TAG_SET_MAX } from '@/server/tasks/tags'
+import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, ROLE_MAX, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import { liffUrl } from '@/server/liff-links'
@@ -194,6 +196,15 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
               onChange={(e) => set({ ...form, workDescription: e.target.value })}
             />
           </Field>
+
+          {/* #110 */}
+          <div>
+            <Field label="แท็กของกลุ่ม (ไม่บังคับ)">
+              <TagsEditor tags={form.tagSet} max={TAG_SET_MAX} disabled={ro}
+                onChange={(tagSet) => set({ ...form, tagSet })} />
+            </Field>
+            <p className="mt-1 text-xs text-ink-3">น้องจดดีจะเลือกแท็กจากชุดนี้ก่อนเวลาสรุปงาน แก้ได้ในหน้าตั้งค่า</p>
+          </div>
 
           <section className="space-y-2">
             <span className="block text-sm font-semibold">{data.canEdit ? 'ชื่อเล่นและหน้าที่' : 'สมาชิก'}</span>

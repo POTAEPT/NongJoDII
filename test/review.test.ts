@@ -98,7 +98,7 @@ describe('loadReview', () => {
     expect(view.candidates.map((c) => c.state)).toEqual(['proposed', 'proposed'])
     expect(view.candidates[0]).toEqual({
       id: t.c1, state: 'proposed', title: 'ทำสไลด์', details: 'ทำ 10 หน้า',
-      suggestedAssigneeLineUserId: 'Upim', suggestedDueAt: '2026-11-20T10:00:00.000Z',
+      suggestedAssigneeLineUserId: 'Upim', suggestedDueAt: '2026-11-20T10:00:00.000Z', suggestedTags: [],
     })
     for (const m of view.members) expect(Object.keys(m).sort()).toEqual(['displayName', 'lineUserId'])
     expect(view.members).toEqual(expect.arrayContaining([
@@ -620,12 +620,15 @@ describe('Tasks created feedback', () => {
     const t = await setup()
     const feedback = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
     await t.send(ev.groupText({ text: feedback.feedback!.text, userId: 'Upim', timestamp: T0 + 3 * MIN }))
+    // #108: the next Summary reads only the chat since the last one; one new line follows.
+    await t.send(ev.groupText({ text: 'พรุ่งนี้ประชุมกันนะ', userId: 'Ubank', timestamp: T0 + 3 * MIN + 30_000 }))
     let read: string[] = []
     t.llm.respond((req: LlmRequest) => {
       read = chatLines(req).map((c) => c.text)
       return { content: JSON.stringify({ summary: 'x', tasks: [] }), model: TEXT_MODEL, usage: null }
     })
     await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', timestamp: T0 + 4 * MIN }))
-    expect(read).toEqual(['ใครทำสไลด์ได้บ้าง', 'เดี๋ยวทำสไลด์เอง'])
+    // The feedback message is skipped; the earlier chat went to the earlier Summary.
+    expect(read).toEqual(['พรุ่งนี้ประชุมกันนะ'])
   })
 })

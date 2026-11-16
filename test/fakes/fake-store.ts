@@ -24,6 +24,7 @@ import type {
   NewProgressPrompt,
   NewWebhookEvent,
   OwnerChangeOutcome,
+  PausedOwnerCard,
   OwnerClaimOutcome,
   OwnerlessGroup,
   OwnerExitState,
@@ -130,8 +131,9 @@ export type GroupScheduleRecord = {
   /** groups.member_check_on and member_check_claimed_at (#32); absent = null. */
   memberCheckOn?: string | null
   memberCheckClaimedAt?: Date | null
-  /** #11: groups.delete_after (left_at + 7 days) and groups.joined_at (absent = long ago).
-   *  Absent = null. groups.owner_left_at lives on GroupRow (`groups`). */
+  /** #11: groups.delete_after (left_at + 7 days) and groups.joined_at (absent = null: no
+   *  join applied to the row yet, the review-followups migration). Absent = null.
+   *  groups.owner_left_at lives on GroupRow (`groups`). */
   deleteAfter?: Date | null
   joinedAt?: Date | null
 }
@@ -145,7 +147,7 @@ export type GroupSetupRecord = {
 }
 /** task_prompts rows of kind owner_needed (#30). */
 export type OwnerPromptRecord = {
-  id: string; groupId: string; subjectLineUserId: string; askedAt: Date
+  id: string; groupId: string; subjectLineUserId: string | null; askedAt: Date
   answer: 'owner_confirmed' | null; answeredByLineUserId: string | null; answeredAt: Date | null
 }
 export type ProjectRecord = { id: string; ownerLineUserId: string; driveProjectFolderId?: string | null }
@@ -856,7 +858,10 @@ export class FakeStore implements StorePort {
       .filter(({ g }) => (this.tables.group_schedules.find((r) => r.groupId === g.id)?.leftAt ?? null) === null)
     // main group first, then insertion order (the fake's join order)
     rows.sort((a, b) => Number(isMain(b.g.id)) - Number(isMain(a.g.id)) || a.order - b.order)
-    return rows.map(({ g }) => ({ groupId: g.id, projectId: g.projectId as string, name: g.name }))
+    return rows.map(({ g }) => ({
+      groupId: g.id, projectId: g.projectId as string, name: g.name,
+      ownerLineUserId: g.ownerConfirmedAt !== null ? g.nominatedOwnerLineUserId : null,
+    }))
   }
 
   async listDashboardMembers(groupIds: string[]): Promise<DashboardMemberRow[]> {
@@ -1130,7 +1135,7 @@ export class FakeStore implements StorePort {
   async listWeeklySummaryGroups(weekday: number): Promise<WeeklySummaryGroup[]> {
     this.fault('listWeeklySummaryGroups')
     return this.tables.groups
-      .filter((g) => g.projectId !== null && g.ownerLeftAt === null)
+      .filter((g) => g.projectId !== null && g.ownerLeftAt === null && g.ownerConfirmedAt !== null)
       .map((g) => ({ g, s: this.scheduleOf(g.id) }))
       .filter(({ s }) => s.leftAt === null && s.featureWeeklySummary && s.weeklySummaryWeekday === weekday)
       .sort((a, b) => a.g.id.localeCompare(b.g.id))
@@ -1494,11 +1499,23 @@ export class FakeStore implements StorePort {
     return { updated: true }
   }
 
+  /** Same rule as SupabaseStore.listConfirmedOwnersWhoLeft. */
+  async listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[]> {
+    this.fault('listConfirmedOwnersWhoLeft')
+    const out: { groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[] = []
+    for (const g of [...this.tables.groups].sort((a, b) => a.id.localeCompare(b.id))) {
+      if (g.ownerConfirmedAt === null || g.nominatedOwnerLineUserId === null || this.isLeft(g.id)) continue
+      const m = this.tables.group_members.find((x) => x.groupId === g.id && x.lineUserId === g.nominatedOwnerLineUserId)
+      if (m?.leftAt && m.leftAt >= g.ownerConfirmedAt) out.push({ groupId: g.id, lineGroupId: g.lineGroupId, lineUserId: m.lineUserId, leftAt: new Date(m.leftAt.getTime()) })
+    }
+    return out
+  }
+
   /** The unique index task_prompts_one_open_owner_needed: one open card per group. */
-  async openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string; askedAt: Date }): Promise<{ promptId: string | null }> {
+  async openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string | null; askedAt: Date }): Promise<{ promptId: string | null }> {
     this.fault('openOwnerNeededPrompt')
     fk(this.hasGroup(p.groupId), 'task_prompts.group_id')
-    fk(this.hasLineUser(p.subjectLineUserId), 'task_prompts.subject_line_user_id')
+    fk(p.subjectLineUserId === null || this.hasLineUser(p.subjectLineUserId), 'task_prompts.subject_line_user_id')
     if (this.tables.owner_prompts.some((r) => r.groupId === p.groupId && r.answer === null)) return { promptId: null }
     const row: OwnerPromptRecord = {
       id: randomUUID(), groupId: p.groupId, subjectLineUserId: p.subjectLineUserId, askedAt: new Date(p.askedAt.getTime()),
@@ -1536,22 +1553,7 @@ export class FakeStore implements StorePort {
     if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }
     if (!this.isLiveMember(groupId, lineUserId)) return { outcome: 'not_member' }
     if (this.latestGoogleAccount(lineUserId)?.tokenStatus !== 'valid') return { outcome: 'needs_drive' }
-    const now = this.clock()
-    const projectId = g.projectId
-    // change_project_owner
-    const project = this.tables.projects.find((p) => p.id === projectId)
-    if (project) Object.assign(project, { ownerLineUserId: lineUserId, driveProjectFolderId: null })
-    g.ownerConfirmedAt = now
-    g.ownerLeftAt = null // groups_owner_rules: confirming clears owner_left_at
-    this.setupOf(groupId).driveFolderId = null
-    for (const sub of this.tables.groups.filter((r) => r.projectId === projectId && !this.isMainGroup(r.id))) {
-      sub.ownerConfirmedAt = null
-      this.setupOf(sub.id).takeoverAskedAt = now
-    }
-    for (const c of this.tables.drive_connections.filter((r) => r.projectId === projectId && r.status === 'active')) {
-      c.status = 'replaced'
-      c.statusChangedAt = now
-    }
+    this.changeProjectOwnerRows(g.projectId, g, lineUserId)
     for (const r of this.tables.owner_prompts.filter((p) => p.groupId === groupId && p.answer === null)) {
       Object.assign(r, { answer: 'owner_confirmed', answeredByLineUserId: lineUserId, answeredAt: new Date(at.getTime()) })
     }
@@ -1639,20 +1641,46 @@ export class FakeStore implements StorePort {
     const project = this.tables.projects.find((p) => p.id === projectId)
     if (!project) throw new Error('FakeStore: main group without its Project')
     fk(this.hasLineUser(newOwnerLineUserId), 'projects.owner_line_user_id')
-    const now = this.clock()
-    project.ownerLineUserId = newOwnerLineUserId
-    project.driveProjectFolderId = null
-    main.ownerConfirmedAt = now
-    this.setupOf(main.id).driveFolderId = null
-    for (const g of this.tables.groups) {
-      if (g.projectId !== projectId || this.isMainGroup(g.id)) continue
-      this.setupOf(g.id).takeoverAskedAt = now
-      g.ownerConfirmedAt = null
-    }
-    for (const c of this.tables.drive_connections) {
-      if (c.projectId === projectId && c.status === 'active') Object.assign(c, { status: 'replaced', statusChangedAt: now })
-    }
+    this.changeProjectOwnerRows(projectId, main, newOwnerLineUserId)
     return { outcome: 'changed' }
+  }
+
+  /** change_project_owner's writes (20261116010000), shared by changeProjectOwner and
+   *  completeOwnerChange, then the same-Owner rule check_same_owner runs at COMMIT. D1: a
+   *  Sub group is asked (again) only while it waits, or when it does not run on the new
+   *  Owner yet; one already confirmed on them keeps running, folder included. An asked Sub
+   *  group's folder ID is cleared (it points into the old Owner's Drive). */
+  private changeProjectOwnerRows(projectId: string, main: GroupRow, newOwner: string): void {
+    const now = this.clock()
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (project) Object.assign(project, { ownerLineUserId: newOwner, driveProjectFolderId: null })
+    main.ownerConfirmedAt = now
+    main.ownerLeftAt = null // groups_owner_rules: confirming clears owner_left_at
+    this.setupOf(main.id).driveFolderId = null
+    for (const sub of this.tables.groups.filter((r) => r.projectId === projectId && !this.isMainGroup(r.id))) {
+      const runsOnNewOwner = sub.nominatedOwnerLineUserId === newOwner && sub.ownerConfirmedAt !== null
+      if (this.takeoverAskedAt(sub.id) === null && runsOnNewOwner) continue
+      sub.ownerConfirmedAt = null
+      Object.assign(this.setupOf(sub.id), { takeoverAskedAt: now, driveFolderId: null })
+    }
+    for (const c of this.tables.drive_connections.filter((r) => r.projectId === projectId && r.status === 'active')) {
+      c.status = 'replaced'
+      c.statusChangedAt = now
+    }
+    this.checkSameOwner(projectId)
+  }
+
+  /** check_same_owner (initial schema): every group attached to a Project names its owner,
+   *  except an unconfirmed main group nominee and a Sub group waiting on the question. */
+  private checkSameOwner(projectId: string): void {
+    const project = this.tables.projects.find((p) => p.id === projectId)
+    if (!project) return
+    for (const g of this.tables.groups.filter((r) => r.projectId === projectId)) {
+      if (g.nominatedOwnerLineUserId === project.ownerLineUserId) continue
+      if (this.isMainGroup(g.id) && g.ownerConfirmedAt === null) continue
+      if (this.takeoverAskedAt(g.id) !== null) continue
+      throw new Error(`FakeStore check violation: group Owner must be the Project owner (${g.id})`)
+    }
   }
 
   private takeoverAskedAt(groupId: string): Date | null {
@@ -1688,6 +1716,11 @@ export class FakeStore implements StorePort {
     if (!project) throw new Error(`check violation: unknown Project ${projectId}`)
     const takeover = [...new Set(takeoverGroupIds)]
     const waitingHere = (g: GroupRow) => g.projectId === projectId && this.takeoverAskedAt(g.id) !== null
+    // 20261116010000: a question older than 7 days raises NJ409, nothing written.
+    const cutoff = this.clock().getTime() - 7 * 86_400_000
+    if (this.tables.groups.some((g) => waitingHere(g) && (this.takeoverAskedAt(g.id) as Date).getTime() < cutoff)) {
+      return { outcome: 'expired' }
+    }
     if (takeover.some((id) => { const g = this.tables.groups.find((x) => x.id === id); return !g || !waitingHere(g) })) {
       return { outcome: 'changed' }
     }
@@ -1698,7 +1731,12 @@ export class FakeStore implements StorePort {
       const x = this.setupOf(g.id)
       x.takeoverAskedAt = null
       if (!takeover.includes(g.id)) {
-        g.projectId = null // detach: keeps its old nominee and folder
+        // Detach (review-followups migration): the old Owner's folder ID and nominee go, and
+        // the Owner count starts (owner_left_at never moves back).
+        g.projectId = null
+        g.nominatedOwnerLineUserId = null
+        Object.assign(x, { driveFolderId: null, ownerNominatedByLineUserId: null, ownerNominatedAt: null })
+        g.ownerLeftAt = g.ownerLeftAt && g.ownerLeftAt > now ? g.ownerLeftAt : now
         continue
       }
       g.nominatedOwnerLineUserId = owner
@@ -1714,7 +1752,7 @@ export class FakeStore implements StorePort {
     for (const g of this.tables.groups) {
       const asked = this.takeoverAskedAt(g.id)
       if (asked === null || asked >= askedBefore) continue
-      this.setupOf(g.id).takeoverAskedAt = null
+      Object.assign(this.setupOf(g.id), { takeoverAskedAt: null, driveFolderId: null })
       g.projectId = null
       if (at) g.ownerLeftAt = new Date(at.getTime())
       out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
@@ -1732,6 +1770,44 @@ export class FakeStore implements StorePort {
       out.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name, nominatedOwnerLineUserId: g.nominatedOwnerLineUserId })
     }
     return out.sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+
+  /** Same rule as SupabaseStore.listUnsentTakeoverCards. */
+  async listUnsentTakeoverCards(askedAfter: Date): Promise<{ projectId: string; askedAt: Date }[]> {
+    this.fault('listUnsentTakeoverCards')
+    const askedAt = new Map<string, number>()
+    for (const g of this.tables.groups) {
+      const asked = this.takeoverAskedAt(g.id)
+      if (asked === null || asked < askedAfter || g.projectId === null) continue
+      askedAt.set(g.projectId, Math.min(askedAt.get(g.projectId) ?? asked.getTime(), asked.getTime()))
+    }
+    return [...askedAt.keys()].sort().filter((projectId) => {
+      const main = this.tables.groups.find((g) => g.projectId === projectId && this.isMainGroup(g.id))
+      if (!main) return false
+      return !this.tables.push_log.some((p) =>
+        p.purpose === 'owner_takeover' && p.lineTargetId === main.lineGroupId && p.sentAt.getTime() >= (askedAt.get(projectId) as number))
+    }).map((projectId) => ({ projectId, askedAt: new Date(askedAt.get(projectId) as number) }))
+  }
+
+  /** Same rule as SupabaseStore.listPausedOwnerCards. */
+  async listPausedOwnerCards(): Promise<PausedOwnerCard[]> {
+    this.fault('listPausedOwnerCards')
+    return [...this.tables.groups]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .filter((g) => g.ownerLeftAt != null && g.ownerConfirmedAt === null && !this.isLeft(g.id))
+      .map((g) => {
+        const p = this.tables.owner_prompts.find((x) => x.groupId === g.id && x.answer === null)
+        return {
+          groupId: g.id, lineGroupId: g.lineGroupId, ownerLineUserId: g.nominatedOwnerLineUserId,
+          card: p
+            ? {
+                promptId: p.id, askedAt: new Date(p.askedAt.getTime()),
+                pushed: this.tables.push_log.some((x) =>
+                  x.purpose === 'owner_needed' && x.lineTargetId === g.lineGroupId && x.sentAt >= p.askedAt),
+              }
+            : null,
+        }
+      })
   }
 
   // ---- #11 removal and recovery ----

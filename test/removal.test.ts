@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import type { LineEvent } from '@/server/line/types'
 import { BOT_DELETE_AFTER_MS, botLeaveGroup } from '@/server/removal/leave'
-import { PURGE_TIME, purgeJob } from '@/server/removal/purge'
+import { PURGE_BATCH, PURGE_TIME, purgeJob } from '@/server/removal/purge'
 import { stopUsing } from '@/server/settings/settings'
 import { handleTickRequest } from '@/server/tick/handle-request'
 import { TICK_JOBS } from '@/server/tick/run-tick'
@@ -172,6 +172,46 @@ describe('Stop using in Settings (#11)', () => {
   })
 })
 
+describe('Stop using: LINE accepted but nothing was marked (#11 review)', () => {
+  it('a store failure after LINE accepted answers 502; the retry gets 404 and marks the group', async () => {
+    const t = setup()
+    t.store.failNext('markBotLeft')
+    expect(await stopUsing(t.deps, { idToken: 'tok-owner', groupId: t.group.id, confirm: true }))
+      .toEqual({ status: 502, body: { error: 'line_failed' } })
+    expect(t.marks().deleteAfter).toBeNull()
+    t.line.leaveNotInGroup = true // the bot is already out
+    const res = await stopUsing(t.deps, { idToken: 'tok-owner', groupId: t.group.id, confirm: true })
+    expect(res.status).toBe(200)
+    expect((res.body as { deleteAfter: string | null }).deleteAfter).toBe(new Date(TEST_NOW.getTime() + 7 * DAY).toISOString())
+    expect(t.marks().deleteAfter).toEqual(new Date(TEST_NOW.getTime() + 7 * DAY))
+  })
+
+  it('a mark that matched no row (deleteAfter null) is a failure, never 200 with no date', async () => {
+    const t = setup()
+    vi.spyOn(t.store, 'markBotLeft').mockResolvedValueOnce({ deleteAfter: null })
+    await expect(botLeaveGroup(t.deps, { groupId: t.group.id, reason: 'stop_using', now: TEST_NOW })).rejects.toThrow()
+    vi.spyOn(t.store, 'markBotLeft').mockResolvedValueOnce({ deleteAfter: null })
+    expect(await stopUsing(t.deps, { idToken: 'tok-owner', groupId: t.group.id, confirm: true }))
+      .toEqual({ status: 502, body: { error: 'line_failed' } })
+  })
+
+  it('Stop using in a Sub group leaves only that group: the main group and the Project stay', async () => {
+    const t = setup()
+    const project = t.store.seedProject(OWNER)
+    const main = t.store.seedGroup({ lineGroupId: 'Cmain', projectId: project.id, nominatedOwnerLineUserId: OWNER, ownerConfirmedAt: TEST_NOW })
+    t.store.tables.group_setups.push({ groupId: main.id, isMain: true, featureSaveFiles: true, ownerNominatedByLineUserId: OWNER, ownerNominatedAt: TEST_NOW })
+    const sub = t.store.tables.groups.find((g) => g.id === t.group.id)!
+    sub.projectId = project.id
+    const res = await stopUsing(t.deps, { idToken: 'tok-owner', groupId: t.group.id, confirm: true })
+    expect(res.status).toBe(200)
+    expect(t.line.leaveCalls).toEqual(['Cgroup1'])
+    expect(t.marks().deleteAfter).not.toBeNull()
+    expect(t.marks(main.id)).toMatchObject({ leftAt: null, deleteAfter: null })
+    expect(t.store.tables.groups.find((g) => g.id === main.id)).toMatchObject({ projectId: project.id, ownerConfirmedAt: TEST_NOW })
+    expect(t.store.tables.projects.find((p) => p.id === project.id)).toMatchObject({ ownerLineUserId: OWNER })
+  })
+})
+
 describe('re-invite (#11)', () => {
   it('inside the 7 days clears the mark', async () => {
     const t = setup()
@@ -217,6 +257,31 @@ describe('re-invite (#11)', () => {
     await t.send(ev.join({ groupId: 'Cnew', timestamp: at(DAY).getTime() }))
     const fresh = t.store.tables.groups.find((g) => g.lineGroupId === 'Cnew')!
     expect(t.marks(fresh.id).ownerLeftAt).toBeNull()
+  })
+
+  it('a purge by the tick between the join\'s lookup and its own purge still leaves a fresh group row', async () => {
+    const t = setup()
+    await t.send(ev.leave({ timestamp: TEST_NOW.getTime() }))
+    const realPurge = t.store.purgeGroup.bind(t.store)
+    // The tick's purge deletes the row first, so the join's own purge finds nothing.
+    vi.spyOn(t.store, 'purgeGroup').mockImplementationOnce(async (id, now) => {
+      await realPurge(id, now)
+      return { purged: false }
+    })
+    await t.send(ev.join({ timestamp: at(8 * DAY).getTime() }))
+    const fresh = t.store.tables.groups.find((g) => g.lineGroupId === 'Cgroup1')
+    expect(fresh).toBeDefined()
+    expect(fresh!.id).not.toBe(t.group.id)
+    expect(t.store.tables.group_schedules.find((s) => s.groupId === fresh!.id)?.joinedAt).toEqual(at(8 * DAY))
+  })
+
+  it('a leave stamped before the row was first stored still marks a group whose join was never applied', async () => {
+    const t = setup()
+    // The row came from a message (no join applied yet): joined_at is absent, not insert time.
+    await t.send(ev.groupText({ text: 'สวัสดี', groupId: 'Cnew' }))
+    const g = t.store.tables.groups.find((x) => x.lineGroupId === 'Cnew')!
+    await t.send(ev.leave({ groupId: 'Cnew', timestamp: TEST_NOW.getTime() - 60_000 }))
+    expect(t.marks(g.id).leftAt).toEqual(new Date(TEST_NOW.getTime() - 60_000))
   })
 
   it('after the delete date, the old data is purged at once and the group starts fresh', async () => {
@@ -287,6 +352,29 @@ describe('the daily purge (#11)', () => {
     expect(t.exists()).toBe(true)
     await t.tickAt(bkk(`2026-11-21T${PURGE_TIME}:00`))
     expect(t.exists()).toBe(false)
+  })
+
+  it('the slot is 03:00 to 03:14 Bangkok: 02:59 purges nothing, 03:14 still purges', async () => {
+    const t = setup()
+    await t.send(ev.leave({ timestamp: TEST_NOW.getTime() }))
+    await t.tickAt(bkk('2026-11-20T02:59:00'))
+    expect(t.exists()).toBe(true)
+    await t.tickAt(bkk('2026-11-20T03:14:00'))
+    expect(t.exists()).toBe(false)
+  })
+
+  it('lists at most PURGE_BATCH groups a day; the rest go the next day', async () => {
+    const t = setup()
+    const due = new Date(TEST_NOW.getTime() - DAY)
+    for (let i = 0; i < PURGE_BATCH + 5; i++) {
+      const g = t.store.seedGroup({ lineGroupId: `Cbulk${i}` })
+      t.store.tables.group_schedules.push({ groupId: g.id, leftAt: due, deleteAfter: due } as never)
+    }
+    const bulk = () => t.store.tables.groups.filter((g) => g.lineGroupId.startsWith('Cbulk')).length
+    await t.tickAt(bkk(`2026-11-13T${PURGE_TIME}:00`))
+    expect(bulk()).toBe(5)
+    await t.tickAt(bkk(`2026-11-14T${PURGE_TIME}:00`))
+    expect(bulk()).toBe(0)
   })
 
   it('is part of the tick, before the Drive finisher', () => {

@@ -217,7 +217,7 @@ export type OwnerNeededResult = GroupPushResult | 'already_open'
  *  again; the card stays open, and the Summary command's reply carries the same button
  *  (summary/run-summary.ts). */
 export async function postOwnerNeededCard(
-  deps: Deps, p: { groupId: string; lineGroupId: string; ownerLineUserId: string; renewedAt?: Date },
+  deps: Deps, p: { groupId: string; lineGroupId: string; ownerLineUserId: string | null; renewedAt?: Date },
 ): Promise<OwnerNeededResult> {
   const { promptId } = await deps.store.openOwnerNeededPrompt({
     groupId: p.groupId, subjectLineUserId: p.ownerLineUserId, askedAt: deps.now(),

@@ -46,6 +46,9 @@ function setup() {
   const leaveAsOwner = async (groupId: string, when: Date) => {
     await h.store.markMemberLeft({ groupId, lineUserId: OWNER, at: when })
     expect((await h.store.markOwnerLeft({ groupId, lineUserId: OWNER, at: when })).updated).toBe(true)
+    // The member_left job's owner_needed card (#30 part A). Without it the tick's reconcile
+    // (members/owner-needed-reconcile.ts) would open and post one.
+    await h.store.openOwnerNeededPrompt({ groupId, subjectLineUserId: OWNER, askedAt: when })
   }
 
   /** A main group OWNER set up and confirmed (its own Project), PIM a live Member; OWNER

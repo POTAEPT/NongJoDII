@@ -1,7 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchGoogleStatus as fetchStatus, type GoogleFailure, phaseOnOpen, retryStep, returnStep, returnVisit } from './google-status'
+import {
+  fetchGoogleStatus as fetchStatus, type GoogleFailure, phaseOnOpen, postDisconnect, retryStep, returnStep, returnVisit,
+} from './google-status'
 import type { LiffViewProps } from './liff-sdk'
 import { Button, IconCheck, IconCloud, IconLock, Notice, Page, StatusScreen } from './ui'
 
@@ -10,9 +12,24 @@ const TITLE = 'เชื่อม Google Drive'
 
 type Phase =
   | 'checking' | 'starting' | 'opened' | 'connected' | 'sign_in_again' | 'change_unfinished'
-  | 'not_connected' | 'unauthorized' | 'failed'
+  | 'not_connected' | 'unauthorized' | 'failed' | 'disconnected'
 
-const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected' | 'sign_in_again' | 'change_unfinished'>, string> = {
+/** #82: the disconnect step inside the connected screen. */
+type Disconnect = 'idle' | 'confirm' | 'working' | 'failed'
+
+export const GOOGLE_VIEW_TEXT = {
+  changeOwnerOnly: 'การเปลี่ยนบัญชี Google ของกลุ่มทำได้เฉพาะเจ้าของบอทที่ยืนยันตัวตนแล้วของกลุ่มหลัก บัญชีนี้ยังไม่ได้เป็นเจ้าของบอทของกลุ่มใด',
+  disconnect: 'ยกเลิกการเชื่อมต่อ Google Drive',
+  disconnectConfirm: 'ยกเลิกการเชื่อมต่อใช่ไหม ทุกกลุ่มที่คุณเป็นเจ้าของบอทจะหยุดบันทึกไฟล์ใหม่ ไฟล์ที่บันทึกไว้แล้วยังอยู่ใน Drive ของคุณ และเชื่อมใหม่ได้ทุกเมื่อ',
+  disconnectYes: 'ยืนยัน ยกเลิกการเชื่อมต่อ',
+  disconnectWorking: 'กำลังยกเลิกการเชื่อมต่อ...',
+  disconnectFailed: 'ติดต่อ Google ไม่สำเร็จ ยังไม่ได้ยกเลิกการเชื่อมต่อ กรุณาลองใหม่',
+  disconnectedTitle: 'ยกเลิกการเชื่อม Google Drive แล้ว',
+  disconnectedBody: 'น้องจดดีจะไม่บันทึกไฟล์ใหม่ลง Drive ของคุณ ไฟล์ที่บันทึกไว้แล้วยังอยู่ครบ เชื่อมใหม่ได้จากหน้านี้ทุกเมื่อ',
+  reconnect: 'เชื่อม Google Drive อีกครั้ง',
+} as const
+
+const COPY: Record<Exclude<Phase, 'starting' | 'checking' | 'connected' | 'sign_in_again' | 'change_unfinished' | 'disconnected'>, string> = {
   opened: 'เปิดเบราว์เซอร์เพื่อเข้าสู่ระบบ Google แล้ว เมื่อเสร็จให้กลับมาที่แชต LINE',
   not_connected: 'ยังไม่ได้เชื่อม Google Drive กรุณาลองใหม่',
   unauthorized: 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชตอีกครั้ง',
@@ -28,6 +45,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   const [justSignedIn, setJustSignedIn] = useState(signedIn)
   /** #14: the confirmed Owner of a Project may change the connected Google account. */
   const [canChange, setCanChange] = useState(false)
+  const [disconnect, setDisconnect] = useState<Disconnect>('idle')
   const started = useRef(false)
   /** The sign-in time the server reported last. A sign-in started from here is done only
    *  when the server reports a newer one: during a change of account the old account is
@@ -149,6 +167,18 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
   }, [phase, recheck])
 
   const close = () => liff.closeWindow()
+
+  // #82: revoke at Google, then show the disconnected screen. 'not_connected' means it was
+  // already gone, which ends in the same place.
+  const runDisconnect = async () => {
+    setDisconnect('working')
+    const result = await postDisconnect(idToken)
+    if (result === 'unauthorized') return setPhase('unauthorized')
+    if (result === 'failed') return setDisconnect('failed')
+    setDisconnect('idle')
+    setPhase('disconnected')
+  }
+
   if (phase === 'starting') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังเตรียมเชื่อม Google Drive..." />
   if (phase === 'checking') return <StatusScreen kind="loading" appTitle={TITLE} message="กำลังตรวจสอบการเชื่อม Google Drive..." />
   if (phase === 'connected') {
@@ -159,14 +189,49 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
           <h2 className="mt-4 text-xl font-semibold">{justSignedIn ? 'เชื่อม Google Drive สำเร็จ' : 'เชื่อม Google Drive ไว้แล้ว'}</h2>
           <p className="mt-2 text-sm text-ink-2">ไฟล์ใหม่ในกลุ่มจะถูกเก็บในโฟลเดอร์ NongJoDII ใน Drive ของคุณ</p>
         </div>
-        {canChange && (
+        {canChange ? (
           <section className="mt-8 space-y-3 rounded-2xl border border-line bg-page p-4">
             <p className="text-sm text-ink-2">
               เปลี่ยนไปใช้บัญชี Google อื่นได้ ไฟล์ที่เก็บไว้แล้วจะอยู่ในไดรฟ์เดิม ส่วนไฟล์ใหม่จะเก็บในโฟลเดอร์ใหม่ในไดรฟ์ของบัญชีใหม่
             </p>
             <Button variant="outline" onClick={() => signIn(true)}>เปลี่ยนบัญชี Google</Button>
           </section>
+        ) : (
+          // #82: the change button is for the confirmed Owner of a main group only; say so
+          // instead of hiding it without a word.
+          <p className="mt-8 rounded-2xl border border-line bg-page p-4 text-sm text-ink-2">{GOOGLE_VIEW_TEXT.changeOwnerOnly}</p>
         )}
+        <section className="mt-4 space-y-3 rounded-2xl border border-line bg-page p-4">
+          {disconnect === 'confirm' || disconnect === 'working' || disconnect === 'failed' ? (
+            <>
+              <Notice tone={disconnect === 'failed' ? 'error' : 'info'}>
+                {disconnect === 'failed' ? GOOGLE_VIEW_TEXT.disconnectFailed : GOOGLE_VIEW_TEXT.disconnectConfirm}
+              </Notice>
+              <Button variant="outline" disabled={disconnect === 'working'} onClick={() => void runDisconnect()}>
+                {disconnect === 'working' ? GOOGLE_VIEW_TEXT.disconnectWorking : GOOGLE_VIEW_TEXT.disconnectYes}
+              </Button>
+              <Button variant="ghost" disabled={disconnect === 'working'} onClick={() => setDisconnect('idle')}>ไม่ยกเลิก</Button>
+            </>
+          ) : (
+            <Button variant="ghost" onClick={() => setDisconnect('confirm')}>{GOOGLE_VIEW_TEXT.disconnect}</Button>
+          )}
+        </section>
+      </Page>
+    )
+  }
+  if (phase === 'disconnected') {
+    return (
+      <Page title={TITLE} onBack={close} bottom={
+        <div className="space-y-2">
+          <Button onClick={() => signIn(false)}>{GOOGLE_VIEW_TEXT.reconnect}</Button>
+          <Button variant="outline" onClick={close}>ปิดหน้านี้</Button>
+        </div>
+      }>
+        <div className="flex flex-col items-center pt-6 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-soft text-primary"><IconCloud className="h-7 w-7" /></span>
+          <h2 className="mt-4 text-xl font-semibold">{GOOGLE_VIEW_TEXT.disconnectedTitle}</h2>
+          <p className="mt-2 text-sm text-ink-2">{GOOGLE_VIEW_TEXT.disconnectedBody}</p>
+        </div>
       </Page>
     )
   }

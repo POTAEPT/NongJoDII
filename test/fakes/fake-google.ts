@@ -80,6 +80,22 @@ export class FakeGoogle implements GooglePort {
   /** When set, every refresh rejects with it (a timeout or a Google 5xx: not a revocation). */
   refreshError: Error | null = null
 
+  /** #82: tokens revokeToken was called with, in order. */
+  revokeCalls: string[] = []
+  /** When set, revokeToken rejects with it (a Google 5xx or a timeout). */
+  revokeError: Error | null = null
+
+  /** Revoking marks the token as one Google refuses from then on; a token already refused
+   *  answers 'invalid', as Google's 400 does. */
+  async revokeToken(refreshToken: string): Promise<'revoked' | 'invalid'> {
+    this.revokeCalls.push(refreshToken)
+    await this.spend(`revoke:${refreshToken}`)
+    if (this.revokeError) throw this.revokeError
+    if (this.revokedRefreshTokens.has(refreshToken)) return 'invalid'
+    this.revokedRefreshTokens.add(refreshToken)
+    return 'revoked'
+  }
+
   async accessToken(refreshToken: string): Promise<string> {
     this.refreshCalls.push(refreshToken)
     await this.spend(`refresh:${refreshToken}`)

@@ -5,6 +5,7 @@ export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
+const REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
 const SCOPE = `openid email ${DRIVE_FILE_SCOPE}`
 const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files'
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files'
@@ -82,6 +83,20 @@ export class GoogleHttpClient implements GooglePort {
       subject: typeof claims?.sub === 'string' && claims.sub !== '' ? claims.sub : null,
       email: typeof claims?.email === 'string' ? claims.email : null,
     }
+  }
+
+  /** #82, developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke: POST the
+   *  token form-encoded; 200 = revoked. A 400 means Google no longer holds the grant (already
+   *  revoked or expired), which leaves the same state. Only the status is read. */
+  async revokeToken(refreshToken: string): Promise<'revoked' | 'invalid'> {
+    const res = await this.call(REVOKE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: refreshToken }).toString(),
+    })
+    if (res.ok) return 'revoked'
+    if (res.status === 400) return 'invalid'
+    throw new AdapterError(`google revoke ${res.status}`)
   }
 
   /** developers.google.com/identity/protocols/oauth2/web-server#offline */

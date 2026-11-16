@@ -925,6 +925,12 @@ export class FakeStore implements StorePort {
     return row ? { id: row.id, tokenStatus: row.tokenStatus, signedInAt: new Date((row.signedInAt ?? row.updatedAt).getTime()) } : null
   }
 
+  async findGoogleAccountToken(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; refreshTokenCiphertext: string | null } | null> {
+    this.fault('findGoogleAccountToken')
+    const row = this.latestGoogleAccount(lineUserId)
+    return row ? { id: row.id, tokenStatus: row.tokenStatus, refreshTokenCiphertext: row.refreshTokenCiphertext } : null
+  }
+
   /** The conditional UPDATE: only a 'valid' row that still holds this token changes. */
   async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {
     this.fault('markGoogleAccountRevoked')

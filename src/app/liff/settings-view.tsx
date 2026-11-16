@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, ROLE_MAX, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
+import { liffUrl } from '@/server/liff-links'
 import { formatThaiDateLong } from '@/server/time/bangkok'
 import type { SettingsLoad } from '@/server/settings/types'
 import { ERR_401, post } from './api'
@@ -40,7 +41,7 @@ type Tab = 'settings' | 'plans'
 /** Stop using: idle, the confirm step, the call in flight, or done with the delete date. */
 type Stop = { kind: 'idle' } | { kind: 'confirm' } | { kind: 'leaving' } | { kind: 'done'; deleteAfter: string | null }
 
-export function SettingsView({ liff, idToken, id }: LiffViewProps) {
+export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
   const [form, setForm] = useState<SetupForm | null>(null)
   const [tab, setTab] = useState<Tab>('settings')
@@ -310,6 +311,22 @@ export function SettingsView({ liff, idToken, id }: LiffViewProps) {
           <p className="text-xs text-ink-3">
             เวลาเป็นเวลาประเทศไทย เปลี่ยนแล้วมีผลในรอบถัดไป ถ้าวันนี้เตือนไปแล้ว เวลาใหม่จะเริ่มพรุ่งนี้
           </p>
+
+          {data.canEdit && (
+            // #82: the way in to the Google view (change account, disconnect) for the Owner.
+            <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
+              <span className="block text-sm font-semibold">Google Drive</span>
+              <p className="text-xs text-ink-3">
+                ดูบัญชี Google ที่เชื่อมอยู่ เปลี่ยนบัญชี หรือยกเลิกการเชื่อมต่อ
+              </p>
+              <a
+                className="flex min-h-12 w-full items-center justify-center rounded-xl border border-line-strong bg-page px-4 text-base font-semibold text-ink"
+                href={liffUrl(liffId, 'google')}
+              >
+                จัดการ Google Drive
+              </a>
+            </section>
+          )}
 
           {data.canEdit && (
             <section className="space-y-3 rounded-2xl border border-line bg-page p-4">

@@ -115,6 +115,17 @@ describe('SupabaseStore Google accounts (#14: the latest account is the last sig
     expect(chains[0]).toContainEqual({ method: 'limit', args: [1] })
   })
 
+  it('findGoogleAccountToken reads the latest account with its sealed token (#82)', async () => {
+    const { store, chains } = stubDb([ok({ id: 'a1', token_status: 'valid', refresh_token_ciphertext: 'v1.x' })])
+    expect(await store.findGoogleAccountToken('U1')).toEqual({ id: 'a1', tokenStatus: 'valid', refreshTokenCiphertext: 'v1.x' })
+    expect(chains[0]).toContainEqual({ method: 'select', args: ['id, token_status, refresh_token_ciphertext'] })
+    expect(chains[0]).toContainEqual({ method: 'eq', args: ['line_user_id', 'U1'] })
+    expect(chains[0]).toContainEqual({ method: 'order', args: ['connected_at', { ascending: false }] })
+    expect(chains[0]).toContainEqual({ method: 'limit', args: [1] })
+    const none = stubDb([ok(null)])
+    expect(await none.store.findGoogleAccountToken('U2')).toBeNull()
+  })
+
   it('markGoogleAccountRevoked is one UPDATE that matches only a valid row still holding the refused token', async () => {
     const { store, chains } = stubDb([ok([{ id: 'a1' }])])
     expect(await store.markGoogleAccountRevoked('a1', 'v1.old')).toEqual({ revoked: true })

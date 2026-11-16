@@ -11,7 +11,7 @@ function view(partial: Partial<SetupLoad> = {}): SetupLoad {
     groupId: 'g1', groupName: 'ทีม', state: 'open', requesterLineUserId: 'Ume',
     values: {
       workDescription: '', features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
-      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00', ownerLineUserId: null,
+      dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00', ownerLineUserId: null, tagSet: [],
     },
     members: [
       { lineUserId: 'Ume', displayName: 'Me', nicknames: [], role: null },

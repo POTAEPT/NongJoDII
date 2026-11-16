@@ -274,17 +274,21 @@ export type GroupSetup = {
   ownerNominatedAt: Date | null
   /** #30: when the confirmed Owner left; set while the group needs a new Owner. */
   ownerLeftAt: Date | null
+  /** #110: the group's starting tags (groups.tag_set). */
+  tagSet: string[]
 }
 export type SetupMemberWrite = { lineUserId: string; nicknames: string[]; role: string | null }
 /** #28 Settings: the setup form's values, written by the group's confirmed Owner. */
 export type GroupSettingsWrite = {
   groupId: string; ownerLineUserId: string; workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string; members: SetupMemberWrite[]
+  tagSet: string[]   // #110
 }
 export type GroupSetupWrite = {
   groupId: string; byLineUserId: string; workDescription: string | null; features: GroupFeatures
   dailyReminderTime: string; weeklySummaryWeekday: number; weeklySummaryTime: string
   members: SetupMemberWrite[]; ownerLineUserId: string; at: Date
+  tagSet: string[]   // #110
 }
 /** 'closed': the group has a confirmed Owner or already belongs to a Project. */
 export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'

@@ -1,5 +1,7 @@
 'use client'
 
+import { TAG_SET_MAX } from '@/server/tasks/tags'
+import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
@@ -271,6 +273,14 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
             />
           </Field>
           <p className="mt-1 text-right text-xs text-ink-3">{form.workDescription.length}/{WORK_DESCRIPTION_MAX}</p>
+          {/* #110: the group's starting tags; the step can be left empty. */}
+          <div className="mt-4">
+            <Field label="แท็กของกลุ่ม (ไม่บังคับ)">
+              <TagsEditor tags={form.tagSet} max={TAG_SET_MAX} disabled={submitting}
+                onChange={(tagSet) => set({ ...form, tagSet })} />
+            </Field>
+            <p className="mt-1 text-xs text-ink-3">น้องจดดีจะเลือกแท็กจากชุดนี้ก่อนเวลาสรุปงาน แก้ได้ในหน้าตั้งค่า</p>
+          </div>
         </div>
       )}
 

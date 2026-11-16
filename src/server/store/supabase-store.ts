@@ -86,7 +86,7 @@ import {
 const GROUP_COLS =
   'id, line_group_id, project_id, name, nominated_owner_line_user_id, owner_confirmed_at, feature_summarize, feature_draft_tasks, work_description, feature_track_remind, owner_left_at'
 const SETUP_COLS =
-  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at, owner_nominated_at, owner_left_at'
+  'id, line_group_id, name, project_id, work_description, feature_summarize, feature_draft_tasks, feature_save_files, feature_track_remind, feature_weekly_summary, daily_reminder_time, weekly_summary_weekday, weekly_summary_time, nominated_owner_line_user_id, owner_confirmed_at, owner_nominated_at, owner_left_at, tag_set'
 type DbGroupSetup = {
   id: string; line_group_id: string; name: string | null; project_id: string | null; work_description: string | null
   feature_summarize: boolean; feature_draft_tasks: boolean; feature_save_files: boolean
@@ -94,6 +94,7 @@ type DbGroupSetup = {
   daily_reminder_time: string; weekly_summary_weekday: number; weekly_summary_time: string
   nominated_owner_line_user_id: string | null; owner_confirmed_at: string | null; owner_nominated_at: string | null
   owner_left_at: string | null
+  tag_set?: string[] | null
 }
 const CANDIDATE_COLS =
   'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at, suggested_tags'
@@ -1311,7 +1312,7 @@ export class SupabaseStore implements StorePort {
         feature_save_files: w.features.saveFiles, feature_track_remind: w.features.trackRemind,
         feature_weekly_summary: w.features.weeklySummary,
         daily_reminder_time: w.dailyReminderTime, weekly_summary_weekday: w.weeklySummaryWeekday,
-        weekly_summary_time: w.weeklySummaryTime,
+        weekly_summary_time: w.weeklySummaryTime, tag_set: w.tagSet,
       })
       .eq('id', w.groupId)
       .eq('nominated_owner_line_user_id', w.ownerLineUserId)
@@ -1411,6 +1412,7 @@ export class SupabaseStore implements StorePort {
       weeklySummaryTime: r.weekly_summary_time.slice(0, 5),
       nominatedOwnerLineUserId: r.nominated_owner_line_user_id, ownerConfirmedAt: toDate(r.owner_confirmed_at),
       ownerNominatedAt: toDate(r.owner_nominated_at), ownerLeftAt: toDate(r.owner_left_at),
+      tagSet: r.tag_set ?? [],
     }
   }
 
@@ -1428,6 +1430,12 @@ export class SupabaseStore implements StorePort {
     check('saveGroupSetup', error)
     if (data !== 'confirmed' && data !== 'pending' && data !== 'closed' && data !== 'owner_not_member') {
       throw new Error('saveGroupSetup: unexpected result from setup_group')
+    }
+    // #110: the tag set in a second statement, so setup_group stays as it is; only when the
+    // form was saved. A failure is logged: the group simply has no starting tags.
+    if ((data === 'confirmed' || data === 'pending') && w.tagSet.length > 0) {
+      const tagged = await this.db.from('groups').update({ tag_set: w.tagSet }).eq('id', w.groupId)
+      if (tagged.error) logError('group_tag_set_failed', { groupId: w.groupId }, new AdapterError(`supabase saveGroupSetup tag_set: ${tagged.error.code}`))
     }
     return { outcome: data }
   }

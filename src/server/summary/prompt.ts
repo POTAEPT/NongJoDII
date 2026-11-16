@@ -20,6 +20,8 @@ const STATUS_WORD: Record<TaskStatus, string> = { not_assigned: 'no assignee', i
 export function buildSummaryPrompt(p: {
   now: Date; workDescription: string | null; members: Member[]; messages: StoredMessage[]
   context?: StoredMessage[]; existingTasks?: ExistingTask[]
+  /** #110: the group's starting tags, set by the Owner; the model picks from these first. */
+  groupTags?: string[]
 }): { system: string; user: string; memberRefs: PromptRef[]; messageRefs: MessageRef[] } {
   const context = p.context ?? []
   const existingTasks = p.existingTasks ?? []
@@ -67,6 +69,7 @@ export function buildSummaryPrompt(p: {
       ? ['Existing tasks (already in the group; never propose these again):',
         ...existingTasks.map((t) => `- [${STATUS_WORD[t.status]}] ${t.title.replace(/\r\n|\r|\n/g, ' ').slice(0, 200)}`)]
       : []),
+    ...((p.groupTags ?? []).length > 0 ? [`Group tags (set by the Owner; use these first): ${(p.groupTags ?? []).join(', ')}`] : []),
     ...(tagsInUse(existingTasks).length > 0 ? [`Tags in use: ${tagsInUse(existingTasks).join(', ')}`] : []),
     ...(context.length > 0
       ? ['Earlier chat (already summarized before; context only, oldest first):', ...context.map(line)]
@@ -90,7 +93,7 @@ export function buildSummaryPrompt(p: {
     '- assignee: the member ref (such as "m2") of the person who should do it. Match people by tag, LINE name or nickname. null when unclear.',
     `- due: ISO 8601 date-time with +07:00 offset when the chat states a deadline, else null. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok).`,
     '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
-    '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Reuse "Tags in use" when one fits. Never a person\'s name or nickname. [] when none fits.',
+    '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Pick from "Group tags" first, then reuse "Tags in use"; a new tag only when none fits. Never a person\'s name or nickname. [] when none fits.',
   ].join('\n')
 
   return { system, user, memberRefs, messageRefs }

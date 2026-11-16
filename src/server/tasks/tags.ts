@@ -6,6 +6,8 @@
 export const TAGS_MAX = 5
 /** Characters in one tag (after the rules below). */
 export const TAG_MAX_LENGTH = 20
+/** #110: tags in a group's starting set (setup form, Settings). */
+export const TAG_SET_MAX = 20
 /** Tags the model may suggest for one task. */
 export const SUGGESTED_TAGS_MAX = 3
 
@@ -25,9 +27,9 @@ export function suggestedTags(raw: unknown, max = SUGGESTED_TAGS_MAX): string[] 
 }
 
 /** Tags a person sent (review page, Task page): an array of strings, each non-empty after
- *  cleanTag and at most TAG_MAX_LENGTH characters, at most TAGS_MAX after duplicates are
- *  dropped. null = refused (the caller answers 400 tags). Missing (undefined) is []. */
-export function personTags(raw: unknown): string[] | null {
+ *  cleanTag and at most TAG_MAX_LENGTH characters, at most `max` (TAGS_MAX on a Task,
+ *  TAG_SET_MAX for a group's set) after duplicates are dropped. null = refused (the caller answers 400 tags). Missing (undefined) is []. */
+export function personTags(raw: unknown, max = TAGS_MAX): string[] | null {
   if (raw === undefined || raw === null) return []
   if (!Array.isArray(raw)) return null
   const out: string[] = []
@@ -38,7 +40,7 @@ export function personTags(raw: unknown): string[] | null {
     out.push(t)
   }
   const tags = dedupe(out)
-  return tags.length > TAGS_MAX ? null : tags
+  return tags.length > max ? null : tags
 }
 
 function dedupe(tags: string[]): string[] {

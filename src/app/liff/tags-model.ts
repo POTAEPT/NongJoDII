@@ -7,22 +7,22 @@ export const TAGS_TEXT = {
   placeholder: 'เพิ่มแท็ก เช่น ออกแบบ',
   add: 'เพิ่ม',
   remove: (t: string) => `ลบแท็ก ${t}`,
-  hint: `ไม่เกิน ${TAGS_MAX} แท็ก แท็กละไม่เกิน ${TAG_MAX_LENGTH} ตัวอักษร`,
-  full: `ใส่ได้ไม่เกิน ${TAGS_MAX} แท็ก`,
+  hint: (max: number = TAGS_MAX) => `ไม่เกิน ${max} แท็ก แท็กละไม่เกิน ${TAG_MAX_LENGTH} ตัวอักษร`,
+  full: (max: number = TAGS_MAX) => `ใส่ได้ไม่เกิน ${max} แท็ก`,
   tooLong: `แท็กยาวได้ไม่เกิน ${TAG_MAX_LENGTH} ตัวอักษร`,
   duplicate: 'มีแท็กนี้แล้ว',
 } as const
 
 /** Adds what the person typed. Answers the new list, or why it was not added. Typing
  *  "#ออกแบบ" adds "ออกแบบ"; an empty input changes nothing. */
-export function addTag(tags: string[], input: string): { tags: string[]; error: string | null } {
+export function addTag(tags: string[], input: string, max: number = TAGS_MAX): { tags: string[]; error: string | null } {
   const raw = input.replace(/\s+/g, ' ').trim().replace(/^#+\s*/, '')
   if (raw === '') return { tags, error: null }
   if (Array.from(raw).length > TAG_MAX_LENGTH) return { tags, error: TAGS_TEXT.tooLong }
   const tag = cleanTag(raw)
   if (tag === null) return { tags, error: null }
   if (tags.some((t) => t.toLocaleLowerCase('th') === tag.toLocaleLowerCase('th'))) return { tags, error: TAGS_TEXT.duplicate }
-  if (tags.length >= TAGS_MAX) return { tags, error: TAGS_TEXT.full }
+  if (tags.length >= max) return { tags, error: TAGS_TEXT.full(max) }
   return { tags: [...tags, tag], error: null }
 }
 

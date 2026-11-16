@@ -76,7 +76,9 @@ function shared(): Shared {
 export function getDemo(): Demo {
   const s = shared()
   // A demo built by older code (kept on globalThis across a hot reload) has another shape.
-  if (!s.demo || !Array.isArray(s.demo.world.groups) || !Array.isArray(s.demo.llm.calls)) s.demo = buildDemo(s, {})
+  if (!s.demo || !Array.isArray(s.demo.world.groups) || !Array.isArray(s.demo.llm.calls) || !s.demo.deps.decisions) {
+    s.demo = buildDemo(s, {})
+  }
   return s.demo
 }
 
@@ -99,7 +101,7 @@ function buildDemo(s: Shared, opts: DemoOptions): Demo {
   llm.clearCalls()
   llm.clock = world.now
   const deps: Deps = {
-    line, llm, google: s.google, store,
+    line, llm, decisions: llm, google: s.google, store,
     now: world.now,
     // The photo batch's quiet wait moves the demo clock instead of waiting.
     sleep: async (ms) => world.advance(ms),

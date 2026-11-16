@@ -53,6 +53,8 @@ export type SetupForm = {
   members: MemberForm[]
   ownerLineUserId: string
   tagSet: string[]   // #110: the group's starting tags, optional
+  /** #146: attach to this Project as a Sub group (the requester is then the Owner); null = a new Project. */
+  attachProjectId: string | null
 }
 
 /** The loaded values (schema defaults on a new group). The Owner defaults to the current
@@ -70,6 +72,7 @@ export function initialSetupForm(view: SetupLoad): SetupForm {
     })),
     ownerLineUserId: listed(view.values.ownerLineUserId) ? (view.values.ownerLineUserId as string) : view.requesterLineUserId,
     tagSet: [...(view.values.tagSet ?? [])],
+    attachProjectId: null,
   }
 }
 
@@ -148,5 +151,14 @@ export function toSubmitBody(form: SetupForm): Omit<SetupSubmitBody, 'idToken' |
     members: form.members.map((m) => ({ lineUserId: m.lineUserId, nicknames: cleanNicknames(m.nicknames), role: m.role.trim() })),
     ownerLineUserId: form.ownerLineUserId,
     tagSet: form.tagSet,
+    ...(form.attachProjectId ? { attachProjectId: form.attachProjectId } : {}),
   }
+}
+
+/** #146: choose a Project to attach to (or null for a new one). A Sub group's Owner is the
+ *  Project's owner, who is the requester, so the Owner choice follows. */
+export function setAttach(form: SetupForm, projectId: string | null, requesterLineUserId: string): SetupForm {
+  return projectId === null
+    ? { ...form, attachProjectId: null }
+    : { ...form, attachProjectId: projectId, ownerLineUserId: requesterLineUserId }
 }

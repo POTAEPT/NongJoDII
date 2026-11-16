@@ -19,6 +19,7 @@ function view(partial: Partial<SetupLoad> = {}): SetupLoad {
     ],
     nominee: null,
     ownerNeeded: false,
+    attachOptions: [],
     ...partial,
   }
 }

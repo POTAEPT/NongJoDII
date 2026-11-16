@@ -41,7 +41,12 @@ export interface LinePort {
 // ---- OpenRouter ----
 /** timeoutMs (optional) shortens the adapter's own timeout for this call, so a caller
  *  that makes several calls can keep them all inside the route's time budget. */
-export type LlmRequest = { model: string; system: string; user: string; maxTokens: number; timeoutMs?: number }
+/** schema (#111): a JSON Schema the answer must follow (OpenRouter structured outputs, strict).
+ *  Without it the adapter asks only for a JSON object. */
+export type LlmRequest = {
+  model: string; system: string; user: string; maxTokens: number; timeoutMs?: number
+  schema?: { name: string; schema: Record<string, unknown> }
+}
 export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: number | null }
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }

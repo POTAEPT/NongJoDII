@@ -5,6 +5,7 @@ import type { LineEvent, LineMessage } from '@/server/line/types'
 import { AdapterError } from '@/server/log'
 import type { LlmRequest, LlmUsage } from '@/server/ports'
 import { runSummaryCommand } from '@/server/summary/run-summary'
+import { SUMMARY_SCHEMA } from '@/server/summary/parse-output'
 import { TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { NAME_WAIT_MS } from '@/server/webhook/process'
@@ -87,6 +88,7 @@ describe('Summary command', () => {
     t.respond(standardAnswer)
     await t.command(phrase, { replyToken: 'rt-phrase' })
     expect(t.llm.requests).toHaveLength(1)
+    expect(t.llm.requests[0].schema).toBe(SUMMARY_SCHEMA) // #111
     expect(t.line.replies).toHaveLength(1)
     expect(t.line.replies[0].replyToken).toBe('rt-phrase')
   })

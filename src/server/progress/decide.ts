@@ -36,7 +36,26 @@ Return ONLY a JSON object, no prose, in one of these forms:
 {"kind":"ambiguous","tasks":[<number>,...],"status":"done"|"in_process"}  - progress, but it could be 2-4 of the tasks
 status "done" = the sender says the work is finished, sent or uploaded.
 status "in_process" = the sender says they started it or will take it themselves, for a task nobody owns yet.
-"Not finished yet" or a question is NOT progress. Use the task numbers from the list. People may be called by nicknames.`
+"Not finished yet" or a question is NOT progress. Use the task numbers from the list. People may be called by nicknames.
+Fields a form does not use are null.`
+
+/** #111: one flat object covering the three forms above (strict structured outputs need an
+ *  object at the root, every property required). parseDecision reads only the fields its
+ *  kind uses and still checks them. test/ai-schemas.test.ts keeps the two in step. */
+export const DECISION_SCHEMA = {
+  name: 'progress_decision',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['kind', 'task', 'tasks', 'status'],
+    properties: {
+      kind: { type: 'string', enum: ['none', 'match', 'ambiguous'] },
+      task: { type: ['integer', 'null'] },
+      tasks: { type: ['array', 'null'], items: { type: 'integer' } },
+      status: { type: ['string', 'null'], enum: ['done', 'in_process', null] },
+    },
+  },
+}
 
 /** Forward only: Done from any open status; In Process only from Not Assigned. */
 export function canMove(from: TaskStatus, to: ProgressTarget): boolean {
@@ -117,7 +136,7 @@ export async function decide(
     try {
       const res = await runMeteredAi(
         deps, { ...ctx, purpose: 'progress_decision' },
-        { model, system: DECIDE_SYSTEM, user, maxTokens: MAX_TOKENS, timeoutMs },
+        { model, system: DECIDE_SYSTEM, user, maxTokens: MAX_TOKENS, timeoutMs, schema: DECISION_SCHEMA },
       )
       content = res.content
     } catch (err) {

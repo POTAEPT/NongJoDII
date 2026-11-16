@@ -5,7 +5,7 @@ import type { Deps, NewCandidate } from '../ports'
 import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
-import { parseSummaryOutput, type ParsedTask } from './parse-output'
+import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
 import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { setupCard } from '../setup/card'
@@ -108,7 +108,7 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     const result = await runMeteredAi(
       deps,
       { ownerLineUserId, projectId: group.projectId, groupId, purpose: 'summary' },
-      { model: TEXT_MODEL, system: prompt.system, user: prompt.user, maxTokens: SUMMARY_MAX_TOKENS },
+      { model: TEXT_MODEL, system: prompt.system, user: prompt.user, maxTokens: SUMMARY_MAX_TOKENS, schema: SUMMARY_SCHEMA },
     )
     parsed = parseSummaryOutput(result.content)
   } catch (err) {

@@ -1,0 +1,38 @@
+{
+  "name": "02-casual-no-task",
+  "feature": "Summary with no Task (#5, #15)",
+  "description": "Three people chat about lunch. Nobody takes on work. One asks for a Summary. Expected: a plain Summary, zero Task candidates, no review button.",
+  "startAt": "2026-11-16T04:30:00Z",
+  "group": {
+    "lineGroupId": "Ce2e00000000000000000000000000002",
+    "name": "E2E ทีมพิตช์ (คุยเล่น)",
+    "workDescription": "เตรียมงานพิตช์รอบสุดท้ายของทีม"
+  },
+  "personas": {
+    "ploy": { "lineName": "Ploy", "role": "manager", "owner": true, "lineUserId": "Ue2e00000000000000000000000000a01" },
+    "ton": { "lineName": "Ton", "role": "developer", "lineUserId": "Ue2e00000000000000000000000000a02" },
+    "mint": { "lineName": "Mint", "role": "designer", "lineUserId": "Ue2e00000000000000000000000000a03" }
+  },
+  "messages": [
+    { "id": "m1", "persona": "ton", "minute": 0, "text": "หิวแล้วครับ เที่ยงนี้กินอะไรกันดี" },
+    { "id": "m2", "persona": "mint", "minute": 1, "text": "ร้านก๋วยเตี๋ยวเรือหน้าตึกเปิดแล้วนะ เมื่อวานเห็นคนเยอะมาก" },
+    { "id": "m3", "persona": "ploy", "minute": 2, "text": "เมื่อวานเพิ่งกินก๋วยเตี๋ยวไปเอง 555 ข้าวมันไก่ได้มั้ย" },
+    { "id": "m4", "persona": "ton", "minute": 3, "text": "ข้าวมันไก่ก็ดีครับ ร้านนั้นน้ำจิ้มเด็ด" },
+    { "id": "m5", "persona": "mint", "minute": 4, "text": "ฝนเหมือนจะตกด้วยนะ ท้องฟ้ามืดเลย" },
+    { "id": "m6", "persona": "ploy", "minute": 5, "text": "จริง อากาศแบบนี้น่านอนมากกว่าทำงานอีก 😂" },
+    { "id": "m7", "persona": "ton", "minute": 6, "text": "เมื่อคืนดูบอลดึกด้วย ง่วงสุด ๆ lol" },
+    { "id": "m8", "persona": "mint", "minute": 7, "text": "555 เหมือนกันเลย ดูซีรีส์จนตีสอง" }
+  ],
+  "summaryCommand": { "persona": "mint", "minute": 8, "text": "น้องจดดี สรุปหน่อยค่ะ" },
+  "expectedTasks": [],
+  "fakeModelAnswer": {
+    "summary": "{ton} {mint} และ {ploy} คุยเล่นเรื่องมื้อเที่ยง เลือกระหว่างก๋วยเตี๋ยวเรือกับข้าวมันไก่ และคุยเรื่องอากาศกับการนอนดึก ไม่มีการมอบหมายงาน",
+    "tasks": []
+  },
+  "expect": {
+    "storedMessages": 9,
+    "summaries": 1,
+    "candidates": 0,
+    "replyHasReviewButton": false
+  }
+}

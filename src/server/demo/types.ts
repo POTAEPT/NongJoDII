@@ -39,6 +39,8 @@ export type DemoGroupInfo = {
   members: number
   lastMessage: { text: string; at: string } | null
   unread: number
+  /** Its file in src/app/demo/groups/ (it comes back after every Reset); null: none. */
+  file: string | null
 }
 
 /** The chat list row of one persona's 1:1 chat with the bot. unread: items since the

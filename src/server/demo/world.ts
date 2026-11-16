@@ -4,7 +4,6 @@ import type { ChatItem, ChatMessage, DemoPersona, LogEntry, LogKind } from './ty
 export const DEMO_LIFF_ID = 'demo-liff'
 export const DEMO_GROUP_ID = 'Cdemo0000000000000000000000000001'
 export const DEMO_GROUP_NAME = 'ทีมพิตช์ NongJoDII'
-export const DEMO_WORK_DESCRIPTION = 'เตรียมงานพิตช์รอบสุดท้ายของทีม NongJoDII'
 export const DEMO_TOKEN_PREFIX = 'demo:'
 export const DEFAULT_QUOTA_LIMIT = 500
 const LOG_MAX = 200
@@ -37,6 +36,8 @@ export type DemoGroup = {
   members: Set<string>
   chat: ChatItem[]
   readCount: number
+  /** Its file in the groups folder (group-files.ts), e.g. '04-group.json'; null: none. */
+  file: string | null
 }
 
 /** Everything the simulator shows besides the store: the clock, the LINE groups as LINE
@@ -98,7 +99,7 @@ export class DemoWorld {
 
   // ---- groups ----
 
-  addGroup(g: { lineGroupId?: string; name: string; members: string[]; botInGroup?: boolean }): DemoGroup {
+  addGroup(g: { lineGroupId?: string; name: string; members: string[]; botInGroup?: boolean; file?: string | null }): DemoGroup {
     let id = g.lineGroupId
     while (!id || this.groupById(id)) {
       this.groupSeq += 1
@@ -106,9 +107,15 @@ export class DemoWorld {
     }
     const group: DemoGroup = {
       lineGroupId: id, name: g.name, botInGroup: g.botInGroup ?? false, members: new Set(g.members), chat: [], readCount: 0,
+      file: g.file ?? null,
     }
     this.groups.push(group)
     return group
+  }
+  /** Takes a group out of the world; the first remaining one is selected if it was. */
+  removeGroup(lineGroupId: string): void {
+    this.groups = this.groups.filter((g) => g.lineGroupId !== lineGroupId)
+    if (this.selectedGroupId === lineGroupId && this.groups[0]) this.select(this.groups[0].lineGroupId)
   }
   groupById(lineGroupId: string): DemoGroup | undefined {
     return this.groups.find((g) => g.lineGroupId === lineGroupId)

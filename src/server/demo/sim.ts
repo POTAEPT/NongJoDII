@@ -8,9 +8,10 @@ import {
 } from '@/server/time/bangkok'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { attachSubGroup, getDemo, resetDemo, seedLiveMember, type Demo } from './demo-deps'
+import { deleteGroupFile, fileStem, groupsDir, readGroupFiles, writeGroupFile, type GroupFile } from './group-files'
 import { signedWebhookRequest } from './sign'
 import type { ChatItem, DemoDirectInfo, DemoGroupInfo, DemoPersona, DemoScript, DemoState } from './types'
-import { DEMO_LIFF_ID, demoUserId, type DemoGroup } from './world'
+import { DEMO_LIFF_ID, demoGroupId, demoUserId, type DemoGroup } from './world'
 
 // The sim API (docs/demo-contract.md): each function builds the LINE event a real group
 // would produce, signs it with the demo secret and hands it to the real webhook handler.
@@ -48,6 +49,7 @@ export async function runSimAction(action: string, method: string, body: unknown
   const demo = getDemo()
   if (action === 'reset') return ok(simState(resetDemo({ setup: b.setup !== false })))
   if (action === 'create-group') return createGroup(demo, b)
+  if (action === 'delete-group') return deleteGroup(demo, b)
   if (action === 'clock') return clock(demo, b)
   if (action === 'tick') return tick(demo)
   if (action === 'quota') return quota(demo, b)
@@ -134,6 +136,7 @@ function groupInfo(demo: Demo, g: DemoGroup): DemoGroupInfo {
     members: g.members.size + (g.botInGroup ? 1 : 0),
     lastMessage: last ? { text: preview(demo, last), at: last.at } : null,
     unread: world.unread(g),
+    file: g.file,
   }
 }
 
@@ -499,7 +502,14 @@ async function createGroup(demo: Demo, b: Record<string, unknown>): Promise<SimR
     attach = { projectId: project.id, owner: owner.lineUserId }
   }
 
-  const g = world.addGroup({ name, members: keys })
+  const dir = groupsDir()
+  const onError = (msg: string) => world.addLog('error', msg)
+  const files = readGroupFiles(dir, onError).entries
+  // Never an id a group file holds, so the group's file does not clash at the next reset.
+  const taken = new Set([...world.groups.map((x) => x.lineGroupId), ...files.map((f) => f.def.lineGroupId)])
+  let n = 1
+  while (taken.has(demoGroupId(n))) n += 1
+  const g = world.addGroup({ lineGroupId: demoGroupId(n), name, members: keys })
   world.select(g.lineGroupId)
   world.system(`สร้างกลุ่ม "${name}"`, g)
   await join(demo, g)
@@ -511,7 +521,84 @@ async function createGroup(demo: Demo, b: Record<string, unknown>): Promise<SimR
     for (const p of world.membersInGroup(g)) seedLiveMember(store, row.id, p, true)
     world.addLog('event', `[${name}] attached as a Sub group (store write; no user-facing path yet)`)
   }
-  return ok({ lineGroupId: g.lineGroupId })
+  g.file = saveGroupFile(demo, dir, g, keys, attach, b.parentGroup)
+  return ok({ lineGroupId: g.lineGroupId, file: g.file })
+}
+
+/** Writes the new group's file (no Tasks, no chat), so every Reset and server start brings
+ *  it back set up. The Owner: a Sub group's is its Project's; a new Project's is the
+ *  owner-flagged persona (Nont) when a member, else the first member. null: not saved
+ *  (logged): the folder is missing, or the parent group has no file to point at. */
+function saveGroupFile(
+  demo: Demo, dir: string, g: DemoGroup, keys: string[], attach: { owner: string } | null, parentGroup: unknown,
+): string | null {
+  const { world } = demo
+  const def: GroupFile = { name: g.name, lineGroupId: g.lineGroupId, members: keys, owner: '', mode: 'new-project' }
+  if (attach) {
+    const parent = world.groupById(String(parentGroup))
+    if (!parent?.file) {
+      world.addLog('error', `[${g.name}] not saved as a file: its parent group has no file`)
+      return null
+    }
+    def.owner = world.personaById(attach.owner)?.key ?? keys[0]
+    def.mode = 'sub-group'
+    def.parent = parent.file
+  } else {
+    const flagged = world.personas.find((p) => p.owner && keys.includes(p.key))
+    def.owner = flagged?.key ?? keys[0]
+  }
+  try {
+    const file = writeGroupFile(dir, def)
+    world.addLog('event', `[${g.name}] saved as ${file}: it comes back after every Reset`)
+    return file
+  } catch (err) {
+    world.addLog('error', `[${g.name}] not saved as a file: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
+/** POST delete-group {group}: deletes the group's file and takes the group out of the
+ *  world and the store. Refused while another file names it as its parent, and for the
+ *  only group (the phone always shows one). */
+function deleteGroup(demo: Demo, b: Record<string, unknown>): SimResult {
+  const { world } = demo
+  if (typeof b.group !== 'string' || b.group === '') return bad('group (a lineGroupId) is required')
+  const g = world.groupById(b.group)
+  if (!g) return bad(`unknown group ${b.group}`, 404)
+  if (world.groups.length <= 1) return bad('cannot delete the only group')
+  const dir = groupsDir()
+  if (g.file) {
+    const own = fileStem(g.file)
+    const children = readGroupFiles(dir, (msg) => world.addLog('error', msg)).entries
+      .filter((e) => e.def.mode === 'sub-group' && fileStem(e.def.parent ?? '') === own)
+      .map((e) => `${e.def.name} (${e.file})`)
+    if (children.length) return bad(`${g.name} is the parent of ${children.join(', ')}: delete the Sub group first`)
+    try {
+      deleteGroupFile(dir, g.file)
+    } catch (err) {
+      return bad(`cannot delete ${g.file}: ${err instanceof Error ? err.message : String(err)}`, 500)
+    }
+  }
+  removeFromStore(demo, g)
+  world.removeGroup(g.lineGroupId)
+  world.addLog('event', `[${g.name}] deleted${g.file ? ` with ${g.file}` : ''}`)
+  return ok({ deleted: g.lineGroupId, file: g.file, selectedGroup: world.selectedGroupId })
+}
+
+/** Every store row of the group (any table's rows with its groupId), the group row, and its
+ *  Project when no other group is in it, so the Dashboard no longer lists it. */
+function removeFromStore(demo: Demo, g: DemoGroup): void {
+  const { tables } = demo.store
+  const row = storeRow(demo, g)
+  if (!row) return
+  for (const rows of Object.values(tables) as Array<Array<Record<string, unknown>>>) {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i].groupId === row.id) rows.splice(i, 1)
+  }
+  tables.groups.splice(tables.groups.indexOf(row), 1)
+  if (row.projectId && !tables.groups.some((r) => r.projectId === row.projectId)) {
+    const p = tables.projects.findIndex((x) => x.id === row.projectId)
+    if (p !== -1) tables.projects.splice(p, 1)
+  }
 }
 
 // ---- clock, tick, quota ----

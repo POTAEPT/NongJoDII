@@ -1,0 +1,59 @@
+{
+  "name": "ทีม Dev",
+  "lineGroupId": "Cdemo0000000000000000000000000002",
+  "members": [
+    "nont",
+    "tae"
+  ],
+  "owner": "nont",
+  "mode": "sub-group",
+  "parent": "01-main.json",
+  "workDescription": "พัฒนาแอปเดโม NongJoDII ให้พร้อมพิตช์",
+  "tasks": [
+    {
+      "title": "ทำหน้า Dashboard ให้แสดงผลบนมือถือ",
+      "assignee": "tae",
+      "due": {
+        "days": 2
+      },
+      "status": "in_process"
+    },
+    {
+      "title": "แก้บั๊กปุ่มยืนยันงานไม่ตอบสนอง",
+      "assignee": "tae",
+      "due": {
+        "hours": -5
+      },
+      "status": "in_process"
+    },
+    {
+      "title": "ตั้งค่า LINE webhook บนเซิร์ฟเวอร์จริง",
+      "assignee": "tae",
+      "due": {
+        "days": -1
+      },
+      "status": "done",
+      "doneAt": {
+        "hours": -2,
+        "thisWeek": true
+      }
+    }
+  ],
+  "chat": [
+    {
+      "persona": "tae",
+      "text": "บั๊กปุ่มยืนยันงานยังแก้ไม่เสร็จนะพี่",
+      "minutesAgo": 70
+    },
+    {
+      "persona": "nont",
+      "text": "โอเค ขอให้ทันก่อนซ้อมใหญ่นะ",
+      "minutesAgo": 65
+    },
+    {
+      "persona": "tae",
+      "text": "รับทราบครับ",
+      "minutesAgo": 64
+    }
+  ]
+}

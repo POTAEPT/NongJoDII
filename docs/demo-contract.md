@@ -24,7 +24,8 @@ Every `/demo` page and `/demo/api/**` route answers 404 unless `process.env.DEMO
 | --- | --- | --- |
 | `GET state` | none | `DemoState` (below). Reading it changes nothing |
 | `POST select-group` | `{group}` | Selects (opens) that group; its unread count goes to 0. Unknown group: 404 |
-| `POST create-group` | `{name, members: string[] /* persona keys */, mode: 'new-project' \| 'sub-group', parentGroup?: string}` | Creates the group, selects it, the bot joins (setup card) and learns the members silently. `sub-group` then attaches it to `parentGroup`'s Project (below). Answers `{lineGroupId}` |
+| `POST create-group` | `{name, members: string[] /* persona keys */, mode: 'new-project' \| 'sub-group', parentGroup?: string}` | Creates the group, selects it, the bot joins (setup card) and learns the members silently. `sub-group` then attaches it to `parentGroup`'s Project (below). Also saves it as a group file (see "Groups"). Answers `{lineGroupId, file /* e.g. '04-group.json'; null: not saved */}` |
+| `POST delete-group` | `{group}` (a lineGroupId, required) | Deletes the group's file and removes the group from the world and the store (see "Groups"). 400 while another file names it as `parent`, or when it is the only group; 404 for an unknown group. Answers `{deleted, file, selectedGroup}` |
 | `POST send` | `{group?, persona, type:'text', text, quotedMessageId?, mentions?: string[] /* persona keys */}` or `{persona, type:'image', fileName, contentType, dataBase64, imageSet?: {id, index, total}}` or `{persona, type:'file', fileName, contentType, dataBase64}` or `{persona, type:'sticker'}` | Builds a LINE message event, signs it, calls `handleWebhookRequest`. Answers `{messageId}` |
 | `POST message` | `{group?, persona, text}` | External injection API; same as a text `send` |
 | `POST postback` | `{group?, persona, data, params?: {date?: string, time?: string, datetime?: string}}` | Postback event |
@@ -61,6 +62,7 @@ type DemoState = {
     members: number              // people + the bot, as LINE's header counts
     lastMessage: { text: string; at: string } | null   // "Nont: ..." preview
     unread: number               // non-system items since the group was last open; 0 for the selected one
+    file: string | null          // its file in src/app/demo/groups/ (comes back after Reset); null: none
   }>
   selectedGroup: string      // lineGroupId
   personas: Array<{ key: string; lineUserId: string; lineName: string; role: string | null; owner: boolean; inGroup: boolean /* in the selected group */ }>
@@ -105,7 +107,7 @@ type ChatItem = {
 
 ## Server additions (implemented, compatible with the above)
 
-- **Seed.** `POST reset` default (`setup: true`) seeds three groups with Nont in all, the bot in each, Nont the confirmed Owner of each, and every person a live Member with nicknames นนท์ / เต้ / บอม / เจฟ and their roles:
+- **Seed.** `POST reset` default (`setup: true`) seeds the groups of `src/app/demo/groups/` (see "Groups"). The three shipped files seed three groups with Nont in all, the bot in each, Nont the confirmed Owner of each, and every person a live Member with nicknames นนท์ / เต้ / บอม / เจฟ and their roles:
   - `ทีมพิตช์ NongJoDII` (`...0001`): main group of Project A; nont, tae, bomb, jeff. Selected.
   - `ทีม Dev` (`...0002`): Sub group of Project A; nont, tae.
   - `ลูกค้า ร้านกาแฟ` (`...0003`): main group of Project B; nont, bomb, jeff.
@@ -123,6 +125,49 @@ type ChatItem = {
 - The canned AI answer (no key, error, or over 20 s) is built from the prompt: a short Thai summary of the chat, and a task only for a line with ฝาก / รบกวน / ช่วย / ขอให้ that names another member. `ai.model` is `demo/canned` after a fallback.
 - Types: `src/server/demo/types.ts` exports `DemoState`, `ChatItem`, `ChatMessage`, `DemoPersona`, `DemoScript` (import them type-only from the UI).
 - Scripts use relative deadlines ("พรุ่งนี้ห้าโมงเย็น", "วันศุกร์นี้") so they never go stale; their `expectedTasks[].due` and `fakeModelAnswer` dues are words, not ISO instants.
+
+## Groups
+
+The set-up seed is a folder of group files, `src/app/demo/groups/*.json`, one group per file. `POST reset` (default `setup: true`) and the first build after a server start read the folder, so a group saved there comes back after every Reset and every restart. `{setup: false}` (the onboarding demo) ignores the folder and keeps its single fresh group. Code: `src/server/demo/group-files.ts` (read, write, delete) and `seedSetUpWorld` in `src/server/demo/demo-deps.ts`.
+
+- **Reading.** Files are read in file-name order; the groups appear in that order and the first is selected (the others keep their last two chat lines unread). A file name is letters, digits, `-` and `_` only. A file that is not valid JSON, misses a required field, reuses another group's `lineGroupId`, has an owner who is not a member, or names a parent that is missing, skipped or not a main group is skipped and logged as `error`. Unknown persona keys are left out (logged). A Sub group listed before its parent waits until the parent is seeded.
+- **Fallback.** Only when the folder does not exist (or holds no usable file) does the seed use the built-in definitions (`FALLBACK_GROUPS`, the same as the three shipped files).
+- **Shipped files.** `01-main.json` (`ทีมพิตช์ NongJoDII`), `02-dev.json` (`ทีม Dev`, Sub group of `01-main.json`), `03-cafe.json` (`ลูกค้า ร้านกาแฟ`).
+
+Each seeded group is set up: the bot is in it, its Owner is confirmed, every member is a live Member with their nicknames and role, and it gets the file's Tasks and chat lines.
+
+### File shape
+
+```jsonc
+{
+  "name": "ทีม Dev",                                  // 1-50 characters
+  "lineGroupId": "Cdemo0000000000000000000000000002", // stable: C + letters or digits
+  "members": ["nont", "tae"],                         // persona keys
+  "owner": "nont",                                    // persona key, a member
+  "mode": "sub-group",                                // "new-project" | "sub-group"
+  "parent": "01-main.json",                           // sub-group only: the parent's file name
+  "workDescription": "พัฒนาแอปเดโม NongJoDII ให้พร้อมพิตช์", // optional
+  "weekly": { "dayOffset": 0 },                       // optional; or {"weekday": 1, "time": "09:00"}
+  "dailyReminderTime": "18:00",                       // optional
+  "tasks": [                                          // optional
+    { "title": "...", "assignee": "tae", "due": { "days": 2 }, "status": "in_process" },
+    { "title": "...", "assignee": "tae", "due": { "days": -1 }, "status": "done", "doneAt": { "hours": -2, "thisWeek": true } },
+    { "title": "...", "assignee": "jeff", "due": { "days": -1, "hour": 17 }, "status": "in_process", "lastUpdate": { "days": -6 } }
+  ],
+  "chat": [ { "persona": "tae", "text": "...", "minutesAgo": 70 } ] // optional, oldest first
+}
+```
+
+- **Offsets** (`due`, `doneAt`, `lastUpdate`) are relative to the reset instant: `days`, `hours`, `minutes` are added; `hour` then pins that day's Bangkok hour (minute 0). `doneAt.thisWeek` keeps it at or after this Bangkok week's Monday 00:00 (the Owner card's "done this week"). No `due`: no deadline. A done Task without `doneAt`: an hour ago, or its due if earlier. Last update: `doneAt` for a done Task, else `lastUpdate` (6+ days back is stale), else the announce time (3 hours ago).
+- **`weekly.dayOffset`**: the slot that many days after the reset day, at the next full Bangkok hour (23:00 at the latest). No `weekly`: the schema default (Monday 09:00).
+- A `sub-group`'s Owner is always its parent Project's Owner (one admin per Project); a different `owner` is logged and replaced.
+
+### Create and delete
+
+- **Create.** `create-group` writes `NN-<slug>.json`: `NN` one past the highest number in the folder, `<slug>` the name in lowercase ascii letters and digits (a Thai name gives `group`). The file holds `name`, `lineGroupId`, `members`, `owner`, `mode` and, for a Sub group, `parent` (the parent group's file). No Tasks, no chat: after a Reset the group is back set up with an empty chat. The Owner of a new Project is the owner-flagged persona (Nont) when a member, else the first member. The new group's `lineGroupId` is never one a group file holds. The folder is never created: when it is missing, or the parent group has no file, the group is not saved (logged).
+- **Delete.** `delete-group {group}` deletes the file, then removes the group from the world and every store row with its group id (and its Project when no other group is in it), so the Dashboard no longer lists it. If it was selected, the first group is selected. Refused (400) while another file has it as `parent`: delete the Sub group first. The presenter panel's group picker has a delete button (with a confirm dialog) for the selected group.
+- **Tests** never touch the shipped folder: `test/setup.ts` points `DEMO_GROUPS_DIR` at a temp folder holding the three built-in groups, and `setGroupsDir(dir)` overrides it per test. One test checks that the shipped files equal the built-in definitions.
+- **Built-in groups** (the fallback) have `file: null`: there is no file to delete.
 
 ## How to add a scenario
 

@@ -1,0 +1,74 @@
+{
+  "name": "ทีมพิตช์ NongJoDII",
+  "lineGroupId": "Cdemo0000000000000000000000000001",
+  "members": [
+    "nont",
+    "tae",
+    "bomb",
+    "jeff"
+  ],
+  "owner": "nont",
+  "mode": "new-project",
+  "workDescription": "เตรียมงานพิตช์รอบสุดท้ายของทีม NongJoDII",
+  "weekly": {
+    "dayOffset": 0
+  },
+  "tasks": [
+    {
+      "title": "อัปเดตสไลด์พิตช์รอบสุดท้าย",
+      "assignee": "bomb",
+      "due": {
+        "days": 1
+      },
+      "status": "in_process"
+    },
+    {
+      "title": "เขียนสคริปต์พูดพิตช์ 5 นาที",
+      "assignee": "jeff",
+      "due": {
+        "days": -1
+      },
+      "status": "in_process",
+      "lastUpdate": {
+        "days": -6
+      }
+    },
+    {
+      "title": "ซ้อมพิตช์กับอาจารย์ที่ปรึกษา",
+      "assignee": "nont",
+      "due": {
+        "days": -2
+      },
+      "status": "done",
+      "doneAt": {
+        "hours": -2,
+        "thisWeek": true
+      }
+    },
+    {
+      "title": "สรุปตัวเลข break-even ใส่สไลด์",
+      "assignee": null,
+      "due": {
+        "days": 3
+      },
+      "status": "not_assigned"
+    }
+  ],
+  "chat": [
+    {
+      "persona": "nont",
+      "text": "พรุ่งนี้ซ้อมพิตช์กันกี่โมงดี",
+      "minutesAgo": 95
+    },
+    {
+      "persona": "jeff",
+      "text": "บ่ายสองได้ไหมครับ",
+      "minutesAgo": 90
+    },
+    {
+      "persona": "bomb",
+      "text": "ได้ค่ะ เดี๋ยวเอาสไลด์เวอร์ชันใหม่มาด้วย",
+      "minutesAgo": 88
+    }
+  ]
+}

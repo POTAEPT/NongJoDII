@@ -1,5 +1,7 @@
 import { COMMAND_TEXT, commandQuickReply, quickReply } from '../commands/quick-reply'
-import { bubble, button, caption, column, commandRow, header, numbered, panel, text, uri } from '../line/flex-ui'
+import { bubble, button, caption, column, commandRow, header, keyValue, numbered, panel, text, uri } from '../line/flex-ui'
+import type { GroupSetup } from '../ports'
+import { WEEKDAYS } from './rules'
 import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
 
@@ -10,7 +12,7 @@ import { liffUrl } from '../liff-links'
 export const SETUP_CARD_TEXT = {
   title: 'สวัสดี น้องจดดีมาแล้วนะ',
   intro: 'น้องจดดีช่วยสรุปงานจากแชต แล้วสร้างเป็นงานให้ทีมกดยืนยันนะ',
-  ask: 'ก่อนเริ่ม ขอข้อมูลกลุ่มนิดหนึ่ง จะได้ช่วยได้ตรงกับกลุ่มนี้',
+  ask: 'ก่อนเริ่ม ขอข้อมูลกลุ่มนิดหนึ่ง จะได้ช่วยได้ตรงกับกลุ่มนี้ ในฟอร์มจะเลือกเจ้าของบอท 1 คน ที่ใช้ Google Drive ของตัวเองเก็บไฟล์และดูแลการตั้งค่า',
   steps: 'ใช้เวลาประมาณ 1 นาที · 4 ข้อ',
   items: ['กลุ่มนี้ทำเรื่องอะไร', 'ใครทำหน้าที่อะไร', 'อยากให้น้องจดดีช่วยอะไร', 'ให้เตือนตอนไหน'],
   button: 'ตั้งค่ากลุ่ม',
@@ -30,6 +32,16 @@ export const SETUP_DONE_TEXT = {
   settingsWhat: 'แก้การตั้งค่าได้ทุกเมื่อ',
   requestFile: 'ตอบกลับไฟล์ แล้วพิมพ์คำนี้ เพื่อขอลิงก์ไฟล์',
   pending: (name: string) => `รอ ${name} ยืนยันเป็นเจ้าของบอท`,
+  // #143: a short recap of what was set, so the group sees it without opening Settings.
+  recapTitle: 'ที่ตั้งไว้',
+  work: 'กลุ่มนี้',
+  tags: 'แท็กงาน',
+  noTags: 'ยังไม่มี',
+  daily: 'เตือนงานทุกวัน',
+  weekly: 'สรุปรายสัปดาห์',
+  off: 'ปิดอยู่',
+  dailyWhat: 'เตือนงาน: โพสต์ในกลุ่มทุกวัน งานใกล้ครบกำหนด เลยกำหนด และยังไม่มีผู้รับ ทุกคนในกลุ่มเห็น',
+  weeklyWhat: 'สรุปรายสัปดาห์: โพสต์จำนวนงานในกลุ่ม ทุกคนเห็น และเจ้าของบอทได้สรุปรายคนในแชตส่วนตัว',
   button: 'ยืนยันเจ้าของบอท',
   settings: 'เปิดการตั้งค่า',
 } as const
@@ -61,7 +73,26 @@ export function setupCard(p: { liffId: string; groupId: string }): LineMessage {
  *  the Owner has not confirmed; the card then names them and links the Owner confirm page.
  *  The card always links the group's Settings (#80), since it says the settings can change
  *  any time: the main button once the Owner is confirmed, a second one while it is pending. */
-export function setupDoneCard(p: { liffId: string; groupId: string; pendingOwnerName: string | null }): LineMessage {
+/** #143: what the setup-done card repeats back. */
+export type SetupRecap = Pick<GroupSetup, 'workDescription' | 'tagSet' | 'features' | 'dailyReminderTime' | 'weeklySummaryWeekday' | 'weeklySummaryTime'>
+
+const WORK_MAX = 60
+const clipText = (t: string, max: number) => (Array.from(t).length > max ? `${Array.from(t).slice(0, max - 1).join('')}…` : t)
+
+function recapRows(r: SetupRecap) {
+  const T = SETUP_DONE_TEXT
+  const day = WEEKDAYS.find((d) => d.iso === r.weeklySummaryWeekday)?.label ?? ''
+  const rows = [
+    ...(r.workDescription ? [keyValue(T.work, clipText(r.workDescription.replace(/\s+/g, ' ').trim(), WORK_MAX))] : []),
+    keyValue(T.tags, r.tagSet.length > 0 ? r.tagSet.join(', ') : T.noTags),
+    keyValue(T.daily, r.features.trackRemind ? `${r.dailyReminderTime} น.` : T.off),
+    keyValue(T.weekly, r.features.weeklySummary ? `ทุกวัน${day}. ${r.weeklySummaryTime} น.` : T.off),
+  ]
+  const notes = [...(r.features.trackRemind ? [T.dailyWhat] : []), ...(r.features.weeklySummary ? [T.weeklyWhat] : [])]
+  return [panel([caption(T.recapTitle), ...rows]), ...notes.map((n) => caption(n))]
+}
+
+export function setupDoneCard(p: { liffId: string; groupId: string; pendingOwnerName: string | null; recap?: SetupRecap | null }): LineMessage {
   const pending = p.pendingOwnerName
   const body = [
     header('success', SETUP_DONE_TEXT.title),
@@ -71,6 +102,7 @@ export function setupDoneCard(p: { liffId: string; groupId: string; pendingOwner
       commandRow(COMMAND_TEXT.settings, SETUP_DONE_TEXT.settingsWhat),
       commandRow(COMMAND_TEXT.requestFile, SETUP_DONE_TEXT.requestFile),
     ]),
+    ...(p.recap ? recapRows(p.recap) : []),
   ]
   const footer = []
   const settings = uri(SETUP_DONE_TEXT.settings, liffUrl(p.liffId, 'settings', p.groupId))

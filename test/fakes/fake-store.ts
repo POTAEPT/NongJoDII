@@ -145,6 +145,7 @@ export type GroupSetupRecord = {
   ownerNominatedByLineUserId: string | null; ownerNominatedAt: Date | null
   driveFolderId?: string | null   // groups.drive_folder_id; absent = null (#13)
   takeoverAskedAt?: Date | null   // groups.takeover_asked_at; absent = null (#31, set by change_project_owner)
+  tagSet?: string[]               // groups.tag_set; absent = [] (#110)
 }
 /** task_prompts rows of kind owner_needed (#30). */
 export type OwnerPromptRecord = {
@@ -1436,6 +1437,7 @@ export class FakeStore implements StorePort {
       weeklySummaryTime: s.weeklySummaryTime.slice(0, 5),
       nominatedOwnerLineUserId: g.nominatedOwnerLineUserId, ownerConfirmedAt: g.ownerConfirmedAt,
       ownerNominatedAt: x.ownerNominatedAt, ownerLeftAt: g.ownerLeftAt,
+      tagSet: [...(x.tagSet ?? [])],
     }
   }
 
@@ -1480,8 +1482,10 @@ export class FakeStore implements StorePort {
       // setup_group returns that answer and SupabaseStore.saveGroupSetup throws on it (it is
       // not a setup_group outcome); the fake throws here instead, with the same result.
       if (outcome !== 'confirmed') throw new Error(`FakeStore: setup self-confirm ${outcome}`)
+      if (w.tagSet.length > 0) this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
       return { outcome: 'confirmed' }
     }
+    if (w.tagSet.length > 0) this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
     return { outcome: 'pending' }
   }
 
@@ -1504,6 +1508,7 @@ export class FakeStore implements StorePort {
       const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
       if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
     }
+    this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
     return { saved: true }
   }
 

@@ -5,13 +5,15 @@ import { addTag, removeTag, TAGS_TEXT } from './tags-model'
 import { inputClass } from './ui'
 
 /** #109: tags as chips with a remove button, and a field to add one (Enter or the button). */
-export function TagsEditor({ tags, onChange, disabled = false }: {
+export function TagsEditor({ tags, onChange, disabled = false, max }: {
   tags: string[]; onChange: (tags: string[]) => void; disabled?: boolean
+  /** At most this many tags: a Task's cap by default, a group's set (#110) passes its own. */
+  max?: number
 }) {
   const [input, setInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const add = () => {
-    const r = addTag(tags, input)
+    const r = addTag(tags, input, max)
     setError(r.error)
     if (r.error === null) {
       if (r.tags !== tags) onChange(r.tags)
@@ -42,7 +44,7 @@ export function TagsEditor({ tags, onChange, disabled = false }: {
           {TAGS_TEXT.add}
         </button>
       </div>
-      <p className={`text-xs ${error ? 'text-danger' : 'text-ink-3'}`}>{error ?? TAGS_TEXT.hint}</p>
+      <p className={`text-xs ${error ? 'text-danger' : 'text-ink-3'}`}>{error ?? TAGS_TEXT.hint(max)}</p>
     </div>
   )
 }

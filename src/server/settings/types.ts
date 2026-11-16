@@ -12,6 +12,7 @@ export type SettingsValues = {
   dailyReminderTime: string        // 'HH:MM' Bangkok, quarter hour
   weeklySummaryWeekday: number     // ISO 1..7
   weeklySummaryTime: string        // 'HH:MM' Bangkok, quarter hour
+  tagSet: string[]                 // #110
 }
 
 /** Nicknames and role are filled only for the Owner, who edits them; a Member sees LINE names. */

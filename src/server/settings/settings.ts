@@ -46,6 +46,7 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
       },
       dailyReminderTime: group.dailyReminderTime,
       weeklySummaryWeekday: group.weeklySummaryWeekday,
+      tagSet: group.tagSet,
       weeklySummaryTime: group.weeklySummaryTime,
     },
     members,
@@ -82,6 +83,7 @@ export async function submitSettings(deps: Deps, body: unknown): Promise<ApiResu
     dailyReminderTime: v.dailyReminderTime, weeklySummaryWeekday: v.weeklySummaryWeekday,
     weeklySummaryTime: v.weeklySummaryTime,
     members: changed,
+    tagSet: v.tagSet,
   })
   // The Owner changed between the check above and the write.
   if (!saved) return notOwner

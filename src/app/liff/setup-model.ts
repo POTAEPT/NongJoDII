@@ -26,6 +26,7 @@ export function submitView(status: number, json: SubmitBody | unknown): SubmitVi
 
 const MSG = {
   workDescription: `เล่าได้ไม่เกิน ${WORK_DESCRIPTION_MAX} ตัวอักษร`,
+  tagSet: 'ตรวจแท็กของกลุ่มอีกครั้ง',
   ownerMissing: 'กรุณาเลือกเจ้าของบอท 1 คน',
   ownerGone: 'คนที่เลือกเป็นเจ้าของบอทไม่ได้อยู่ในกลุ่มแล้ว กรุณาเลือกคนอื่น',
   nickname: `ชื่อเล่นยาวได้ไม่เกิน ${NICKNAME_MAX} ตัวอักษร`,
@@ -51,6 +52,7 @@ export type SetupForm = {
   weeklySummaryTime: string
   members: MemberForm[]
   ownerLineUserId: string
+  tagSet: string[]   // #110: the group's starting tags, optional
 }
 
 /** The loaded values (schema defaults on a new group). The Owner defaults to the current
@@ -67,6 +69,7 @@ export function initialSetupForm(view: SetupLoad): SetupForm {
       lineUserId: m.lineUserId, displayName: m.displayName, nicknames: [...m.nicknames], role: m.role ?? '',
     })),
     ownerLineUserId: listed(view.values.ownerLineUserId) ? (view.values.ownerLineUserId as string) : view.requesterLineUserId,
+    tagSet: [...(view.values.tagSet ?? [])],
   }
 }
 
@@ -114,6 +117,7 @@ export function validateStep(form: SetupForm, step: number): string | null {
 export function stepForField(field: unknown): { step: number; message: string } | null {
   switch (field) {
     case 'workDescription': return { step: 1, message: MSG.workDescription }
+    case 'tagSet': return { step: 1, message: MSG.tagSet }
     case 'members': return { step: 2, message: MSG.members }
     case 'ownerLineUserId': return { step: 2, message: MSG.ownerGone }
     case 'features': return { step: 3, message: MSG.features }
@@ -143,5 +147,6 @@ export function toSubmitBody(form: SetupForm): Omit<SetupSubmitBody, 'idToken' |
     weeklySummaryTime: form.weeklySummaryTime,
     members: form.members.map((m) => ({ lineUserId: m.lineUserId, nicknames: cleanNicknames(m.nicknames), role: m.role.trim() })),
     ownerLineUserId: form.ownerLineUserId,
+    tagSet: form.tagSet,
   }
 }

@@ -90,7 +90,7 @@ describe('submitSettings (#28)', () => {
     expect(view.values).toEqual({
       workDescription: 'ทำโปรเจกต์จบ',
       features: { summarize: true, saveFiles: false, trackRemind: true, weeklySummary: false },
-      dailyReminderTime: '10:00', weeklySummaryWeekday: 5, weeklySummaryTime: '17:30',
+      dailyReminderTime: '10:00', weeklySummaryWeekday: 5, weeklySummaryTime: '17:30', tagSet: [],
     })
     expect(t.row(BIW)).toMatchObject({ nicknames: ['บิวบิว'], role: 'ทำสไลด์' })
     // Screens still show LINE names.
@@ -182,5 +182,26 @@ describe('"NongJoDII ตั้งค่า" (#28)', () => {
     expect(body).toContain(JSON.stringify(liffUrl(TEST_LIFF_ID, 'settings', t.group.id)))
     expect(t.line.pushes).toHaveLength(0)
     expect(t.llm.requests).toHaveLength(0)
+  })
+})
+
+describe('#110 Settings edits the group\'s starting tags', () => {
+  const setOf = (t: ReturnType<typeof setup>) => t.store.tables.group_setups.find((r) => r.groupId === t.group.id)?.tagSet ?? []
+
+  it('the Owner saves and clears them; every Member sees them', async () => {
+    const t = setup()
+    expect((await submitSettings(t.deps, t.body({ tagSet: ['ออกแบบ', 'ประชุม'] }))).status).toBe(200)
+    expect(setOf(t)).toEqual(['ออกแบบ', 'ประชุม'])
+    const seen = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
+    expect(seen.values.tagSet).toEqual(['ออกแบบ', 'ประชุม'])
+    expect((await submitSettings(t.deps, t.body({ tagSet: [] }))).status).toBe(200)
+    expect(setOf(t)).toEqual([])
+  })
+
+  it('a Member cannot change them, and a bad list is refused', async () => {
+    const t = setup()
+    expect((await submitSettings(t.deps, t.body({ idToken: 'tok-biw', tagSet: ['x'] }))).status).toBe(403)
+    expect(await submitSettings(t.deps, t.body({ tagSet: 'x' }))).toEqual({ status: 400, body: { error: 'bad_request', field: 'tagSet' } })
+    expect(setOf(t)).toEqual([])
   })
 })

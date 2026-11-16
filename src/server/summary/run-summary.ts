@@ -99,8 +99,10 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   const doneSince = new Date(deps.now().getTime() - SUMMARY_DONE_DAYS * 86_400_000)
   const existingTasks = (await store.listTasksForSummary(groupId, doneSince, SUMMARY_TASKS_LIMIT))
     .map((t) => ({ title: t.title, status: t.status, tags: t.tags }))
+  // #110: the group's starting tags (Settings), which the model picks from first.
+  const groupTags = (await store.getGroupSetup(groupId))?.tagSet ?? []
   const prompt = buildSummaryPrompt({
-    now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks,
+    now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks, groupTags,
   })
 
   let parsed: { summary: string; tasks: ParsedTask[] }

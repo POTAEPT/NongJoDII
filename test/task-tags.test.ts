@@ -60,7 +60,7 @@ describe('tag editor rules (app/liff/tags-model.ts)', () => {
     expect(addTag([], ' #ออกแบบ ')).toEqual({ tags: ['ออกแบบ'], error: null })
     expect(addTag(['ออกแบบ'], 'ออกแบบ')).toEqual({ tags: ['ออกแบบ'], error: TAGS_TEXT.duplicate })
     expect(addTag([], 'ก'.repeat(TAG_MAX_LENGTH + 1)).error).toBe(TAGS_TEXT.tooLong)
-    expect(addTag(['a', 'b', 'c', 'd', 'e'], 'f').error).toBe(TAGS_TEXT.full)
+    expect(addTag(['a', 'b', 'c', 'd', 'e'], 'f').error).toBe(TAGS_TEXT.full())
     expect(addTag(['a'], '   ')).toEqual({ tags: ['a'], error: null })
     expect(removeTag(['a', 'b'], 'a')).toEqual(['b'])
   })

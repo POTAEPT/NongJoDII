@@ -75,14 +75,15 @@ describe('loadDashboard (#17)', () => {
     expect(JSON.stringify(data)).not.toContain('ส่งงานลูกค้า')
   })
 
-  it('a Member does not get unowned Tasks or the weekly insight; the Owner gets both (#90)', async () => {
+  it('a Member gets the unowned Tasks and the weekly insight too, never another Member\'s Task (#90)', async () => {
     const s = setup()
     s.task(s.dii.id, 'จองห้อง', { status: 'not_assigned', assignee: null })
     await s.store.saveWeeklyInsight({ groupId: s.dii.id, weekStart: '2026-11-09', counts: { done: 0, inProcess: 1, awaitingOwner: 1 }, createdAt: TEST_NOW })
     const member = (await s.load('t-jeff')).body as DashboardData
     const memberDii = member.groups.find((g) => g.groupId === s.dii.id)!
-    expect(memberDii.tasks.map((t) => t.title)).toEqual(['ทำสไลด์ Dashboard'])
-    expect(memberDii.insight).toBeNull()
+    expect(memberDii.tasks.map((t) => t.title).sort()).toEqual(['จองห้อง', 'ทำสไลด์ Dashboard'].sort())
+    expect(memberDii.tasks.every((t) => t.assigneeLineUserId === 'Ujeff' || t.assigneeLineUserId === null)).toBe(true)
+    expect(memberDii.insight).toMatchObject({ weekStart: '2026-11-09' })
     const pm = (await s.load('t-pm')).body as DashboardData
     const pmDii = pm.groups.find((g) => g.groupId === s.dii.id)!
     expect(pmDii.access).toBe('overview')

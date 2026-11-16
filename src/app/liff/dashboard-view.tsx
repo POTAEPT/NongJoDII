@@ -356,20 +356,22 @@ function Notice({ tone, title, text, children }: { tone: 'doc' | 'user' | 'refre
 
 // ---------- Overview tab ----------
 
-/** "4 สมาชิก · 9 งาน"; in a 'mine' group the count is the requester's own Tasks (#90). */
+/** "4 สมาชิก · 9 งาน". In a 'mine' group (#90) only the overview groups' count is the
+ *  whole group's, so a Member's row leaves the Task count out. */
 function summaryLine(s: GroupSummary): string {
-  return s.access === 'mine'
-    ? `${s.memberCount} สมาชิก · งานของฉัน ${s.taskCount} งาน`
-    : `${s.memberCount} สมาชิก · ${s.taskCount} งาน`
+  return s.access === 'mine' ? `${s.memberCount} สมาชิก` : `${s.memberCount} สมาชิก · ${s.taskCount} งาน`
 }
 
-/** #90: a Member's overview of a group ("งานของฉัน"). Their payload holds only their own
- *  Tasks and no insight, so it shows those Tasks, the saved files and who is in the group,
- *  never the per-Member status cards (everyone else would look idle). */
+/** #90: a Member's overview of a group ("งานของฉัน"). Their payload holds their own Tasks,
+ *  the unowned ones and the weekly insight, so it shows those, the saved files and who is
+ *  in the group, never the per-Member status cards (everyone else would look idle). An
+ *  unowned Task opens the Task page, where they can take it. */
 function MineOverview({ group, now, onOpen }: { group: DashboardGroup; now: Date; onOpen: (taskId: string) => void }) {
-  const open = filterTasks(group.tasks, 'all')
+  const open = filterTasks(group.tasks.filter((t) => t.assigneeLineUserId !== null), 'all')
+  const unowned = unownedTasks(group.tasks)
   return (
     <>
+      <InsightCard insight={group.insight} />
       <div>
         <h2 className="text-base font-bold">งานของฉัน {open.length} งาน</h2>
         <p className="text-xs text-[#8A94A6]">เจ้าของบอทเห็นภาพรวมงานของทั้งกลุ่ม</p>
@@ -379,6 +381,22 @@ function MineOverview({ group, now, onOpen }: { group: DashboardGroup; now: Date
       ) : (
         <div className="flex flex-col gap-2">
           {open.map((t) => <TaskRow key={t.taskId} task={t} now={now} onOpen={onOpen} />)}
+        </div>
+      )}
+      {unowned.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h2 className="text-base font-bold">ยังไม่มีคนรับ {unowned.length} งาน</h2>
+          {unowned.map((t) => (
+            <div key={t.taskId} className="flex items-center gap-3 rounded-2xl border border-dashed border-[#E0A100] bg-[#FFFBEB] p-3">
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-bold">{t.title}</span>
+                <span className="block text-xs text-[#B45309]">ยังไม่มีคนทำ{t.dueAt ? ` · ส่ง ${dueLabel(t.dueAt, now)}` : ''}</span>
+              </span>
+              <button type="button" onClick={() => onOpen(t.taskId)} className="shrink-0 rounded-xl bg-[#DCE8F7] px-4 py-2 text-sm font-bold text-[#1F5BAD]">
+                รับงานนี้
+              </button>
+            </div>
+          ))}
         </div>
       )}
       <FilesCard files={group.files} />

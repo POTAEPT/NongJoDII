@@ -14,9 +14,11 @@ import { badRequest, field } from '../review/load'
 //     member of at least one of its groups): every group of that Project, except a group they
 //     left, as an overview: every Task (unowned ones too, so the Owner can assign them), every
 //     Member, the weekly insight and the saved files. access = 'overview'.
-//   - Member: only the groups where they are a live member, as "งานของฉัน": only the Tasks
-//     assigned to them (no unowned Tasks: those reach Members through the chat cards), the
-//     Member list with LINE names, and the saved files; no insight. access = 'mine'.
+//   - Member: only the groups where they are a live member, as "งานของฉัน": the Tasks
+//     assigned to them plus the group's unowned Tasks (anyone may take one; decided
+//     2026-11-16), the Member list with LINE names, the saved files and the weekly insight
+//     (team counts only, the same card the whole group gets). Never a Task assigned to
+//     someone else. access = 'mine'.
 //     The filter is applied here, so a Member's payload never holds other people's Tasks.
 //   - Someone can be a PM of one Project and a Member in another: access is per group.
 //   - Outsider (no live membership in any group of a Project): refused with 403.
@@ -40,7 +42,7 @@ export type DashboardFile = {
   fileId: string; fileName: string; driveLink: string; sizeBytes: number | null; savedAt: string; senderName: string | null
 }
 /** 'overview': the requester is a PM of this group's Project and sees everything.
- *  'mine': a Member; tasks holds only their own Tasks, and insight is null. */
+ *  'mine': a Member; tasks holds only their own Tasks and the unowned ones. */
 export type DashboardAccess = 'overview' | 'mine'
 export type DashboardGroup = {
   groupId: string; name: string | null; access: DashboardAccess
@@ -120,14 +122,16 @@ export async function loadDashboard(deps: Deps, body: unknown): Promise<ApiResul
         access,
         ownerLineUserId: g.ownerLineUserId,
         members: members.filter((m) => m.groupId === g.groupId).map((m) => ({ lineUserId: m.lineUserId, displayName: m.displayName })),
-        // A Member gets only the Tasks assigned to them: filtered here, never only in the page.
+        // A Member gets only their own Tasks and the unowned ones: filtered here, never only
+        // in the page, so another person's Task never reaches them.
         tasks: tasks
-          .filter((t) => t.groupId === g.groupId && (access === 'overview' || t.assigneeLineUserId === user.lineUserId))
+          .filter((t) => t.groupId === g.groupId &&
+            (access === 'overview' || t.assigneeLineUserId === user.lineUserId || t.assigneeLineUserId === null))
           .map((t) => ({
             taskId: t.id, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
             assigneeName: t.assigneeName, dueAt: t.dueAt ? t.dueAt.toISOString() : null,
           })),
-        insight: access === 'overview' ? insightOf(insights.find((i) => i.groupId === g.groupId)) : null,
+        insight: insightOf(insights.find((i) => i.groupId === g.groupId)),
         files: files.filter((f) => f.groupId === g.groupId).map((f) => ({
           fileId: f.id, fileName: f.fileName, driveLink: f.driveLink, sizeBytes: f.sizeBytes,
           savedAt: f.savedAt.toISOString(), senderName: f.senderName,

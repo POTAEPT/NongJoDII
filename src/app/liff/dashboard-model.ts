@@ -5,9 +5,9 @@ import { BKK_OFFSET_MS, bangkokParts, bangkokTodayLabel, bangkokWeekStartLabel, 
 // The data is the Dashboard read (#17, server/dashboard/load.ts): POST /api/dashboard/load answers with DashboardData,
 // already limited to what the requester may see (a PM sees every group of the Project, a
 // Member only their own groups; an outsider gets 403). This file never decides access.
-// #90: each group carries access. 'overview' groups hold every Task and the insight; 'mine'
-// groups hold only the requester's own Tasks, so they never count as a group's progress
-// and never enter the PM's comparison.
+// #90: each group carries access. 'overview' groups hold every Task; 'mine' groups hold
+// only the requester's own Tasks and the unowned ones, so they never count as a group's
+// progress and never enter the PM's comparison. Both carry the weekly insight.
 // Names are LINE names, never nicknames (decided 2026-11-11).
 
 export type { DashboardData, DashboardFile, DashboardGroup, DashboardInsight, DashboardMember, DashboardTask } from '@/server/dashboard/load'
@@ -254,7 +254,7 @@ export const TABS: { key: DashboardTab; label: string }[] = [
 export type Scope = 'all' | string
 
 /** #90: the groups the requester sees whole (as a PM of their Project). Only these are
- *  compared: a 'mine' group's Tasks are only the requester's own. */
+ *  compared: a 'mine' group's Tasks are only the requester's own and the unowned ones. */
 export function overviewGroups(data: DashboardData): DashboardGroup[] {
   return data.groups.filter((g) => g.access === 'overview')
 }

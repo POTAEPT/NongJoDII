@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent, LineMessage } from '@/server/line/types'
 import type { LlmUsage } from '@/server/ports'
-import { DECIDE_CALL_MAX_MS, decide } from '@/server/progress/decide'
+import { DECIDE_CALL_MAX_MS, DECISION_SCHEMA, decide } from '@/server/progress/decide'
 import { answerProgressFromLiff } from '@/server/progress/liff'
 import { DECISION_MODEL, TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -135,6 +135,7 @@ describe('a progress line that matches an open Task', () => {
     await t.say(BIW, 'กินข้าวยัง')
     expect(t.llm.requests).toHaveLength(1)
     expect(t.llm.requests[0].model).toBe(DECISION_MODEL)
+    expect(t.llm.requests[0].schema).toBe(DECISION_SCHEMA) // #111
     expect(t.llm.requests[0].timeoutMs).toBeLessThanOrEqual(DECIDE_CALL_MAX_MS)
     expect(t.store.tables.ai_usage).toHaveLength(1)
     expect(t.store.tables.ai_usage[0]).toMatchObject({

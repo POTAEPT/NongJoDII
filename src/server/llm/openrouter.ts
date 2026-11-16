@@ -36,7 +36,15 @@ export class OpenRouterClient implements LlmPort {
             { role: 'user', content: req.user },
           ],
           max_tokens: req.maxTokens,
-          response_format: { type: 'json_object' },
+          // #111: with a schema, the answer must follow it (structured outputs, strict), and
+          // the request goes only to the model's providers that support it
+          // (openrouter.ai/docs/features/structured-outputs: provider.require_parameters).
+          ...(req.schema
+            ? {
+                response_format: { type: 'json_schema', json_schema: { name: req.schema.name, strict: true, schema: req.schema.schema } },
+                provider: { require_parameters: true },
+              }
+            : { response_format: { type: 'json_object' } }),
         }),
         signal: AbortSignal.timeout(Math.min(this.timeoutMs, req.timeoutMs ?? this.timeoutMs)),
       })

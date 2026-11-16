@@ -10,6 +10,37 @@ export class ModelOutputError extends Error {
   }
 }
 
+/** #111: the shape parseSummaryOutput reads, sent as the request's JSON Schema (strict:
+ *  every property required, nullable ones typed [..., 'null'], no extra properties). The
+ *  parser still checks every field: the schema lowers bad output, it does not replace the
+ *  check. test/ai-schemas.test.ts keeps the two in step. */
+export const SUMMARY_SCHEMA = {
+  name: 'summary',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['summary', 'tasks'],
+    properties: {
+      summary: { type: 'string' },
+      tasks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['title', 'details', 'assignee', 'due', 'source'],
+          properties: {
+            title: { type: 'string' },
+            details: { type: ['string', 'null'] },
+            assignee: { type: ['string', 'null'] },
+            due: { type: ['string', 'null'] },
+            source: { type: ['string', 'null'] },
+          },
+        },
+      },
+    },
+  },
+}
+
 const SUMMARY_MAX = 1500
 const TITLE_MAX = 200
 const DETAILS_MAX = 2000

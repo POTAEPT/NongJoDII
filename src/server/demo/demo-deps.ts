@@ -55,6 +55,7 @@ function shared(): Shared {
         // Same format as loadConfig's TOKEN_ENCRYPTION_KEY: 32 raw bytes.
         tokenEncryptionKey: randomBytes(32),
         tickSecret: randomBytes(16).toString('hex'),
+        appBaseUrl: base,
       },
       google: new GoogleHttpClient({
         clientId: process.env.GOOGLE_CLIENT_ID ?? '',

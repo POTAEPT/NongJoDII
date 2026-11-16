@@ -87,6 +87,9 @@ export default function Home() {
               </li>
             ))}
           </ol>
+          <Link href="/guide" className="self-start font-semibold text-primary underline underline-offset-4">
+            ดูวิธีใช้งานทั้งหมด →
+          </Link>
         </section>
       </main>
 

@@ -1,5 +1,6 @@
 import type { Member, MessageMention, StoredMessage, TaskStatus } from '../ports'
 import { bangkokTodayLabel, formatPromptTime } from '../time/bangkok'
+import { TASK_COUNT_HINTS, type TaskCountHint } from './check'
 
 export type PromptRef = { ref: string; lineUserId: string }          // 'm1', 'm2', ...
 export type MessageRef = { ref: string; message: StoredMessage }     // 'msg1', 'msg2', ...
@@ -16,15 +17,24 @@ const STATUS_WORD: Record<TaskStatus, string> = { not_assigned: 'no assignee', i
  *  #108: `messages` is the chat since the group's last Summary, the only source of tasks.
  *  `context` is chat an earlier Summary already covered, given for understanding only and
  *  without message refs (so no task can point at it). `existingTasks` are the group's open
- *  and recently done Tasks, which the model must not propose again. */
+ *  and recently done Tasks, which the model must not propose again.
+ *  #157: `summaryOnly` (the decision model found no work) asks for the summary alone, with no
+ *  Task part; `taskHint` adds "expect about N separate tasks"; `alreadyFound` (the retry) lists
+ *  the first answer's task titles and asks only for the tasks it missed. With none of the
+ *  three the prompt is the one used before #157. */
 export function buildSummaryPrompt(p: {
   now: Date; workDescription: string | null; members: Member[]; messages: StoredMessage[]
   context?: StoredMessage[]; existingTasks?: ExistingTask[]
   /** #110: the group's starting tags, set by the Owner; the model picks from these first. */
   groupTags?: string[]
+  summaryOnly?: boolean; taskHint?: TaskCountHint | null; alreadyFound?: string[]
 }): { system: string; user: string; memberRefs: PromptRef[]; messageRefs: MessageRef[] } {
   const context = p.context ?? []
-  const existingTasks = p.existingTasks ?? []
+  const summaryOnly = p.summaryOnly === true
+  // Summary only: no Task part at all, so the existing Tasks and the tags stay out too.
+  const existingTasks = summaryOnly ? [] : p.existingTasks ?? []
+  const groupTags = summaryOnly ? [] : p.groupTags ?? []
+  const alreadyFound = summaryOnly ? [] : p.alreadyFound ?? []
   const memberRefs: PromptRef[] = []
   const refByUser = new Map<string, string>()
   const lines: string[] = []
@@ -67,9 +77,13 @@ export function buildSummaryPrompt(p: {
     ...lines,
     ...(existingTasks.length > 0
       ? ['Existing tasks (already in the group; never propose these again):',
-        ...existingTasks.map((t) => `- [${STATUS_WORD[t.status]}] ${t.title.replace(/\r\n|\r|\n/g, ' ').slice(0, 200)}`)]
+        ...existingTasks.map((t) => `- [${STATUS_WORD[t.status]}] ${oneLine(t.title)}`)]
       : []),
-    ...((p.groupTags ?? []).length > 0 ? [`Group tags (set by the Owner; use these first): ${(p.groupTags ?? []).join(', ')}`] : []),
+    ...(alreadyFound.length > 0
+      ? ['Tasks already found (an earlier answer listed these; never repeat them):',
+        ...alreadyFound.map((t) => `- ${oneLine(t)}`)]
+      : []),
+    ...(groupTags.length > 0 ? [`Group tags (set by the Owner; use these first): ${groupTags.join(', ')}`] : []),
     ...(tagsInUse(existingTasks).length > 0 ? [`Tags in use: ${tagsInUse(existingTasks).join(', ')}`] : []),
     ...(context.length > 0
       ? ['Earlier chat (already summarized before; context only, oldest first):', ...context.map(line)]
@@ -78,6 +92,9 @@ export function buildSummaryPrompt(p: {
     ...chat,
   ].join('\n')
 
+  if (summaryOnly) return { system: summaryOnlySystem(), user, memberRefs, messageRefs }
+
+  const hint = p.taskHint ? TASK_COUNT_HINTS[p.taskHint] : null
   const system = [
     'You are NongJoDII (น้องจดดี), an assistant in a Thai student team\'s LINE group.',
     'Read the chat and reply with ONLY a JSON object of this shape:',
@@ -85,6 +102,12 @@ export function buildSummaryPrompt(p: {
     'Rules:',
     '- Write summary, title and details in Thai. summary: at most 800 characters.',
     '- A task is concrete work that someone should still do according to the chat. Skip work the chat marks as finished. At most 10 tasks. Never invent tasks.',
+    ...(hint
+      ? [`- Expect about ${hint.expect} separate tasks in the "Chat" section. Work for different people, or with different deadlines, is a separate task each. Never invent a task to reach that number.`]
+      : []),
+    ...(alreadyFound.length > 0
+      ? ['- An earlier answer missed some tasks. List ONLY the tasks that are not under "Tasks already found"; never repeat a found one. [] when there are no others.']
+      : []),
     '- Summarize and take tasks ONLY from the "Chat" section. "Earlier chat" was summarized before: use it only to understand the new chat, and never take a task from it.',
     '- Never propose a task that is already in "Existing tasks", whatever its status and even if the chat words it differently.',
     '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname in those fields.',
@@ -97,6 +120,25 @@ export function buildSummaryPrompt(p: {
   ].join('\n')
 
   return { system, user, memberRefs, messageRefs }
+}
+
+/** #157: the system text when the decision model found no work in the chat: the summary only. */
+function summaryOnlySystem(): string {
+  return [
+    'You are NongJoDII (น้องจดดี), an assistant in a Thai student team\'s LINE group.',
+    'Read the chat and reply with ONLY a JSON object of this shape:',
+    '{"summary": string}',
+    'Rules:',
+    '- Write summary in Thai, at most 800 characters.',
+    '- Summarize ONLY the "Chat" section. "Earlier chat" was summarized before: use it only to understand the new chat.',
+    '- In summary, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname.',
+    '- Never write a message ref (such as msg14) in summary; readers never see message refs.',
+    '- In the chat, @{m2} means the sender tagged that member; trust a tag over a name, since two members can share a LINE name.',
+  ].join('\n')
+}
+
+function oneLine(title: string): string {
+  return title.replace(/\r\n|\r|\n/g, ' ').slice(0, 200)
 }
 
 /** Replaces each LINE user tag of a live Member ("@Pim Sirin") with "@{mN}", so who

@@ -21,6 +21,8 @@ export const SUMMARY_TEXT = {
   altText: (n: number) => `สรุปแชต: พบ ${n} งาน`,
   review: 'ตรวจและยืนยันงาน',
   notYet: 'งานจะยังไม่ถูกสร้างจนกว่าจะกดยืนยัน',
+  /** #157: the decision model expected more Tasks than the text model found, even after a retry. */
+  maybeMore: 'อาจมีงานเพิ่ม',
 } as const
 
 function clip(t: string): string {
@@ -31,12 +33,18 @@ function clip(t: string): string {
  *  proposed Tasks with the review button. Names on it are LINE names only (rule 9). */
 export function buildSummaryReply(p: {
   summaryText: string; candidates: ReplyCandidate[]; summaryId: string; liffId: string; draftTasks: boolean
+  /** #157: add the "อาจมีงานเพิ่ม" line (fewer Tasks than the decision model expected). */
+  maybeMore?: boolean
 }): LineMessage[] {
   const head = `${SUMMARY_TEXT.head}\n${p.summaryText}`
   if (!p.draftTasks) return [{ type: 'text', text: head.slice(0, TEXT_MAX) }]
 
   const n = p.candidates.length
-  if (n === 0) return [{ type: 'text', text: `${head}\n\n${SUMMARY_TEXT.none}`.slice(0, TEXT_MAX) }]
+  if (n === 0) {
+    // No card to carry the line: it goes under the "no new Tasks" words.
+    const more = p.maybeMore ? `\n${SUMMARY_TEXT.maybeMore}` : ''
+    return [{ type: 'text', text: `${head}\n\n${SUMMARY_TEXT.none}${more}`.slice(0, TEXT_MAX) }]
+  }
 
   const items = p.candidates.map((c) => {
     const assignee = c.assignee === null ? 'ยังไม่มีผู้รับ' : (c.assignee.displayName ?? 'สมาชิก')
@@ -52,7 +60,11 @@ export function buildSummaryReply(p: {
       type: 'flex',
       altText: SUMMARY_TEXT.altText(n),
       contents: bubble(
-        [header('info', SUMMARY_TEXT.cardTitle(n)), panel(items, { spacing: 'md' })],
+        [
+          header('info', SUMMARY_TEXT.cardTitle(n)),
+          panel(items, { spacing: 'md' }),
+          ...(p.maybeMore ? [caption(SUMMARY_TEXT.maybeMore, { align: 'center' })] : []),
+        ],
         [
           button('primary', uri(SUMMARY_TEXT.review, liffUrl(p.liffId, 'review', p.summaryId))),
           caption(SUMMARY_TEXT.notYet, { size: 'xxs', align: 'center' }),

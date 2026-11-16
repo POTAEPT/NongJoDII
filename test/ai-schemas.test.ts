@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSummaryOutput, SUMMARY_SCHEMA } from '@/server/summary/parse-output'
+import { parseSummaryOutput, SUMMARY_ONLY_SCHEMA, SUMMARY_SCHEMA } from '@/server/summary/parse-output'
 import { buildSummaryPrompt } from '@/server/summary/prompt'
 
 // #111: each chat-model call sends a JSON Schema (OpenRouter structured outputs, strict). These
@@ -43,6 +43,18 @@ function strictProblems(schema: Schema, path = '$'): string[] {
   if (schema.items) out.push(...strictProblems(schema.items as Schema, `${path}[]`))
   return out
 }
+
+describe('SUMMARY_ONLY_SCHEMA (#157) and parseSummaryOutput', () => {
+  it('follows the strict-mode rules, parses with no tasks, and the summary-only prompt names its one field', () => {
+    expect(strictProblems(SUMMARY_ONLY_SCHEMA.schema)).toEqual([])
+    const answer = { summary: 'คุยเรื่องข้าวเที่ยง' }
+    expect(valid(SUMMARY_ONLY_SCHEMA.schema, answer)).toBe(true)
+    expect(valid(SUMMARY_ONLY_SCHEMA.schema, { summary: 'x', tasks: [] })).toBe(false)
+    expect(parseSummaryOutput(JSON.stringify(answer))).toEqual({ summary: 'คุยเรื่องข้าวเที่ยง', tasks: [] })
+    const { system } = buildSummaryPrompt({ now: new Date(), workDescription: null, members: [], messages: [], summaryOnly: true })
+    expect(system.split('\n').find((l) => l.startsWith('{"summary"'))).toBe('{"summary": string}')
+  })
+})
 
 describe('SUMMARY_SCHEMA and parseSummaryOutput', () => {
   it('follows the strict-mode rules', () => {

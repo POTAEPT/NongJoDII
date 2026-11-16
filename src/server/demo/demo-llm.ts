@@ -6,6 +6,7 @@ import type {
 } from '@/server/ports'
 import { CHAT_LINE_LABEL } from '@/server/progress/decide'
 import { looksLikeProgress } from '@/server/progress/keywords'
+import { HAS_TASK_KEY } from '@/server/summary/check'
 import { priceTokens } from '@/server/usage/pricing'
 import type { AiCall, AiCallKind } from './types'
 
@@ -74,8 +75,8 @@ export class DemoLlm implements LlmPort, DecisionsPort {
     }
   }
 
-  /** The progress decision (TypeSafe Jev). On failure: a canned answer from the chat line's
-   *  keywords, recorded as a fallback that costs 0. */
+  /** A decision (TypeSafe Jev): the progress decision, or the Summary's task check (#157). On
+   *  failure: a canned answer, recorded as a fallback that costs 0. */
   async decide(req: DecisionsRequest): Promise<DecisionsResult> {
     this.inFlight += 1
     this.model = req.model
@@ -86,7 +87,7 @@ export class DemoLlm implements LlmPort, DecisionsPort {
       this.lastCallFallback = false
       this.model = result.model
       // Priced by the slug asked for: OpenRouter echoes a dated one (typesafe/jev-1.14-20261014).
-      this.recordUsage('progress', result.model, result.usage, false, req.model)
+      this.recordUsage(decisionKind(req), result.model, result.usage, false, req.model)
       return result
     } catch {
       this.lastCallFallback = true
@@ -94,7 +95,7 @@ export class DemoLlm implements LlmPort, DecisionsPort {
       const canned: DecisionsResult = {
         model: CANNED_MODEL, answers: cannedDecisions(req), usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
       }
-      this.recordUsage('progress', CANNED_MODEL, canned.usage, true)
+      this.recordUsage(decisionKind(req), CANNED_MODEL, canned.usage, true)
       return canned
     } finally {
       this.inFlight -= 1
@@ -127,12 +128,20 @@ export class DemoLlm implements LlmPort, DecisionsPort {
   }
 }
 
-/** What a chat call was for, from its schema (Summary) or its prompt. Progress decisions go
- *  through decide() and are always 'progress'. */
+/** The Summary's text-call schemas: with Tasks, and summary only (#157). */
+const isSummarySchema = (req: LlmRequest) => req.schema?.name === 'summary' || req.schema?.name === 'summary_only'
+
+/** What a chat call was for, from its schema (Summary) or its prompt. Decisions go through
+ *  decide(): see decisionKind. */
 export function callKind(req: LlmRequest): AiCallKind {
-  if (req.schema?.name === 'summary') return 'summary'
+  if (isSummarySchema(req)) return 'summary'
   if (/\btags?\b|แท็ก/i.test(req.system)) return 'tags'
   return 'other'
+}
+
+/** A decision call is the Summary's task check (#157) when it asks `has_task`, else progress. */
+export function decisionKind(req: DecisionsRequest): AiCallKind {
+  return Object.hasOwn(req.questions, HAS_TASK_KEY) ? 'summary' : 'progress'
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -144,7 +153,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 function usable(req: LlmRequest, content: string): boolean {
-  if (req.schema?.name !== 'summary') return content.trim() !== ''
+  if (!isSummarySchema(req)) return content.trim() !== ''
   try {
     const o = JSON.parse(content.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')) as { summary?: unknown }
     return typeof o.summary === 'string' && o.summary.trim() !== ''
@@ -156,13 +165,17 @@ function usable(req: LlmRequest, content: string): boolean {
 /** A valid answer for the request's schema, built from the prompt alone. */
 export function cannedAnswer(req: LlmRequest): string {
   if (req.schema?.name === 'summary') return JSON.stringify(cannedSummary(req.system, req.user))
+  if (req.schema?.name === 'summary_only') return JSON.stringify({ summary: cannedSummary(req.system, req.user).summary })
   return '{}'
 }
 
 /** Canned decision answers from the request alone: the chat line's keywords say whether it is
  *  progress (0.9, else 0.1) and its status; a choice picks the keyword status when offered,
- *  else the first key (the first Task); a score picks the lowest level. */
+ *  else the first key (the first Task); a score picks the lowest level. The Summary's task
+ *  check (#157) gets no answers ("not answered"), so the canned Summary runs as before #157 and
+ *  finds its Tasks by its own rule. */
 export function cannedDecisions(req: DecisionsRequest): Record<string, DecisionAnswer | null> {
+  if (decisionKind(req) === 'summary') return Object.fromEntries(Object.keys(req.questions).map((k) => [k, null]))
   const at = req.state.lastIndexOf(`${CHAT_LINE_LABEL}\n`)
   const line = at >= 0 ? req.state.slice(at + CHAT_LINE_LABEL.length + 1) : ''
   const keyword = looksLikeProgress(line)

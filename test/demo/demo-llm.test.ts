@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { CANNED_MODEL, DemoLlm, findDue } from '@/server/demo/demo-llm'
 import type { DecisionsPort, LlmPort, LlmRequest } from '@/server/ports'
-import { SUMMARY_SCHEMA, parseSummaryOutput } from '@/server/summary/parse-output'
+import { SUMMARY_ONLY_SCHEMA, SUMMARY_SCHEMA, parseSummaryOutput } from '@/server/summary/parse-output'
+import { buildSummaryCheckRequest, mapSummaryCheck } from '@/server/summary/check'
 import { buildSummaryPrompt } from '@/server/summary/prompt'
 import { buildDecisionsRequest, mapDecision } from '@/server/progress/decide'
 import type { TaskRow } from '@/server/ports'
@@ -54,6 +55,28 @@ describe('DemoLlm', () => {
     const res = await llm.complete(summaryRequest())
     expect(llm.lastCallFallback).toBe(true)
     expect(parseSummaryOutput(res.content).tasks).toHaveLength(1)
+  })
+
+  it('the Summary\'s task check (#157) is recorded as a summary call; offline it is not answered, so the Summary runs as before', async () => {
+    const failing: DecisionsPort = { decide: async () => { throw new Error('openrouter decisions 500') } }
+    const llm = new DemoLlm({ inner: null, decisions: failing })
+    llm.clock = () => NOW
+    const req = buildSummaryCheckRequest('Chat (oldest first, Asia/Bangkok time):\nmsg1 [09:00] m1: ฝากทำสไลด์')
+    const res = await llm.decide(req)
+    expect(mapSummaryCheck(res.answers)).toBeNull()
+    expect(llm.calls).toMatchObject([{ kind: 'summary', model: CANNED_MODEL, costUsd: 0, fallback: true }])
+
+    const live: DecisionsPort = {
+      decide: async () => ({ model: 'typesafe/jev-1.14', answers: {}, usage: { inputTokens: 1500, outputTokens: 57, costUsd: 0.00006 } }),
+    }
+    const real = new DemoLlm({ inner: null, decisions: live })
+    await real.decide(req)
+    expect(real.calls).toMatchObject([{ kind: 'summary', costUsd: 0.00006, fallback: false }])
+    // A summary-only text call is a Summary call too, with a canned answer of its shape.
+    const offline = new DemoLlm({ inner: null })
+    const only = await offline.complete({ ...summaryRequest(), schema: SUMMARY_ONLY_SCHEMA })
+    expect(Object.keys(JSON.parse(only.content))).toEqual(['summary'])
+    expect(offline.calls).toMatchObject([{ kind: 'summary', fallback: true }])
   })
 
   it('on a failed progress decision, answers from the chat line\'s keywords: the first Task, recorded as a fallback', async () => {

@@ -45,10 +45,22 @@ export const SUMMARY_SCHEMA = {
   },
 }
 
+/** #157: the summary-only answer, when the decision model found no work in the chat. Same
+ *  parser: an answer without `tasks` parses with no tasks. */
+export const SUMMARY_ONLY_SCHEMA = {
+  name: 'summary_only',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['summary'],
+    properties: { summary: { type: 'string' } },
+  },
+}
+
 const SUMMARY_MAX = 1500
 const TITLE_MAX = 200
 const DETAILS_MAX = 2000
-const TASKS_MAX = 10
+export const TASKS_MAX = 10
 const FENCE = /^```(?:json)?\s*([\s\S]*?)\s*```$/i
 
 export function parseSummaryOutput(content: string): { summary: string; tasks: ParsedTask[] } {

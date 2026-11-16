@@ -3,9 +3,10 @@ import type { LineMessage } from '../line/types'
 import { log, logError } from '../log'
 import type { Deps, NewCandidate } from '../ports'
 import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
-import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
+import { FairUseCapReachedError, runMeteredAi, type MeterContext } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
-import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask } from './parse-output'
+import { parseSummaryOutput, SUMMARY_ONLY_SCHEMA, SUMMARY_SCHEMA, TASKS_MAX, type ParsedTask } from './parse-output'
+import { checkSummary, TASK_COUNT_HINTS, type SummaryCheck, type TaskCountHint } from './check'
 import { isTaskFeedback } from '../review/feedback'
 import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { nextStepCard, uri } from '../line/flex-ui'
@@ -25,6 +26,11 @@ export const SUMMARY_CONTEXT_LIMIT = 20
 export const SUMMARY_DONE_DAYS = 30
 export const SUMMARY_TASKS_LIMIT = 50
 const SUMMARY_MAX_TOKENS = 4000
+/** #157: the decision check and the text call(s) together get this long, inside the webhook
+ *  route's 60 s (maxDuration); the store calls and the reply need the rest. */
+export const SUMMARY_AI_BUDGET_MS = 50_000
+/** #157: the retry text call runs only with at least this much of the budget left. */
+export const SUMMARY_RETRY_MIN_MS = 10_000
 const TITLE_MAX = 200
 const DETAILS_MAX = 2000
 
@@ -119,16 +125,33 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     .map((t) => ({ title: t.title, status: t.status, tags: t.tags }))
   // #110: the group's starting tags (Settings), which the model picks from first.
   const groupTags = (await store.getGroupSetup(groupId))?.tagSet ?? []
-  const prompt = buildSummaryPrompt({
+  const promptInput = {
     now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks, groupTags,
-  })
+  }
+  const fullPrompt = buildSummaryPrompt(promptInput)
+  const meterCtx = { ownerLineUserId, projectId: group.projectId, groupId }
+
+  // #157: one decision-model call (TypeSafe Jev) on the same chat window says whether the chat
+  // holds work and about how many Tasks. null (refused, failed, the cap) keeps the single text
+  // call with the prompt used before. With Draft tasks off the Tasks are dropped anyway: no check.
+  const startedAt = deps.now().getTime()
+  const remainingMs = () => SUMMARY_AI_BUDGET_MS - (deps.now().getTime() - startedAt)
+  const check: SummaryCheck | null = group.featureDraftTasks ? await checkSummary(deps, meterCtx, fullPrompt.user) : null
+  const prompt = check?.kind === 'no_task'
+    ? buildSummaryPrompt({ ...promptInput, summaryOnly: true })
+    : check?.kind === 'tasks' ? buildSummaryPrompt({ ...promptInput, taskHint: check.hint }) : fullPrompt
 
   let parsed: { summary: string; tasks: ParsedTask[] }
   try {
     const result = await runMeteredAi(
       deps,
-      { ownerLineUserId, projectId: group.projectId, groupId, purpose: 'summary' },
-      { model: TEXT_MODEL, system: prompt.system, user: prompt.user, maxTokens: SUMMARY_MAX_TOKENS, schema: SUMMARY_SCHEMA },
+      { ...meterCtx, purpose: 'summary' },
+      {
+        model: TEXT_MODEL, system: prompt.system, user: prompt.user, maxTokens: SUMMARY_MAX_TOKENS,
+        schema: check?.kind === 'no_task' ? SUMMARY_ONLY_SCHEMA : SUMMARY_SCHEMA,
+        // After a check call, the text call gets what is left of the budget.
+        ...(group.featureDraftTasks ? { timeoutMs: Math.max(1, remainingMs()) } : {}),
+      },
     )
     parsed = parseSummaryOutput(result.content)
   } catch (err) {
@@ -142,6 +165,19 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     const reason = summaryFailure(err, true)
     logError('summary_ai_failed', { groupId, reason }, err)
     return reply(deps, replyToken, groupId, [summaryFailedCard(reason, deps.now())], sent)
+  }
+
+  // #157: no work in the chat: no Task candidates, whatever the answer held.
+  if (check?.kind === 'no_task') parsed = { summary: parsed.summary, tasks: [] }
+  // #157: fewer Tasks than the check expected: one retry asks only for the missed ones (at
+  // most 2 text calls). Still short, or no retry was possible: the card says "อาจมีงานเพิ่ม".
+  let maybeMore = false
+  if (check?.kind === 'tasks' && parsed.tasks.length < TASK_COUNT_HINTS[check.hint].min) {
+    const tasks = remainingMs() >= SUMMARY_RETRY_MIN_MS
+      ? await retryMissedTasks(deps, { ...meterCtx, purpose: 'summary' }, promptInput, check.hint, parsed.tasks, remainingMs())
+      : parsed.tasks
+    parsed = { summary: parsed.summary, tasks }
+    maybeMore = tasks.length < TASK_COUNT_HINTS[check.hint].min
   }
 
   // H1: the model writes {mN}; code swaps in LINE names, so a nickname never reaches a screen.
@@ -204,6 +240,7 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
 
   const replyMessages = buildSummaryReply({
     summaryText, candidates: replyCandidates, summaryId, liffId: deps.config.liffId, draftTasks: group.featureDraftTasks,
+    maybeMore,
   })
   // This call may have crossed 80% or the cap; the notice rides on the same reply (no pushes).
   try {
@@ -219,6 +256,39 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     logError('summary_fair_use_notice_failed', { groupId }, err)
   }
   await reply(deps, replyToken, groupId, replyMessages, sent)
+}
+
+/** #157: the retry text call. Same chat window and refs, the first answer's task titles as
+ *  already found; only the missed tasks are asked for. Its summary is not used. Any failure
+ *  (the cap included) keeps the first answer's tasks. */
+async function retryMissedTasks(
+  deps: Deps, ctx: MeterContext, promptInput: Parameters<typeof buildSummaryPrompt>[0], hint: TaskCountHint,
+  found: ParsedTask[], timeoutMs: number,
+): Promise<ParsedTask[]> {
+  const prompt = buildSummaryPrompt({ ...promptInput, taskHint: hint, alreadyFound: found.map((t) => t.title) })
+  try {
+    const result = await runMeteredAi(deps, ctx, {
+      model: TEXT_MODEL, system: prompt.system, user: prompt.user, maxTokens: SUMMARY_MAX_TOKENS, schema: SUMMARY_SCHEMA, timeoutMs,
+    })
+    return mergeTasks(found, parseSummaryOutput(result.content).tasks)
+  } catch (err) {
+    if (!(err instanceof FairUseCapReachedError)) logError('summary_retry_failed', { groupId: ctx.groupId, reason: summaryFailure(err, true) }, err)
+    return found
+  }
+}
+
+/** The first answer's tasks, then the retry's new ones; a title already present (ignoring case
+ *  and spaces) is dropped. At most TASKS_MAX. */
+export function mergeTasks(first: ParsedTask[], more: ParsedTask[]): ParsedTask[] {
+  const key = (t: ParsedTask) => t.title.toLocaleLowerCase('th').replace(/\s+/g, '')
+  const seen = new Set<string>()
+  const out: ParsedTask[] = []
+  for (const t of [...first, ...more]) {
+    if (seen.has(key(t))) continue
+    seen.add(key(t))
+    out.push(t)
+  }
+  return out.slice(0, TASKS_MAX)
 }
 
 function replyText(deps: Deps, replyToken: string, groupId: string, text: string, sent: { value: boolean }): Promise<void> {

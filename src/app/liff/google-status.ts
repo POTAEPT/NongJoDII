@@ -1,4 +1,5 @@
 import { GOOGLE_RETURN } from '@/server/liff-links'
+import { apiPath } from './api'
 
 /** Result of POST /api/google/status as seen by the LIFF page. 'sign_in_again': the
  *  person has a Google account here, but Google no longer accepts its grant (#14).
@@ -84,7 +85,7 @@ const result = (status: GoogleStatus): GoogleStatusResult => ({ status, canChang
 
 export async function fetchGoogleStatus(idToken: string): Promise<GoogleStatusResult> {
   try {
-    const res = await fetch('/api/google/status', {
+    const res = await fetch(apiPath('/api/google/status'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ idToken }),
@@ -112,7 +113,7 @@ export type DisconnectResult = 'disconnected' | 'not_connected' | 'unauthorized'
 
 export async function postDisconnect(idToken: string): Promise<DisconnectResult> {
   try {
-    const res = await fetch('/api/google/disconnect', {
+    const res = await fetch(apiPath('/api/google/disconnect'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ idToken }),

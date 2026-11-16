@@ -319,9 +319,21 @@ describe('Summary command', () => {
     await seedChat(t)
     t.llm.respond({ content: 'not json', model: TEXT_MODEL, usage: USAGE })
     await t.command()
-    expect(textOf(t.line.replies[0].messages)).toBe('ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง')
+    expect(textOf(t.line.replies[0].messages)).toMatch(/^สรุปแชตไม่สำเร็จ: AI ตอบกลับมาในรูปแบบที่อ่านไม่ได้[\s\S]*\nรหัส: SUM-AI-FORMAT \d\d:\d\d$/)
     expect(t.store.tables.ai_usage).toHaveLength(1)
     expect(t.store.tables.summaries).toHaveLength(0)
+  })
+
+  it('13b. a store failure outside the AI step says it is the system, not the chat, with a code and the time', async () => {
+    const t = setup()
+    await seedChat(t)
+    t.store.failNext('listRecentTextMessages', new AdapterError('supabase listRecentTextMessages: PGRST201'))
+    await t.command()
+    expect(t.llm.requests).toHaveLength(0)
+    const text = textOf(t.line.replies[0].messages)
+    expect(text).toMatch(/^สรุปแชตไม่สำเร็จ: ระบบของน้องจดดีขัดข้อง ไม่เกี่ยวกับแชตของกลุ่ม/)
+    expect(text).toMatch(/\nรหัส: SUM-SYS \d\d:\d\d$/)
+    expect(text).not.toContain('PGRST201') // never the error itself
   })
 
   it('14. zero tasks gives one text and no button', async () => {
@@ -374,16 +386,17 @@ describe('Summary command', () => {
   })
 
   it.each([
-    ['an AdapterError timeout', new AdapterError('openrouter timeout')],
-    ['a raw TimeoutError', Object.assign(new Error('aborted'), { name: 'TimeoutError' })],
-    ['a SyntaxError from an invalid body', new SyntaxError('Unexpected token')],
-  ])('19. %s replies with the error and records nothing (M5)', async (_, err) => {
+    ['an AdapterError timeout', new AdapterError('openrouter timeout'), 'SUM-AI-TIME'],
+    ['a raw TimeoutError', Object.assign(new Error('aborted'), { name: 'TimeoutError' }), 'SUM-AI-TIME'],
+    ['a SyntaxError from an invalid body', new SyntaxError('Unexpected token'), 'SUM-AI '],
+  ])('19. %s replies with the error and records nothing (M5)', async (_, err, code) => {
     const t = setup()
     await seedChat(t)
     t.llm.fail(err)
     await t.command()
     expect(t.line.replies).toHaveLength(1)
-    expect(textOf(t.line.replies[0].messages)).toBe('ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง')
+    expect(textOf(t.line.replies[0].messages)).toMatch(/^สรุปแชตไม่สำเร็จ: /)
+    expect(textOf(t.line.replies[0].messages)).toContain(`รหัส: ${code}`)
     expect(t.store.tables.ai_usage).toHaveLength(0)
     expect(t.store.tables.summaries).toHaveLength(0)
   })
@@ -505,10 +518,9 @@ describe('Summary commands in one webhook', () => {
       ev.groupText({ text: 'NongJoDII summarize', userId: 'Ubank', replyToken: 'rt-2', timestamp: T0 + 11 * MIN }),
     )
     expect(t.line.replies).toHaveLength(2)
-    expect(t.line.replies.map((r) => textOf(r.messages)).sort()).toEqual([
-      'ขอโทษนะ ตอนนี้สรุปแชตไม่สำเร็จ ลองใหม่อีกครั้ง',
-      'สรุปแชตล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชตช่วงนี้',
-    ])
+    const texts = t.line.replies.map((r) => textOf(r.messages))
+    expect(texts).toContain('สรุปแชตล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชตช่วงนี้')
+    expect(texts.find((x) => x.startsWith('สรุปแชตไม่สำเร็จ'))).toMatch(/^สรุปแชตไม่สำเร็จ: ระบบ AI ไม่ว่างหรือขัดข้องชั่วคราว[\s\S]*\nรหัส: SUM-AI-BUSY \d\d:\d\d$/)
     expect(t.store.tables.summaries).toHaveLength(1)
   })
 

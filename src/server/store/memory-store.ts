@@ -180,6 +180,8 @@ export type FakeTables = {
   drive_connections: DriveConnectionRecord[]
   owner_prompts: OwnerPromptRecord[]
   files: FileRecord[]
+  /** #140: file_messages, later messages that carried an already saved file. */
+  file_messages: { fileId: string; messageId: string; linkedAt: Date }[]
   image_set_cards: ImageSetCardRecord[]
 }
 
@@ -215,6 +217,7 @@ export class MemoryStore implements StorePort {
     drive_connections: [],
     owner_prompts: [],
     files: [],
+    file_messages: [],
     image_set_cards: [],
   }
 
@@ -621,6 +624,8 @@ export class MemoryStore implements StorePort {
     for (const p of this.tables.task_prompts) if (p.triggerMessageId === gone.id) p.triggerMessageId = null
     // files.message_id is ON DELETE SET NULL too: the saved file stays.
     for (const f of this.tables.files) if (f.messageId === gone.id) f.messageId = null
+    // file_messages.message_id is ON DELETE CASCADE (#140).
+    this.tables.file_messages = this.tables.file_messages.filter((l) => l.messageId !== gone.id)
     return { deleted: true }
   }
 
@@ -659,9 +664,11 @@ export class MemoryStore implements StorePort {
   async linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }> {
     this.fault('linkFileToMessage')
     const f = this.tables.files.find((r) => r.id === fileId)
-    if (!f) return { updated: false }
-    fk(this.tables.messages.some((m) => m.id === messageId), 'files.message_id')
-    f.messageId = messageId
+    // As the FK answer (23503) of the file_messages insert: nothing to link.
+    if (!f || !this.tables.messages.some((m) => m.id === messageId)) return { updated: false }
+    if (!this.tables.file_messages.some((l) => l.fileId === fileId && l.messageId === messageId)) {
+      this.tables.file_messages.push({ fileId, messageId, linkedAt: new Date() })
+    }
     return { updated: true }
   }
 
@@ -715,7 +722,14 @@ export class MemoryStore implements StorePort {
     const newest = this.tables.files
       .filter((f) => f.messageId === m.id)
       .sort((a, b) => b.savedAt.getTime() - a.savedAt.getTime() || (a.id < b.id ? 1 : -1))[0]
-    return newest ? { kind: 'file', fileName: newest.fileName, driveLink: newest.driveLink } : { kind: 'no_file' }
+    if (newest) return { kind: 'file', fileName: newest.fileName, driveLink: newest.driveLink }
+    // #140: a later message that carried a file saved before.
+    const link = this.tables.file_messages
+      .filter((l) => l.messageId === m.id)
+      .sort((a, b) => b.linkedAt.getTime() - a.linkedAt.getTime())
+      .map((l) => this.tables.files.find((f) => f.id === l.fileId && f.groupId === groupId))
+      .find((f) => f !== undefined)
+    return link ? { kind: 'file', fileName: link.fileName, driveLink: link.driveLink } : { kind: 'no_file' }
   }
 
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
@@ -1974,6 +1988,9 @@ export class MemoryStore implements StorePort {
     const summaryIds = new Set(t.summaries.filter((x) => x.groupId === groupId).map((x) => x.id))
     t.groups = t.groups.filter((g) => g.id !== groupId)
     t.group_members = t.group_members.filter((x) => x.groupId !== groupId)
+    const fileIds = new Set(t.files.filter((x) => x.groupId === groupId).map((x) => x.id))
+    const messageIds = new Set(t.messages.filter((x) => x.groupId === groupId).map((x) => x.id))
+    t.file_messages = t.file_messages.filter((l) => !fileIds.has(l.fileId) && !messageIds.has(l.messageId))
     t.messages = t.messages.filter((x) => x.groupId !== groupId)
     t.summaries = t.summaries.filter((x) => x.groupId !== groupId)
     t.task_candidates = t.task_candidates.filter((x) => !summaryIds.has(x.summaryId))

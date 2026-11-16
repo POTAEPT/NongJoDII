@@ -50,7 +50,7 @@
   --color-primary-soft: #dce8f7;
   --color-ink: #12294d;
   --color-ink-2: #545454;
-  --color-ink-3: #7a879c;
+  --color-ink-3: #5f6b7e; /* UX review 6.2: was #7a879c (3.7:1 on white) */
   --color-page: #ffffff;
   --color-subtle: #f4f6f9;
   --color-line: #d5e2f3;

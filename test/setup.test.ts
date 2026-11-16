@@ -206,9 +206,14 @@ describe('setup send, self as Owner', () => {
     // #2e, pushed within the budget, with no Owner confirm button.
     expect(t.line.delivered).toHaveLength(1)
     const json = flexJson(t.line.delivered[0].messages)
-    for (const s of ['ตั้งค่าเสร็จแล้ว', 'น้องจดดีรู้จักกลุ่มและทีมแล้ว', 'จากนี้น้องจดดีจะอ่านแชตและร่างงานให้กดยืนยันนะ', 'เปลี่ยนการตั้งค่าได้ทุกเมื่อ']) {
+    // UX review 1.1: says what to type (the Summary runs only when asked), with the
+    // everyday commands as quick reply buttons (1.2).
+    for (const s of ['ตั้งค่าเสร็จแล้ว', 'พร้อมใช้แล้ว ลองพิมพ์ในกลุ่มนี้ได้เลย', 'น้องจดดี สรุป', 'น้องจดดี ตั้งค่า', 'น้องจดดี ขอไฟล์']) {
       expect(json).toContain(s)
     }
+    expect(json).not.toContain('จากนี้น้องจดดีจะอ่านแชต')
+    const done = t.line.delivered[0].messages[0]
+    expect(done.type === 'flex' && done.quickReply?.items.map((i) => i.action.text)).toEqual(['น้องจดดี สรุป', 'น้องจดดี ตั้งค่า', 'น้องจดดี วิธีใช้'])
     expect(json).not.toContain('ยืนยันเจ้าของบอท')
     // #80: the card says settings can change any time, so it opens the group's Settings.
     expect(json).toContain('เปิดการตั้งค่า')
@@ -654,22 +659,25 @@ describe('a group with a Project but no confirmed Owner (in_project)', () => {
     expect(t.line.pushes).toHaveLength(1)
   })
 
-  it('a summarize request gets the no-Owner text only, without the setup card', async () => {
+  it('a summarize request gets the no-Owner card without the setup button', async () => {
     const t = await ownerLeft()
     await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim' }))
     expect(lastReply(t)).toHaveLength(1)
-    expect(lastReply(t)[0].type).toBe('text')
+    expect(lastReply(t)[0].type).toBe('flex')
+    expect(flexJson(lastReply(t))).toContain('กลุ่มนี้ยังไม่มีเจ้าของบอท')
+    expect(uris(lastReply(t))).toEqual([]) // needs an Owner change, not the setup form
     expect(t.llm.requests).toHaveLength(0)
   })
 })
 
 describe('second way to the setup card: the no-Owner Summary reply', () => {
+  // UX review 2.1: one card that says why, with the button to the setup form (before: a
+  // text plus the whole #2a setup card).
   function expectSetupCard(messages: LineMessage[], groupId: string): void {
-    expect(messages).toHaveLength(2)
-    const [text, card] = messages
-    expect(text.type === 'text' && text.text).toContain('กรุณาตั้งค่ากลุ่มให้เสร็จก่อน')
-    expect(card.type).toBe('flex')
-    expect(flexJson([card])).toContain('สวัสดี น้องจดดีมาแล้วนะ')
+    expect(messages).toHaveLength(1)
+    const [card] = messages
+    expect(card.type === 'flex' && card.altText).toContain('กรุณาตั้งค่ากลุ่มให้เสร็จก่อน')
+    expect(flexJson([card])).toContain('กลุ่มนี้ยังไม่มีเจ้าของบอท')
     expect(uris([card])).toEqual([liffUrl(TEST_LIFF_ID, 'setup', groupId)])
   }
 

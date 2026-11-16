@@ -105,7 +105,7 @@ describe('ฉันรับเอง (#23)', () => {
   it('without a user ID opens LIFF, and LINE login makes that person the owner', async () => {
     const t = setup()
     await t.press(null, act('take', t.room.id))
-    expect(t.lastReply().type).toBe('template')
+    expect(t.lastReply().type).toBe('flex')
     expect(JSON.stringify(t.lastReply())).toContain(encodeURIComponent(act('take', t.room.id)))
     expect(t.task(t.room.id).assigneeLineUserId).toBeNull()
     t.line.idTokens.set('tok-ton', { lineUserId: TON, displayName: 'ต้น' })
@@ -185,7 +185,7 @@ describe('ไม่ใช่งาน (#23)', () => {
   it('without a user ID opens LIFF, and the confirm works there after LINE login', async () => {
     const t = setup()
     await t.press(null, act('discard', t.room.id))
-    expect(t.lastReply().type).toBe('template')
+    expect(t.lastReply().type).toBe('flex')
     expect(t.task(t.room.id).deletedAt).toBeNull()
     t.line.idTokens.set('tok-ton', { lineUserId: TON, displayName: 'ต้น' })
     const asked = await answerProgressFromLiff(t.deps, { idToken: 'tok-ton', data: act('discard', t.room.id) })

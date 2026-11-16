@@ -10,6 +10,7 @@ import { liffUrl } from '@/server/liff-links'
 import type { LineMessage } from '@/server/line/types'
 import { handleTickRequest } from '@/server/tick/handle-request'
 import { makeTestDeps, TEST_KEY, TEST_LIFF_ID, TEST_NOW, tickRequest } from './harness'
+import { buttonActions, messageText } from './flex-text'
 
 // #14 acceptance: a revoked or expired Google grant keeps the Tasks and asks the Owner to
 // sign in again, once, in the Project's main group; and the Owner can change the connected
@@ -75,9 +76,10 @@ const accountOf = (h: H, n: 1 | 2) => h.store.tables.google_accounts.find((a) =>
 const projectRow = (h: H, id: string) => h.store.tables.projects.find((p) => p.id === id)!
 const groupFolderId = (h: H, groupId: string) => h.store.tables.group_setups.find((r) => r.groupId === groupId)?.driveFolderId ?? null
 
+/** UX review 2.2: the card is Flex now; its words and its buttons' actions. */
 function buttons(m: LineMessage) {
-  if (m.type !== 'template') throw new Error('not a template')
-  return m.template
+  if (m.type !== 'flex') throw new Error('not a Flex card')
+  return { text: messageText(m), actions: buttonActions<{ type: string; label: string; uri: string }>(m.contents) }
 }
 
 describe('revoked or expired Google access', () => {
@@ -117,7 +119,6 @@ describe('revoked or expired Google access', () => {
     expect(card.actions).toEqual([{ type: 'uri', label: 'เข้าสู่ระบบ Google', uri: liffUrl(TEST_LIFF_ID, 'google') }])
     expect(card.text).toContain('เข้าสู่ระบบ Google อีกครั้ง')
     expect(card.text).toContain('งาน') // says the Tasks are safe
-    expect(card.text.length).toBeLessThanOrEqual(160)
     expect(card.actions[0].label.length).toBeLessThanOrEqual(20)
     // No Drive call, and the connection and folder IDs stay for the same account's return.
     expect(h.google.driveCalls).toEqual([])

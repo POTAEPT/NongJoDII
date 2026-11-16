@@ -1,3 +1,4 @@
+import { commandQuickReply } from '../commands/quick-reply'
 import { log, logError } from '../log'
 import { bubble, button, caption, header, text, uri } from '../line/flex-ui'
 import type { LineMessage } from '../line/types'
@@ -35,6 +36,7 @@ export function welcomeCard(p: { liffId: string; groupId: string; returning?: bo
     return {
       type: 'flex',
       altText: WELCOME_BACK_TEXT.altText,
+      quickReply: commandQuickReply(), // UX review 1.2
       contents: bubble(
         [
           header('info', WELCOME_BACK_TEXT.title),
@@ -48,6 +50,7 @@ export function welcomeCard(p: { liffId: string; groupId: string; returning?: bo
   return {
     type: 'flex',
     altText: WELCOME_TEXT.altText,
+    quickReply: commandQuickReply(), // UX review 1.2
     contents: bubble(
       [
         header('info', WELCOME_TEXT.title),

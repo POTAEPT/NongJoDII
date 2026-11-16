@@ -55,7 +55,7 @@ describe('daily reminder carousel (#44)', () => {
     expect(type).toBe('carousel')
     expect(bubbles).toHaveLength(4)
     expect(texts(bubbles[0])).toEqual([
-      '⏰', REMINDER_TEXT.title, '16/11 · 3 งานที่ต้องดู',
+      '⏰', REMINDER_TEXT.title, 'จ. 16 พ.ย. · 3 งานที่ต้องดู',
       '• เลยกำหนด 1 งาน', '• ครบกำหนดวันนี้-พรุ่งนี้ 1 งาน', '• ยังไม่มีผู้รับ 1 งาน',
     ])
     // Each Task bubble: the header glyph and reason, then the title.
@@ -68,7 +68,7 @@ describe('daily reminder carousel (#44)', () => {
     const t = task({ title: 'ส่งรายงาน', dueAt: bkk('2026-11-14T17:00:00'), lastActivityAt: bkk('2026-11-08T09:00:00') })
     const { bubbles } = carousel([t])
     expect(texts(bubbles[1])).toEqual([
-      '!', 'เลยกำหนด 2 วัน', 'ส่งรายงาน', REMINDER_TEXT.owner, 'บิว', REMINDER_TEXT.due, '14/11 17:00', 'ไม่มีอัปเดต 8 วัน',
+      '!', 'เลยกำหนด 2 วัน', 'ส่งรายงาน', REMINDER_TEXT.owner, 'บิว', REMINDER_TEXT.due, 'ส. 14 พ.ย. 17:00', 'ไม่มีอัปเดต 8 วัน',
       REMINDER_TEXT.postpone, REMINDER_TEXT.done,
     ])
   })

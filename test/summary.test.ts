@@ -75,10 +75,13 @@ function addDays(isoDate: string | null, days: number): string {
 }
 
 /** The reply's words: the summary text, plus the Task card's text when there is one. */
+/** A text reply's words, or a card's notification text (its altText): the failure, no-Owner
+ *  and feature-off answers are cards since the UX review (2.1, 3.1). */
 function textOf(messages: LineMessage[]): string {
   const m = messages[0]
-  if (m.type !== 'text') throw new Error('first message is not text')
-  return messagesText(messages)
+  if (m.type === 'text') return messagesText(messages)
+  if (m.type === 'flex') return m.altText
+  throw new Error('first message is neither text nor a card')
 }
 
 describe('Summary command', () => {
@@ -164,9 +167,9 @@ describe('Summary command', () => {
     await t.command()
     const text = textOf(t.line.replies[0].messages)
     expect(text).toContain('Pim Sirin จะทำสไลด์ ส่วน Bank T. ดูเรื่องห้อง')
-    expect(text).toContain('ผู้รับ: Pim Sirin · กำหนด: 20 พ.ย. 17:00')
+    expect(text).toContain('ผู้รับ: Pim Sirin · กำหนด: ศ. 20 พ.ย. 17:00')
     expect(text).toContain('ยังไม่มีผู้รับ · กำหนด: ไม่ระบุ')
-    expect(text).toContain('จาก Bank T. เวลา 12 พ.ย. 09:01')
+    expect(text).toContain('จาก Bank T. เวลา พฤ. 12 พ.ย. 09:01')
     expect(text).toContain('สรุปจากแชต · พบ 2 งาน')
     expect(text).not.toContain('{m')
     expect(text).not.toContain('พิม')
@@ -321,9 +324,12 @@ describe('Summary command', () => {
     await seedChat(t)
     t.llm.respond({ content: 'not json', model: TEXT_MODEL, usage: USAGE })
     await t.command()
-    expect(textOf(t.line.replies[0].messages)).toMatch(/^สรุปแชตไม่สำเร็จ: AI ตอบกลับมาในรูปแบบที่อ่านไม่ได้[\s\S]*\nรหัส: SUM-AI-FORMAT \d\d:\d\d$/)
+    expect(textOf(t.line.replies[0].messages)).toMatch(/^สรุปแชตไม่สำเร็จ: น้องจดดีอ่านแชตแล้วงงนิดหน่อย[\s\S]*\nรหัส: SUM-AI-FORMAT \d\d:\d\d$/)
     expect(t.store.tables.ai_usage).toHaveLength(1)
     expect(t.store.tables.summaries).toHaveLength(0)
+    // UX review 3.3: a quick reply sends the Summary command again.
+    const card = t.line.replies[0].messages[0]
+    expect(card.type === 'flex' && card.quickReply?.items.map((i) => i.action.text)).toEqual(['น้องจดดี สรุป', 'น้องจดดี วิธีใช้'])
   })
 
   it('13b. a store failure outside the AI step says it is the system, not the chat, with a code and the time', async () => {
@@ -333,7 +339,7 @@ describe('Summary command', () => {
     await t.command()
     expect(t.llm.requests).toHaveLength(0)
     const text = textOf(t.line.replies[0].messages)
-    expect(text).toMatch(/^สรุปแชตไม่สำเร็จ: ระบบของน้องจดดีขัดข้อง ไม่เกี่ยวกับแชตของกลุ่ม/)
+    expect(text).toMatch(/^สรุปแชตไม่สำเร็จ: น้องจดดีขัดข้องชั่วคราว ไม่เกี่ยวกับแชตของกลุ่ม/)
     expect(text).toMatch(/\nรหัส: SUM-SYS \d\d:\d\d$/)
     expect(text).not.toContain('PGRST201') // never the error itself
   })
@@ -522,7 +528,7 @@ describe('Summary commands in one webhook', () => {
     expect(t.line.replies).toHaveLength(2)
     const texts = t.line.replies.map((r) => textOf(r.messages))
     expect(texts).toContain('สรุปแชตล่าสุด\nคุยกันทั่วไป\n\nไม่พบงานใหม่ในแชตช่วงนี้')
-    expect(texts.find((x) => x.startsWith('สรุปแชตไม่สำเร็จ'))).toMatch(/^สรุปแชตไม่สำเร็จ: ระบบ AI ไม่ว่างหรือขัดข้องชั่วคราว[\s\S]*\nรหัส: SUM-AI-BUSY \d\d:\d\d$/)
+    expect(texts.find((x) => x.startsWith('สรุปแชตไม่สำเร็จ'))).toMatch(/^สรุปแชตไม่สำเร็จ: น้องจดดีไม่ว่างชั่วคราว[\s\S]*\nรหัส: SUM-AI-BUSY \d\d:\d\d$/)
     expect(t.store.tables.summaries).toHaveLength(1)
   })
 

@@ -1,4 +1,4 @@
-export type GroupCommand = 'summarize' | 'done' | 'need_time' | 'settings' | 'request_file'
+export type GroupCommand = 'summarize' | 'done' | 'need_time' | 'settings' | 'request_file' | 'help'
 // The bot answers to its English name and its Thai name (Figma UI v4 #3: "น้องจดดี สรุปหน่อย").
 // A command is the name, then the command word, then optional polite words and closing
 // punctuation (#85), so people can type it the way they talk: "น้องจดดี ตั้งค่าหน่อยครับ",
@@ -22,6 +22,9 @@ const NEED_TIME = command('need time')
 const SETTINGS = command('settings|ตั้งค่า')
 // Asks for a saved file's Drive link; only meaningful as a quote-reply to the file message (#33).
 const REQUEST_FILE = command('ขอไฟล์')
+// UX review 1.3: what the bot can do. The bot's name alone ("น้องจดดี", "@น้องจดดี") asks the same.
+const HELP = command('วิธีใช้|ช่วยด้วย|ช่วยเหลือ|help')
+const NAME_ONLY = new RegExp(`^${NAME}${POLITE}${END}$`, 'i')
 
 export function parseGroupCommand(text: string | null): GroupCommand | null {
   if (!text) return null
@@ -31,5 +34,6 @@ export function parseGroupCommand(text: string | null): GroupCommand | null {
   if (NEED_TIME.test(t)) return 'need_time'
   if (SETTINGS.test(t)) return 'settings'
   if (REQUEST_FILE.test(t)) return 'request_file'
+  if (HELP.test(t) || NAME_ONLY.test(t)) return 'help'
   return null
 }

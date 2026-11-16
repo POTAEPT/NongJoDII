@@ -1,4 +1,4 @@
-import { liffUrl } from '../liff-links'
+import { loginCard } from '../line/login-card'
 import { bubble, button, caption, column, header, keyValue, panel, postback } from '../line/flex-ui'
 import type { LineDatePickerAction, LineMessage } from '../line/types'
 import { log } from '../log'
@@ -6,8 +6,8 @@ import { releaseIfLeft } from '../members/recheck'
 import type { Deps, TaskRow } from '../ports'
 import { resultCard } from '../progress/card'
 import { deletedCard, discardConfirmCard, restoredCard, TASK_ACTION_TEXT } from '../tasks/card'
-import { BKK_OFFSET_MS, bangkokIsoWeekday, bangkokParts, bangkokTodayLabel, formatThaiDayMonth } from '../time/bangkok'
-import { ISO_DATE, type ReminderAction, encodeReminderAction, parseReminderAction } from './postback'
+import { bangkokParts, bangkokTodayLabel, BKK_OFFSET_MS, formatThaiWeekdayDay } from '../time/bangkok'
+import { ISO_DATE, type ReminderAction, encodeReminderAction, parseReminderAction, PICK_CANCEL_DATA } from './postback'
 
 // #45 (8c) Answers to the daily reminder buttons. Rules from #8, #45 and the owner decisions:
 //   - Only a person's press changes a Task (rules: Tasks and AI).
@@ -23,7 +23,6 @@ const DAY_MS = 86_400_000
 export const PICK_MAX = 10
 /** Time of day for a postponed Task that had no due time. */
 const DEFAULT_DUE_TIME = { hh: 18, mm: 0 }
-const THAI_WEEKDAY_SHORT = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'] // ISO 1..7
 /** Postpone choices, in days from today (Figma 6A-2: +1 day, +3 days, +1 week). */
 export const POSTPONE_DAYS = [1, 3, 7] as const
 
@@ -48,6 +47,8 @@ export const ANSWER_TEXT = {
   noOpenTasks: 'คุณไม่มีงานที่ยังไม่เสร็จในกลุ่มนี้',
   pickDone: 'งานไหนเสร็จแล้ว?',
   pickPostpone: 'ขอเลื่อนงานไหน?',
+  pickCancel: 'ยกเลิก',
+  pickCancelled: 'โอเค ไม่ได้เปลี่ยนอะไร',
   moreTasks: (n: number) => `และอีก ${n} งาน ตอบได้จากปุ่มบนการ์ดเตือนประจำวัน`,
 } as const
 
@@ -63,8 +64,7 @@ const text = (t: string): LineMessage => ({ type: 'text', text: t })
 
 /** 'พฤ. 19 พ.ย.' for a Bangkok date 'YYYY-MM-DD'. */
 function dayLabel(date: string): string {
-  const d = new Date(`${date}T12:00:00+07:00`)
-  return `${THAI_WEEKDAY_SHORT[bangkokIsoWeekday(d) - 1]} ${formatThaiDayMonth(d)}`
+  return formatThaiWeekdayDay(new Date(`${date}T12:00:00+07:00`))
 }
 
 /** The Bangkok date `days` after `now`'s. */
@@ -117,6 +117,8 @@ function pickTaskCard(tasks: TaskRow[], kind: 'done' | 'postpone', more: number)
       header('info', title),
       column(tasks.map((t) => button('outline', postback(clip(t.title), encodeReminderAction({ kind, taskId: t.id }))))),
       ...(more > 0 ? [caption(ANSWER_TEXT.moreTasks(more))] : []),
+      // UX review 6.1: a way out, like the progress picker's "ไม่ใช่การอัปเดตงาน".
+      button('ghost', postback(ANSWER_TEXT.pickCancel, PICK_CANCEL_DATA)),
     ]),
   }
 }
@@ -262,10 +264,7 @@ function postponedCard(title: string, when: string): LineMessage {
 }
 
 function loginMessage(liffId: string, data: string): LineMessage {
-  return {
-    type: 'template', altText: ANSWER_TEXT.needsLogin,
-    template: { type: 'buttons', text: ANSWER_TEXT.needsLogin, actions: [{ type: 'uri', label: ANSWER_TEXT.login, uri: liffUrl(liffId, 'progress', data) }] },
-  }
+  return loginCard(liffId, data)
 }
 
 /** A reminder button pressed in a group (webhook). 'not_mine' = another feature's button. */

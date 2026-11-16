@@ -85,7 +85,7 @@ describe('getFairUseStatus', () => {
 })
 
 describe('messages', () => {
-  it('capMessage carries the reset date and the token cap', () => {
+  it('capMessage carries the reset date and the percentage, never tokens or dollars (UX review 3.2)', () => {
     const m = capMessage({
       tokens: 6_100_000, costMicroUsd: 200_000, fraction: 1.02, level: 'capped',
       resetAt: new Date('2026-11-30T17:00:00Z'), monthStartBkk: '2026-11-01',
@@ -94,8 +94,7 @@ describe('messages', () => {
     const text = messageText(m)
     expect(m.altText).toContain('ครบโควตา')
     expect(text).toContain('1 ธันวาคม 2569 เวลา 00:00 น.')
-    expect(text).toContain('6,000,000')
-    expect(text).toContain('6,100,000 / 6,000,000 โทเคน และ $0.2000 / $0.50')
+    for (const s of ['6,000,000', 'โทเคน', '$']) expect(text).not.toContain(s)
     expect(text).toContain('100%')
   })
 

@@ -337,7 +337,7 @@ describe('Tasks created feedback', () => {
       t.confirm(t.c2, { title: 'จองห้อง', assigneeLineUserId: null }),
     ])
     expect((res.body as SubmitResult).feedback?.text).toBe(
-      '✅ สร้างงานแล้ว 2 งาน\n1. ทำสไลด์\n   ผู้รับ: Pim Sirin · กำหนด: 20 พ.ย. 17:00\n2. จองห้อง\n   ผู้รับ: ยังไม่มีผู้รับ · กำหนด: ไม่ระบุ',
+      '✅ สร้างงานแล้ว 2 งาน\n1. ทำสไลด์\n   ผู้รับ: Pim Sirin · กำหนด: ศ. 20 พ.ย. 17:00\n2. จองห้อง\n   ผู้รับ: ยังไม่มีผู้รับ · กำหนด: ไม่ระบุ',
     )
   })
 

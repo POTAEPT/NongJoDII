@@ -1,5 +1,8 @@
+import { suggestedTags } from '../tasks/tags'
+
 export type ParsedTask = {
   title: string; details: string | null; assigneeRef: string | null; due: Date | null; sourceRef: string | null
+  tags: string[]   // #109: cleaned by tasks/tags.ts; [] when the model gave none
 }
 
 /** Constant message: never include the model's content (it quotes chat). */
@@ -27,13 +30,14 @@ export const SUMMARY_SCHEMA = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['title', 'details', 'assignee', 'due', 'source'],
+          required: ['title', 'details', 'assignee', 'due', 'source', 'tags'],
           properties: {
             title: { type: 'string' },
             details: { type: ['string', 'null'] },
             assignee: { type: ['string', 'null'] },
             due: { type: ['string', 'null'] },
             source: { type: ['string', 'null'] },
+            tags: { type: 'array', items: { type: 'string' } },
           },
         },
       },
@@ -84,7 +88,7 @@ function parseTask(item: unknown): ParsedTask | null {
     const d = new Date(t.due)
     if (!Number.isNaN(d.getTime())) due = d
   }
-  return { title, details, assigneeRef, due, sourceRef }
+  return { title, details, assigneeRef, due, sourceRef, tags: suggestedTags(t.tags) }
 }
 
 /** "msg14" is the prompt's form; "{msg14}" and the older "#14" are accepted and

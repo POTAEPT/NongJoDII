@@ -419,6 +419,7 @@ export class FakeStore implements StorePort {
       .map((c) => ({
         id: c.id, summaryId: c.summaryId, state: c.state, title: c.title, details: c.details,
         suggestedAssigneeLineUserId: c.suggestedAssigneeLineUserId, suggestedDueAt: c.suggestedDueAt,
+        suggestedTags: [...(c.suggestedTags ?? [])],
       }))
   }
 
@@ -474,6 +475,7 @@ export class FakeStore implements StorePort {
       id: t.id, groupId: t.groupId, lineGroupId: this.groupOf(t.groupId).lineGroupId, candidateId: t.candidateId,
       title: t.title, details: t.details, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
       createdByLineUserId: t.createdByLineUserId, dueAt: t.dueAt, deletedAt: t.deletedAt, announcedAt: t.announcedAt,
+      tags: [...(t.tags ?? [])],
     }
   }
 
@@ -914,7 +916,7 @@ export class FakeStore implements StorePort {
       .map((t) => ({
         id: t.id, groupId: t.groupId, title: t.title, status: t.status, assigneeLineUserId: t.assigneeLineUserId,
         assigneeName: this.tables.line_users.find((u) => u.lineUserId === t.assigneeLineUserId)?.displayName ?? null,
-        dueAt: t.dueAt,
+        dueAt: t.dueAt, tags: [...(t.tags ?? [])],
       }))
   }
 
@@ -2052,7 +2054,7 @@ export class FakeStore implements StorePort {
     fk(this.hasGroup(partial.groupId), 'tasks.group_id')
     const row: TaskRecord = {
       id: randomUUID(), candidateId: null, details: null, status: 'not_assigned',
-      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null,
+      assigneeLineUserId: null, dueAt: null, deletedAt: null, announcedAt: null, tags: [],
       lastEditedByLineUserId: null, lastActivityAt: null, doneAt: null,
       announcePendingToken: null, announcePendingAt: null,
       ...rest, groupId: partial.groupId, title: partial.title, createdByLineUserId: partial.createdByLineUserId,

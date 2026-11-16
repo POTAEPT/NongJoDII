@@ -1,3 +1,4 @@
+import { personTags } from '../tasks/tags'
 import { log, logError } from '../log'
 import { releaseIfLeft } from '../members/recheck'
 import type { ApiResult, Deps } from '../ports'
@@ -10,7 +11,7 @@ const MAX_DECISIONS = 10
 
 type Planned =
   | { candidateId: string; action: 'decline' }
-  | { candidateId: string; action: 'confirm'; fields: TaskFields }
+  | { candidateId: string; action: 'confirm'; fields: TaskFields; tags: string[] }
 
 /** POST /api/review/submit. Confirms (with edits) or declines several candidates.
  *  Everything is validated before anything is written. A confirm locks the
@@ -44,7 +45,11 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
         assigneeLineUserId: field(d, 'assigneeLineUserId'), dueAt: field(d, 'dueAt'),
       })
       if (!v.ok) return badRequest(v.field)
-      plan.push({ candidateId, action, fields: v.fields })
+      // #109: the tags the person kept. A page that sends none keeps the model's suggestion.
+      const sent = field(d, 'tags')
+      const tags = sent === undefined ? candidate.suggestedTags : personTags(sent)
+      if (tags === null) return badRequest('tags')
+      plan.push({ candidateId, action, fields: v.fields, tags })
     } else {
       return badRequest('action')
     }
@@ -62,7 +67,7 @@ export async function submitReview(deps: Deps, body: unknown): Promise<ApiResult
     // The candidate state read above may be stale: the store re-reads it under a lock.
     // L3: a proposed candidate is marked confirmed even when its Task already existed.
     const { outcome, taskId } = await deps.store.confirmCandidate({
-      groupId: summary.groupId, candidateId: p.candidateId, ...p.fields,
+      groupId: summary.groupId, candidateId: p.candidateId, ...p.fields, tags: p.tags,
       status: statusFor(p.fields.assigneeLineUserId, null), createdByLineUserId: requester,
     }, now)
     results.push(taskId ? { candidateId: p.candidateId, outcome, taskId } : { candidateId: p.candidateId, outcome })

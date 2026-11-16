@@ -16,9 +16,9 @@ const view: ReviewView = {
   summaryId: 's1',
   summaryText: 'สรุป',
   candidates: [
-    { id: 'c1', state: 'proposed', title: 'งานหนึ่ง', details: 'รายละเอียด', suggestedAssigneeLineUserId: 'U1', suggestedDueAt: '2026-11-21T02:00:00.000Z' },
-    { id: 'c2', state: 'proposed', title: 'งานสอง', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null },
-    { id: 'c3', state: 'confirmed', title: 'งานสาม', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null },
+    { id: 'c1', state: 'proposed', title: 'งานหนึ่ง', details: 'รายละเอียด', suggestedAssigneeLineUserId: 'U1', suggestedDueAt: '2026-11-21T02:00:00.000Z', suggestedTags: [] },
+    { id: 'c2', state: 'proposed', title: 'งานสอง', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] },
+    { id: 'c3', state: 'confirmed', title: 'งานสาม', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] },
   ],
   members: [{ lineUserId: 'U1', displayName: 'Ann' }],
 }

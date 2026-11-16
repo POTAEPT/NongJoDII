@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { AdapterError } from '../log'
+import { AdapterError, logError } from '../log'
 import { BOT_DELETE_AFTER_MS } from '../removal/leave'
 import type {
   AiUsageActual,
@@ -96,9 +96,9 @@ type DbGroupSetup = {
   owner_left_at: string | null
 }
 const CANDIDATE_COLS =
-  'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at'
+  'id, summary_id, state, title, details, suggested_assignee_line_user_id, suggested_due_at, suggested_tags'
 const TASK_COLS =
-  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, announced_at, groups(line_group_id)'
+  'id, group_id, candidate_id, title, details, status, assignee_line_user_id, created_by_line_user_id, due_at, deleted_at, announced_at, tags, groups(line_group_id)'
 const PROMPT_COLS =
   'id, group_id, task_id, target_status, subject_line_user_id, trigger_message_id, asked_at, answer, answered_by_line_user_id, answered_at'
 
@@ -516,7 +516,7 @@ export class SupabaseStore implements StorePort {
         candidates.map((c, i) => ({
           summary_id: summaryId, title: c.title, details: c.details,
           suggested_assignee_line_user_id: c.suggestedAssigneeLineUserId,
-          suggested_due_at: iso(c.suggestedDueAt), created_at: new Date(base + i).toISOString(),
+          suggested_due_at: iso(c.suggestedDueAt), suggested_tags: c.suggestedTags, created_at: new Date(base + i).toISOString(),
         })),
       )
       .select('id, created_at')
@@ -585,6 +585,12 @@ export class SupabaseStore implements StorePort {
     const row = ((data ?? []) as { outcome: string; task_id: string | null }[])[0]
     if (!row || (row.outcome !== 'created' && row.outcome !== 'already_decided')) {
       throw new Error('confirmCandidate: unexpected result from confirm_candidate')
+    }
+    // #109: the tags go on in a second statement, so confirm_candidate stays as it is. A
+    // failure here is logged and leaves the Task untagged: tags never block a Task.
+    if (row.outcome === 'created' && row.task_id && t.tags.length > 0) {
+      const tagged = await this.db.from('tasks').update({ tags: t.tags }).eq('id', row.task_id)
+      if (tagged.error) logError('task_tags_failed', { taskId: row.task_id }, new AdapterError(`supabase confirmCandidate tags: ${tagged.error.code}`))
     }
     return { outcome: row.outcome, taskId: row.task_id }
   }
@@ -705,7 +711,7 @@ export class SupabaseStore implements StorePort {
       .update({
         title: patch.title, details: patch.details, assignee_line_user_id: patch.assigneeLineUserId,
         status: patch.status, due_at: iso(patch.dueAt), last_edited_by_line_user_id: patch.lastEditedByLineUserId,
-        last_activity_at: patch.lastActivityAt.toISOString(),
+        last_activity_at: patch.lastActivityAt.toISOString(), tags: patch.tags,
       })
       .eq('id', taskId)
       .is('deleted_at', null)
@@ -1698,13 +1704,13 @@ export class SupabaseStore implements StorePort {
     if (groupIds.length === 0) return []
     type Row = {
       id: string; group_id: string; title: string; status: TaskStatus; assignee_line_user_id: string | null
-      due_at: string | null; assignee: { display_name: string | null } | null
+      due_at: string | null; assignee: { display_name: string | null } | null; tags: string[] | null
     }
     const out: DashboardTaskRow[] = []
     for (let from = 0; ; from += DASHBOARD_PAGE) {
       const { data, error } = await this.db
         .from('tasks')
-        .select('id, group_id, title, status, assignee_line_user_id, due_at, assignee:line_users!assignee_line_user_id(display_name)')
+        .select('id, group_id, title, status, assignee_line_user_id, due_at, tags, assignee:line_users!assignee_line_user_id(display_name)')
         .in('group_id', groupIds)
         .is('deleted_at', null)
         .order('group_id')
@@ -1717,6 +1723,7 @@ export class SupabaseStore implements StorePort {
         out.push({
           id: r.id, groupId: r.group_id, title: r.title, status: r.status,
           assigneeLineUserId: r.assignee_line_user_id, assigneeName: r.assignee?.display_name ?? null, dueAt: toDate(r.due_at),
+          tags: r.tags ?? [],
         })
       }
       if (rows.length < DASHBOARD_PAGE) return out

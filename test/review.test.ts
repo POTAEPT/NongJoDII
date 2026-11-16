@@ -98,7 +98,7 @@ describe('loadReview', () => {
     expect(view.candidates.map((c) => c.state)).toEqual(['proposed', 'proposed'])
     expect(view.candidates[0]).toEqual({
       id: t.c1, state: 'proposed', title: 'ทำสไลด์', details: 'ทำ 10 หน้า',
-      suggestedAssigneeLineUserId: 'Upim', suggestedDueAt: '2026-11-20T10:00:00.000Z',
+      suggestedAssigneeLineUserId: 'Upim', suggestedDueAt: '2026-11-20T10:00:00.000Z', suggestedTags: [],
     })
     for (const m of view.members) expect(Object.keys(m).sort()).toEqual(['displayName', 'lineUserId'])
     expect(view.members).toEqual(expect.arrayContaining([

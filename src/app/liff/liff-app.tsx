@@ -11,6 +11,7 @@ import { SettingsView } from './settings-view'
 import { SetupView } from './setup-view'
 import { TakeoverView } from './takeover-view'
 import { TaskView } from './task-view'
+import { track } from './analytics'
 import { initLiff, type LiffViewProps } from './liff-sdk'
 import { readLiffParams, type LiffParams } from './params'
 import { StatusScreen } from './ui'
@@ -31,9 +32,11 @@ export function LiffApp({ liffId }: { liffId: string }) {
     initLiff(liffId)
       .then((result) => {
         if (cancelled || 'redirecting' in result) return
+        const params = readLiffParams(window.location.search)
+        if (params.view) track(`liff_${params.view}_open`) // #19: the funnel's page views
         setState({
           kind: 'ready',
-          params: readLiffParams(window.location.search),
+          params,
           props: { liff: result.liff, idToken: result.idToken, liffId },
         })
       })

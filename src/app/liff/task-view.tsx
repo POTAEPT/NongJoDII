@@ -4,6 +4,7 @@ import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TaskView as TaskData } from '@/server/tasks/load'
 import { ERR_400, errorCopy, post } from './api'
+import { track } from './analytics'
 import { splitBangkokIso, toBangkokIso } from './form-model'
 import type { LiffViewProps } from './liff-sdk'
 import {
@@ -93,6 +94,7 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
       else {
         setForm(toForm(json as TaskData))
         setSaved(true)
+        track('task_saved') // #19
       }
     } catch {
       setFormError(COPY.fallback)

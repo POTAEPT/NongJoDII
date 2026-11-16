@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import type { NotifyResult, ReviewView as ReviewData, SubmitResult } from '@/server/review/types'
 import { errorCopy, post } from './api'
+import { track } from './analytics'
 import { bangkokToday, dueLabel } from './display'
 import {
   countDecisions, initialForms, needsDeclineConfirm, summarizeResults, toDecisions, validateForms,
@@ -113,6 +114,7 @@ export function ReviewView({ liff, idToken, liffId, id }: LiffViewProps) {
         else {
           const result = json as SubmitResult
           setDone(result)
+          track('review_confirmed') // #19
           const feedback = result.feedback
           if (result.feedbackFailed) setAnnounced('failed')
           else if (feedback && id) {

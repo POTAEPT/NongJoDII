@@ -10,8 +10,11 @@ import { BOT_NAME, BotAvatar, PersonaAvatar } from './avatars'
 import { useDemo } from './demo-context'
 import { previewText, type ThreadItem } from './chat-thread'
 
-/** Who is typing: the selected persona is "me". */
-export function SenderSwitcher({ selected, onSelect }: { selected: string | null; onSelect: (key: string) => void }) {
+/** Who is typing: the selected persona is "me". allowAll: anyone may be picked (the 1:1
+ *  chat), not only the people in the selected group. */
+export function SenderSwitcher({ selected, onSelect, allowAll = false }: {
+  selected: string | null; onSelect: (key: string) => void; allowAll?: boolean
+}) {
   const { state } = useDemo()
   const personas = state?.personas ?? []
   return (
@@ -20,13 +23,14 @@ export function SenderSwitcher({ selected, onSelect }: { selected: string | null
       <div className="demo-scroll flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
         {personas.map((p) => {
           const on = p.key === selected
+          const can = allowAll || p.inGroup
           return (
-            <button key={p.key} type="button" onClick={() => onSelect(p.key)} disabled={!p.inGroup}
-              title={p.inGroup ? p.lineName : `${p.lineName} ไม่ได้อยู่ในกลุ่ม`}
+            <button key={p.key} type="button" onClick={() => onSelect(p.key)} disabled={!can}
+              title={can ? p.lineName : `${p.lineName} ไม่ได้อยู่ในกลุ่ม`}
               className={cn(
                 'flex shrink-0 items-center gap-1.5 rounded-full border py-0.5 pr-2.5 pl-0.5 text-[13px] font-medium transition-colors',
                 on ? 'border-(--line-green) bg-(--line-green) text-white' : 'border-[#DCE1E8] bg-white text-[#33435C] hover:bg-[#EEF2F6]',
-                !p.inGroup && 'opacity-40',
+                !can && 'opacity-40',
               )}>
               <PersonaAvatar personaKey={p.key} name={p.lineName} className="size-6 text-[11px]" />
               {p.lineName}

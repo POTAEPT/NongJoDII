@@ -2,6 +2,8 @@
 
 A **scenario** is one JSON file in `src/app/demo/scripts/`. The `/demo` LINE simulator plays it into the **selected group** (the one open on the phone, or the `group` given to `load-script`): people talk, then someone asks NongJoDII for a Summary, and the real bot code answers. The simulator reads the folder on every request, so a new file appears in the Scripts tab with no code change and no restart.
 
+Scripts play into the selected group, which may be any group in the picker, including one saved as a file in `src/app/demo/groups/` (a group made with "สร้างกลุ่ม"; see "Groups" in `docs/demo-contract.md`).
+
 The full simulator API is in `docs/demo-contract.md`. The shape the player reads is `DemoScript` in `src/server/demo/types.ts`.
 
 ## Steps
@@ -46,5 +48,5 @@ Any speaker who is not in the target group joins it before the first message (a 
 The demo server must be running: `DEMO_MODE=1 infisical run --env=dev -- npm run dev` in the repo root.
 
 1. `curl -s localhost:3000/demo/api/sim/scripts`. Your `name` is listed. If it is missing, the file is not valid JSON or has no `messages`: the Log tab shows the reason.
-2. In `/demo`, press Reset (the three set-up groups), pick the group in the presenter panel's group picker, then press Play on your scenario. The same can be done by API: `POST /demo/api/sim/load-script {"name":"<NN>-<short-name>", "group":"<lineGroupId>"}` (without `group` it plays into the selected group).
+2. In `/demo`, press Reset (the set-up groups of `src/app/demo/groups/`), pick the group in the presenter panel's group picker, then press Play on your scenario. The same can be done by API: `POST /demo/api/sim/load-script {"name":"<NN>-<short-name>", "group":"<lineGroupId>"}` (without `group` it plays into the selected group).
 3. Wait for the bot's Summary card. Press "ตรวจและยืนยันงาน", then compare the Task candidates with step 1: same count, right people, deadlines read correctly. The AI tab shows whether the answer came from OpenRouter or from the canned fallback.

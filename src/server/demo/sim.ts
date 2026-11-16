@@ -2,12 +2,16 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { LineEvent, LineMention } from '@/server/line/types'
 import { runTick } from '@/server/tick/run-tick'
-import { BKK_OFFSET_MS } from '@/server/time/bangkok'
+import { ownerInsightKey } from '@/server/insight/owner'
+import {
+  BKK_OFFSET_MS, bangkokIsoWeekday, bangkokTodayLabel, bangkokWeekStartLabel, isWeeklyDue, parseTimeOfDay,
+} from '@/server/time/bangkok'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { attachSubGroup, getDemo, resetDemo, seedLiveMember, type Demo } from './demo-deps'
+import { deleteGroupFile, fileStem, groupsDir, readGroupFiles, writeGroupFile, type GroupFile } from './group-files'
 import { signedWebhookRequest } from './sign'
-import type { ChatItem, DemoGroupInfo, DemoPersona, DemoScript, DemoState } from './types'
-import { DEMO_LIFF_ID, demoUserId, type DemoGroup } from './world'
+import type { ChatItem, DemoDirectInfo, DemoGroupInfo, DemoPersona, DemoScript, DemoState } from './types'
+import { DEMO_LIFF_ID, demoGroupId, demoUserId, type DemoGroup } from './world'
 
 // The sim API (docs/demo-contract.md): each function builds the LINE event a real group
 // would produce, signs it with the demo secret and hands it to the real webhook handler.
@@ -45,10 +49,16 @@ export async function runSimAction(action: string, method: string, body: unknown
   const demo = getDemo()
   if (action === 'reset') return ok(simState(resetDemo({ setup: b.setup !== false })))
   if (action === 'create-group') return createGroup(demo, b)
+  if (action === 'delete-group') return deleteGroup(demo, b)
   if (action === 'clock') return clock(demo, b)
   if (action === 'tick') return tick(demo)
   if (action === 'quota') return quota(demo, b)
   if (action === 'persona') return persona(demo, b)
+  // 1:1 chat with the bot (the user is the event source; no group involved).
+  if (action === 'open-direct') return openDirect(demo, b)
+  if (action === 'follow') return follow(demo, b)
+  if ((action === 'send' || action === 'message') && b.direct === true) return sendDirect(demo, b)
+  if (action === 'postback' && b.direct === true) return postbackDirect(demo, b)
   const g = groupOf(demo, b.group)
   if (isResult(g)) return g
   switch (action) {
@@ -65,6 +75,7 @@ export async function runSimAction(action: string, method: string, body: unknown
     case 'member-join': return memberJoin(demo, g, b)
     case 'member-leave': return memberLeave(demo, g, b)
     case 'load-script': return await loadScript(demo, g, b)
+    case 'weekly': return await weekly(demo, g)
     default: return bad(`unknown sim route POST ${action}`, 404)
   }
 }
@@ -99,6 +110,8 @@ export function simState(demo: Demo): DemoState {
     google: { connected: accounts.length > 0, email: accounts[0]?.email ?? null },
     chat: selected.chat,
     direct: Object.fromEntries(world.direct),
+    directChats: world.personas.map((p) => directInfo(demo, p.key)),
+    openDirect: world.openDirect,
     log: world.log,
   }
 }
@@ -123,11 +136,21 @@ function groupInfo(demo: Demo, g: DemoGroup): DemoGroupInfo {
     members: g.members.size + (g.botInGroup ? 1 : 0),
     lastMessage: last ? { text: preview(demo, last), at: last.at } : null,
     unread: world.unread(g),
+    file: g.file,
   }
 }
 
-/** The chat list's one-line preview, LINE style ("Nont: ..."). */
-function preview(demo: Demo, c: ChatItem): string {
+function directInfo(demo: Demo, personaKey: string): DemoDirectInfo {
+  const last = demo.world.direct.get(personaKey)?.at(-1)
+  return {
+    persona: personaKey,
+    lastMessage: last ? { text: preview(demo, last, false), at: last.at } : null,
+    unread: demo.world.directUnread(personaKey),
+  }
+}
+
+/** The chat list's one-line preview, LINE style ("Nont: ..."); a 1:1 chat shows no name. */
+function preview(demo: Demo, c: ChatItem, withName = true): string {
   const m = c.message
   let text: string
   if (m.type === 'text') text = m.text
@@ -137,6 +160,7 @@ function preview(demo: Demo, c: ChatItem): string {
   else if (m.type === 'system') return m.text
   else text = m.altText
   if (c.unsent) text = 'ยกเลิกข้อความแล้ว'
+  if (!withName) return text
   const who = c.from === 'bot' ? 'NongJoDII' : demo.world.persona(c.persona ?? '')?.lineName ?? c.persona ?? ''
   return who ? `${who}: ${text}` : text
 }
@@ -290,6 +314,84 @@ async function unsend(demo: Demo, g: DemoGroup, b: Record<string, unknown>): Pro
   return ok({})
 }
 
+// ---- 1:1 chat with the bot (#84 Rich Menu, #120 Owner card) ----
+
+/** An event from the person's 1:1 chat with the OA: source {type:'user'}. Its reply token
+ *  maps to the persona, so DemoLine answers into that 1:1 thread, never into a group. */
+function directBase(demo: Demo, p: DemoPersona, type: string, withReply = true): LineEvent {
+  const { world } = demo
+  const replyToken = withReply ? world.nextId('rt') : null
+  if (replyToken) world.directReplyTokens.set(replyToken, p.key)
+  return {
+    type,
+    mode: 'active',
+    timestamp: world.eventTime(),
+    source: { type: 'user', userId: p.lineUserId },
+    ...(replyToken ? { replyToken } : {}),
+    webhookEventId: world.nextId('ev'),
+    deliveryContext: { isRedelivery: false },
+  }
+}
+
+/** A 1:1 event always reaches the bot (the persona is a friend of the OA). */
+async function deliverDirect(demo: Demo, p: DemoPersona, events: LineEvent[], label: string): Promise<void> {
+  const where = `[1:1 ${p.lineName}] ${label}`
+  demo.world.addLog('event', where)
+  const res = await handleWebhookRequest(signedWebhookRequest(events, demo.deps.config.lineChannelSecret), demo.deps, demo.defer)
+  if (res.status !== 200) demo.world.addLog('error', `${where}: webhook answered ${res.status}`)
+}
+
+/** POST send {persona, type:'text', text, direct:true}: a text the person types (or a Rich
+ *  Menu tile sends) in their 1:1 chat. Only text: the menu handler reads nothing else. */
+async function sendDirect(demo: Demo, b: Record<string, unknown>): Promise<SimResult> {
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  if ((b.type ?? 'text') !== 'text') return bad('a 1:1 message must be text')
+  if (typeof b.text !== 'string' || b.text.trim() === '') return bad('text is required')
+  const { world } = demo
+  const messageId = world.nextId('')
+  const event = directBase(demo, p, 'message')
+  event.message = { id: messageId, type: 'text', text: b.text }
+  world.addDirect(p.key, { at: new Date(event.timestamp).toISOString(), from: 'user', persona: p.key, messageId, message: { type: 'text', text: b.text } })
+  await deliverDirect(demo, p, [event], `${p.key} sent "${b.text.slice(0, 60)}"`)
+  return ok({ messageId })
+}
+
+/** POST postback {persona, data, params?, direct:true}: a button pressed in the 1:1 chat.
+ *  The bot records 1:1 postbacks and answers none. */
+async function postbackDirect(demo: Demo, b: Record<string, unknown>): Promise<SimResult> {
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  if (typeof b.data !== 'string' || b.data === '') return bad('data is required')
+  const event = directBase(demo, p, 'postback')
+  event.postback = { data: b.data }
+  await deliverDirect(demo, p, [event], `${p.key} pressed postback "${b.data.slice(0, 60)}"`)
+  return ok({})
+}
+
+/** POST follow {persona}: the person adds the OA as a friend; the bot answers with the
+ *  Google Drive card, as in LINE. */
+async function follow(demo: Demo, b: Record<string, unknown>): Promise<SimResult> {
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  demo.world.addDirect(p.key, { from: 'system', message: { type: 'system', text: `${p.lineName} เพิ่ม NongJoDII เป็นเพื่อน` } })
+  await deliverDirect(demo, p, [directBase(demo, p, 'follow')], `${p.key} followed the OA`)
+  return ok({})
+}
+
+/** POST open-direct {persona | null}: the phone shows that persona's 1:1 chat (its unread
+ *  goes to 0) or, with null, no 1:1 chat. The selected group stays selected. */
+function openDirect(demo: Demo, b: Record<string, unknown>): SimResult {
+  if (b.persona === null) {
+    demo.world.openDirectChat(null)
+    return ok({ openDirect: null })
+  }
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  demo.world.openDirectChat(p.key)
+  return ok({ openDirect: p.key })
+}
+
 // ---- group membership ----
 
 function storeRow(demo: Demo, g: DemoGroup) {
@@ -400,7 +502,14 @@ async function createGroup(demo: Demo, b: Record<string, unknown>): Promise<SimR
     attach = { projectId: project.id, owner: owner.lineUserId }
   }
 
-  const g = world.addGroup({ name, members: keys })
+  const dir = groupsDir()
+  const onError = (msg: string) => world.addLog('error', msg)
+  const files = readGroupFiles(dir, onError).entries
+  // Never an id a group file holds, so the group's file does not clash at the next reset.
+  const taken = new Set([...world.groups.map((x) => x.lineGroupId), ...files.map((f) => f.def.lineGroupId)])
+  let n = 1
+  while (taken.has(demoGroupId(n))) n += 1
+  const g = world.addGroup({ lineGroupId: demoGroupId(n), name, members: keys })
   world.select(g.lineGroupId)
   world.system(`สร้างกลุ่ม "${name}"`, g)
   await join(demo, g)
@@ -412,7 +521,84 @@ async function createGroup(demo: Demo, b: Record<string, unknown>): Promise<SimR
     for (const p of world.membersInGroup(g)) seedLiveMember(store, row.id, p, true)
     world.addLog('event', `[${name}] attached as a Sub group (store write; no user-facing path yet)`)
   }
-  return ok({ lineGroupId: g.lineGroupId })
+  g.file = saveGroupFile(demo, dir, g, keys, attach, b.parentGroup)
+  return ok({ lineGroupId: g.lineGroupId, file: g.file })
+}
+
+/** Writes the new group's file (no Tasks, no chat), so every Reset and server start brings
+ *  it back set up. The Owner: a Sub group's is its Project's; a new Project's is the
+ *  owner-flagged persona (Nont) when a member, else the first member. null: not saved
+ *  (logged): the folder is missing, or the parent group has no file to point at. */
+function saveGroupFile(
+  demo: Demo, dir: string, g: DemoGroup, keys: string[], attach: { owner: string } | null, parentGroup: unknown,
+): string | null {
+  const { world } = demo
+  const def: GroupFile = { name: g.name, lineGroupId: g.lineGroupId, members: keys, owner: '', mode: 'new-project' }
+  if (attach) {
+    const parent = world.groupById(String(parentGroup))
+    if (!parent?.file) {
+      world.addLog('error', `[${g.name}] not saved as a file: its parent group has no file`)
+      return null
+    }
+    def.owner = world.personaById(attach.owner)?.key ?? keys[0]
+    def.mode = 'sub-group'
+    def.parent = parent.file
+  } else {
+    const flagged = world.personas.find((p) => p.owner && keys.includes(p.key))
+    def.owner = flagged?.key ?? keys[0]
+  }
+  try {
+    const file = writeGroupFile(dir, def)
+    world.addLog('event', `[${g.name}] saved as ${file}: it comes back after every Reset`)
+    return file
+  } catch (err) {
+    world.addLog('error', `[${g.name}] not saved as a file: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
+/** POST delete-group {group}: deletes the group's file and takes the group out of the
+ *  world and the store. Refused while another file names it as its parent, and for the
+ *  only group (the phone always shows one). */
+function deleteGroup(demo: Demo, b: Record<string, unknown>): SimResult {
+  const { world } = demo
+  if (typeof b.group !== 'string' || b.group === '') return bad('group (a lineGroupId) is required')
+  const g = world.groupById(b.group)
+  if (!g) return bad(`unknown group ${b.group}`, 404)
+  if (world.groups.length <= 1) return bad('cannot delete the only group')
+  const dir = groupsDir()
+  if (g.file) {
+    const own = fileStem(g.file)
+    const children = readGroupFiles(dir, (msg) => world.addLog('error', msg)).entries
+      .filter((e) => e.def.mode === 'sub-group' && fileStem(e.def.parent ?? '') === own)
+      .map((e) => `${e.def.name} (${e.file})`)
+    if (children.length) return bad(`${g.name} is the parent of ${children.join(', ')}: delete the Sub group first`)
+    try {
+      deleteGroupFile(dir, g.file)
+    } catch (err) {
+      return bad(`cannot delete ${g.file}: ${err instanceof Error ? err.message : String(err)}`, 500)
+    }
+  }
+  removeFromStore(demo, g)
+  world.removeGroup(g.lineGroupId)
+  world.addLog('event', `[${g.name}] deleted${g.file ? ` with ${g.file}` : ''}`)
+  return ok({ deleted: g.lineGroupId, file: g.file, selectedGroup: world.selectedGroupId })
+}
+
+/** Every store row of the group (any table's rows with its groupId), the group row, and its
+ *  Project when no other group is in it, so the Dashboard no longer lists it. */
+function removeFromStore(demo: Demo, g: DemoGroup): void {
+  const { tables } = demo.store
+  const row = storeRow(demo, g)
+  if (!row) return
+  for (const rows of Object.values(tables) as Array<Array<Record<string, unknown>>>) {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i].groupId === row.id) rows.splice(i, 1)
+  }
+  tables.groups.splice(tables.groups.indexOf(row), 1)
+  if (row.projectId && !tables.groups.some((r) => r.projectId === row.projectId)) {
+    const p = tables.projects.findIndex((x) => x.id === row.projectId)
+    if (p !== -1) tables.projects.splice(p, 1)
+  }
 }
 
 // ---- clock, tick, quota ----
@@ -456,6 +642,78 @@ async function runDemoTick(demo: Demo): Promise<void> {
   const before = count()
   await runTick(demo.deps)
   demo.world.addLog('tick', `tick ran at ${demo.world.now().toISOString()}: ${count() - before} new chat item(s) across ${demo.world.groups.length} group(s)`)
+}
+
+// ---- weekly (#21 group card, #120 Owner card) ----
+
+export type WeeklySlot = { weekday: number; time: string; lastSentOn: string | null }
+
+/** A group's weekly slot as the store holds it; no schedule row = the schema defaults
+ *  (Monday 09:00, never sent). null: the weekly summary is off or the bot left. */
+function weeklySlotOf(demo: Demo, groupId: string): WeeklySlot | null {
+  const s = demo.store.tables.group_schedules.find((r) => r.groupId === groupId)
+  if (!s) return { weekday: 1, time: '09:00:00', lastSentOn: null }
+  if (!s.featureWeeklySummary || s.leftAt !== null) return null
+  return { weekday: s.weeklySummaryWeekday, time: s.weeklySummaryTime, lastSentOn: s.weeklySummaryLastSentOn }
+}
+
+/** This week's run already happened for the main group: its weekly insight row, or the
+ *  Owner card's ledger row (owner_insight:<projectId>:<weekStart>, once per Project per week). */
+function weeklyRan(demo: Demo, mainGroupId: string, projectId: string, weekStart: string): boolean {
+  const { tables } = demo.store
+  return tables.weekly_insights.some((w) => w.groupId === mainGroupId && w.weekStart === weekStart)
+    || tables.webhook_events.some((e) => e.webhookEventId === ownerInsightKey(projectId, weekStart))
+}
+
+/** When a tick next sends the weekly post (and, for a main group, the Owner card): `now`
+ *  when the slot is reached today and this week has not run; else the first slot strictly
+ *  after now whose week has not run. null: none in the next four weeks. */
+export function nextWeeklyFire(now: Date, slot: WeeklySlot, ran: (weekStart: string) => boolean): Date | null {
+  if (isWeeklyDue(slot, now) && !ran(bangkokWeekStartLabel(now))) return now
+  const minutes = parseTimeOfDay(slot.time)
+  const dayStart = Math.floor((now.getTime() + BKK_OFFSET_MS) / DAY_MS) * DAY_MS
+  for (let i = 0; i <= 28; i++) {
+    const at = new Date(dayStart + i * DAY_MS + minutes * 60_000 - BKK_OFFSET_MS)
+    if (at.getTime() <= now.getTime() || bangkokIsoWeekday(at) !== slot.weekday) continue
+    if (slot.lastSentOn !== null && slot.lastSentOn >= bangkokTodayLabel(at)) continue
+    if (!ran(bangkokWeekStartLabel(at))) return at
+  }
+  return null
+}
+
+/** POST weekly {group?}: moves the clock to the next weekly slot of the group's Project
+ *  main group (a group with no Project: the main group whose slot comes first), then runs
+ *  the tick, so that main group posts its weekly card (#21) and the Project's Owner gets the
+ *  per-person card in their 1:1 chat (#120). Every other group whose slot the new time
+ *  reaches posts too, as on a real tick. A week that already ran is skipped, so a second
+ *  call gives the next week's card. */
+async function weekly(demo: Demo, g: DemoGroup): Promise<SimResult> {
+  const { store, world } = demo
+  const mains = store.tables.groups.filter((r) => r.projectId !== null && r.ownerConfirmedAt !== null && isMainRow(demo, r.id))
+  if (mains.length === 0) return bad('no Project main group with a confirmed Owner yet')
+  const now = world.now()
+  const own = storeRow(demo, g)?.projectId
+  const pool = own ? mains.filter((r) => r.projectId === own) : mains
+  const plans = pool
+    .map((row) => {
+      const slot = weeklySlotOf(demo, row.id)
+      const at = slot ? nextWeeklyFire(now, slot, (ws) => weeklyRan(demo, row.id, row.projectId as string, ws)) : null
+      return { row, at }
+    })
+    .filter((x): x is { row: typeof x.row; at: Date } => x.at !== null)
+    .sort((a, b) => a.at.getTime() - b.at.getTime())
+  const target = plans[0]
+  if (!target) return bad('the main group has no weekly slot to reach (weekly summary off?)')
+  const project = store.tables.projects.find((x) => x.id === target.row.projectId)
+  const owner = project ? world.personaById(project.ownerLineUserId) : undefined
+  const before = owner ? world.direct.get(owner.key)?.length ?? 0 : 0
+  if (target.at.getTime() > now.getTime()) world.setNow(target.at)
+  world.addLog('tick', `weekly: clock moved to ${world.now().toISOString()}, the weekly slot of ${target.row.name ?? target.row.lineGroupId}`)
+  await runDemoTick(demo)
+  const after = owner ? world.direct.get(owner.key)?.length ?? 0 : 0
+  return ok({
+    now: world.now().toISOString(), group: target.row.lineGroupId, owner: owner?.key ?? null, ownerCards: after - before,
+  })
 }
 
 function quota(demo: Demo, b: Record<string, unknown>): SimResult {

@@ -1,0 +1,78 @@
+{
+  "name": "ลูกค้า ร้านกาแฟ",
+  "lineGroupId": "Cdemo0000000000000000000000000003",
+  "members": [
+    "nont",
+    "bomb",
+    "jeff"
+  ],
+  "owner": "nont",
+  "mode": "new-project",
+  "workDescription": "ทำแบรนด์และเพจให้ร้านกาแฟเปิดใหม่",
+  "weekly": {
+    "dayOffset": 1
+  },
+  "tasks": [
+    {
+      "title": "ออกแบบโลโก้ร้านกาแฟ 3 แบบ",
+      "assignee": "bomb",
+      "due": {
+        "days": 1
+      },
+      "status": "in_process",
+      "lastUpdate": {
+        "days": -6
+      }
+    },
+    {
+      "title": "ถ่ายรูปเมนูใหม่ลงเพจ",
+      "assignee": "jeff",
+      "due": {
+        "days": -1
+      },
+      "status": "in_process"
+    },
+    {
+      "title": "ส่งใบเสนอราคาให้ลูกค้า",
+      "assignee": "nont",
+      "due": {
+        "days": -3
+      },
+      "status": "done",
+      "doneAt": {
+        "hours": -2,
+        "thisWeek": true
+      }
+    },
+    {
+      "title": "นัดคุยลูกค้าเรื่องโปรเปิดร้าน",
+      "assignee": null,
+      "due": {
+        "days": 4
+      },
+      "status": "not_assigned"
+    }
+  ],
+  "chat": [
+    {
+      "persona": "jeff",
+      "text": "ลูกค้าอยากได้โทนสีอบอุ่นกว่าเดิมครับ",
+      "minutesAgo": 50
+    },
+    {
+      "persona": "bomb",
+      "text": "เดี๋ยวลองปรับโลโก้เป็นโทนน้ำตาลดูค่ะ",
+      "minutesAgo": 45
+    },
+    {
+      "persona": "nont",
+      "text": "ดีเลย ส่งให้ลูกค้าดูภายในพรุ่งนี้นะ",
+      "minutesAgo": 40
+    },
+    {
+      "persona": "jeff",
+      "text": "รูปเมนูขอเลื่อนไปวันศุกร์ได้ไหมครับ",
+      "minutesAgo": 12
+    }
+  ]
+}

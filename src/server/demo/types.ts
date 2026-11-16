@@ -39,6 +39,16 @@ export type DemoGroupInfo = {
   members: number
   lastMessage: { text: string; at: string } | null
   unread: number
+  /** Its file in src/app/demo/groups/ (it comes back after every Reset); null: none. */
+  file: string | null
+}
+
+/** The chat list row of one persona's 1:1 chat with the bot. unread: items since the
+ *  presenter last opened it (0 while it is open). */
+export type DemoDirectInfo = {
+  persona: string
+  lastMessage: { text: string; at: string } | null
+  unread: number
 }
 
 /** One finished call of the demo AI. costUsd null: neither reported nor priceable ("n/a").
@@ -64,6 +74,10 @@ export type DemoState = {
   chat: ChatItem[]
   /** The bot's 1:1 chats, per persona key (for example the Owner's weekly card, #120). */
   direct: Record<string, ChatItem[]>
+  /** One row per persona (empty threads included), in persona order. */
+  directChats: DemoDirectInfo[]
+  /** The 1:1 thread open on the phone (persona key), or null. */
+  openDirect: string | null
   log: LogEntry[]
 }
 

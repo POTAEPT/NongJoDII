@@ -30,7 +30,9 @@ async function setup() {
   return { ...h, send }
 }
 
-const replyText = (m: { type: string; text?: string } | undefined) => (m?.type === 'text' ? m.text : '')
+/** A text reply, or a card's notification text (the failure notice is a card, UX review 3.1). */
+const replyText = (m: { type: string; text?: string; altText?: string } | undefined) =>
+  m?.type === 'text' ? m.text : m?.type === 'flex' ? m.altText : ''
 
 describe('Webhook resilience', () => {
   it('a LINE name refresh failure does not stop the Summary', async () => {

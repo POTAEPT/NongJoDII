@@ -1,4 +1,5 @@
-import { bubble, button, caption, header, text, uri } from '../line/flex-ui'
+import { bubble, button, caption, header, nextStepCard, text, uri } from '../line/flex-ui'
+import { liffUrl } from '../liff-links'
 import type { LineMessage } from '../line/types'
 
 // #4 The "saved" and "couldn't save" cards (Figma UI v4 design system, same building blocks
@@ -146,8 +147,32 @@ const PAUSE_TAIL = 'บันทึกไฟล์เองก่อนที่
 export const FILE_NOTICE_TEXT = {
   noOwner: `ยังบันทึกไฟล์ไม่ได้ เพราะกลุ่มนี้ยังไม่มีเจ้าของบอท\n${PAUSE_TAIL}`,
   noDrive: `ยังบันทึกไฟล์ไม่ได้ เพราะเจ้าของบอทยังไม่ได้เชื่อม Google Drive\n${PAUSE_TAIL}`,
+  // UX review 2.1: the card form of the notices above.
+  pausedTitle: 'ยังเก็บไฟล์ไม่ได้',
+  noOwnerBody: 'กลุ่มนี้ยังไม่มีเจ้าของบอท ตั้งค่ากลุ่มก่อน แล้วน้องจดดีจะเก็บไฟล์ให้',
+  ownerLeftBody: 'เจ้าของบอทออกจากกลุ่มแล้ว ใครจะเป็นเจ้าของคนใหม่ กดปุ่มด้านล่าง',
+  noDriveBody: 'เจ้าของบอทเชื่อม Google Drive ก่อน แล้วน้องจดดีจะเก็บไฟล์ต่อจากนี้ให้',
+  pauseNote: PAUSE_TAIL,
+  setupButton: 'ตั้งค่ากลุ่ม',
+  ownerButton: 'เป็นเจ้าของบอทแทน',
+  driveButton: 'เชื่อม Google Drive',
   saving: (name: string) => `กำลังบันทึก ${name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1)}…` : name} ลง Google Drive…`,
 } as const
+
+/** UX review 2.1: why a file was not saved, with the button that fixes it. */
+export function filePausedCard(p: { reason: 'no_owner' | 'owner_left' | 'no_drive'; liffId: string; groupId: string }): LineMessage {
+  const T = FILE_NOTICE_TEXT
+  const fix = p.reason === 'no_owner'
+    ? uri(T.setupButton, liffUrl(p.liffId, 'setup', p.groupId))
+    : p.reason === 'owner_left'
+      ? uri(T.ownerButton, liffUrl(p.liffId, 'owner', p.groupId))
+      : uri(T.driveButton, liffUrl(p.liffId, 'google'))
+  const body = p.reason === 'no_owner' ? T.noOwnerBody : p.reason === 'owner_left' ? T.ownerLeftBody : T.noDriveBody
+  return nextStepCard({
+    tone: 'warning', title: T.pausedTitle, body, note: T.pauseNote, button: fix,
+    altText: p.reason === 'no_drive' ? T.noDrive : T.noOwner,
+  })
+}
 
 export function driveFolderLink(folderId: string): string {
   return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`

@@ -19,14 +19,14 @@ export const PROGRESS_TEXT = {
   noDue: 'ยังไม่มีกำหนดส่ง',
   due: (d: string) => `กำหนดส่ง ${d}`,
   no: 'ไม่ใช่',
-  yesDone: 'ใช่ ปิดงาน',
+  yesDone: 'ใช่ เสร็จแล้ว', // UX review 6.5: the same word as the เสร็จ badge
   yesTake: 'ใช่ รับงาน',
   wrongTask: 'เลือกงานอื่น',
   pickTitle: 'อัปเดตนี้หมายถึงงานไหน?',
   pickDone: 'เลือกงานที่เสร็จ แล้วน้องจดดีจะปิดให้',
   pickStart: 'เลือกงานที่เริ่มทำ แล้วน้องจดดีจะอัปเดตให้',
   notUpdate: 'ไม่ใช่การอัปเดตงาน',
-  closed: (t: string) => `ปิดงาน “${t}” แล้ว`,
+  closed: (t: string) => `“${t}” เสร็จแล้ว`,
   taken: (t: string) => `รับงาน “${t}” แล้ว`,
   confirmedBy: (name: string, at: string) => `ยืนยันโดย ${name} · ${at}`,
   alreadyUpdatedTitle: 'อัปเดตไปแล้ว ยังไม่ได้ยกเลิก',
@@ -95,7 +95,7 @@ export function pickerCard(p: { messageId: string; tasks: TaskRow[]; targetStatu
   }
 }
 
-/** After a Yes: "ปิดงาน “ทำสไลด์คู่แข่ง” แล้ว · ยืนยันโดย บิว · 14:21". */
+/** After a Yes: "“ทำสไลด์คู่แข่ง” เสร็จแล้ว · ยืนยันโดย บิว · 14:21". */
 export function resultCard(p: {
   task: TaskRow; status: ProgressTarget; confirmedByName: string; assigneeName: string | null; at: Date
 }): LineMessage {

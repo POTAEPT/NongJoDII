@@ -7,6 +7,7 @@ import { AdapterError } from '@/server/log'
 import { handleTickRequest } from '@/server/tick/handle-request'
 import { TICK_JOBS } from '@/server/tick/run-tick'
 import { makeTestDeps, TEST_KEY, TEST_LIFF_ID, TEST_NOW, tickRequest } from './harness'
+import { buttonActions } from './flex-text'
 
 // #14: the daily access check. Without it a revocation shows only when a Drive run happens,
 // which is rare once the folders exist. Once a day, on one fixed 15-minute tick, the job
@@ -55,7 +56,7 @@ async function seedConnectedOwner(h: H, n: number) {
 }
 
 /** The sign-in cards pushed so far (the full tick also posts reminders). */
-const cards = (h: H) => h.line.pushes.filter((p) => p.messages[0].type === 'template')
+const cards = (h: H) => h.line.pushes.filter((p) => p.messages[0].type === 'flex' && p.messages[0].altText === 'กรุณาเข้าสู่ระบบ Google อีกครั้ง')
 
 const accountRow = (h: H, id: string) => h.store.tables.google_accounts.find((a) => a.id === id)!
 
@@ -119,7 +120,7 @@ describe('daily Drive access check', () => {
     expect(cards(h)).toHaveLength(1)
     expect(cards(h)[0].to).toBe(a.lineGroupId)
     const m = cards(h)[0].messages[0]
-    expect(m.type === 'template' && m.template.actions).toEqual([
+    expect(m.type === 'flex' && buttonActions(m.contents)).toEqual([
       { type: 'uri', label: 'เข้าสู่ระบบ Google', uri: liffUrl(TEST_LIFF_ID, 'google') },
     ])
     expect(h.store.tables.push_log.filter((p) => p.purpose === 'drive_revoked')).toEqual([

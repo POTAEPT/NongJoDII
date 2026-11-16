@@ -461,9 +461,9 @@ describe('file saver (#4)', () => {
     // to the first photo only (once per group per day).
     expect(h.line.pushes).toHaveLength(1)
     expect(h.line.pushes[0].to).toBe(MAIN)
-    expect(h.line.pushes[0].messages[0]).toMatchObject({ type: 'template' })
+    expect(h.line.pushes[0].messages[0]).toMatchObject({ type: 'flex', altText: 'กรุณาเข้าสู่ระบบ Google อีกครั้ง' })
     expect(h.line.replies).toHaveLength(1)
-    expect(h.line.replies[0].messages).toEqual([{ type: 'text', text: FILE_NOTICE_TEXT.noDrive }])
+    expect(h.line.replies[0].messages).toEqual([expect.objectContaining({ type: 'flex', altText: FILE_NOTICE_TEXT.noDrive })])
     expect(h.store.tables.webhook_events.filter((w) => w.webhookEventId.startsWith('file:'))).toEqual([])
   })
 
@@ -493,7 +493,7 @@ describe('file saver (#4)', () => {
     expect(h.line.contentCalls).toEqual([])
     expect(h.google.uploads).toEqual([])
     expect(h.store.tables.files).toEqual([])
-    expect(h.line.replies.filter((r) => r.replyToken === 'rt-y').map((r) => r.messages)).toEqual([[{ type: 'text', text: FILE_NOTICE_TEXT.noOwner }]])
+    expect(h.line.replies.filter((r) => r.replyToken === 'rt-y').map((r) => r.messages)).toEqual([[expect.objectContaining({ type: 'flex', altText: FILE_NOTICE_TEXT.noOwner })]])
     expect(h.store.tables.messages.some((m) => m.lineMessageId === 'm-y')).toBe(true)
   })
 
@@ -753,7 +753,7 @@ describe('file saver review fixes (#4, PR #96)', () => {
     await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-nd', fileName: 'nd.pdf', fileSize: 2 }))
     await h.runDeferred()
     // #99: only the pause notice, a text reply.
-    expect(h.line.replies.map((r) => r.messages)).toEqual([[{ type: 'text', text: FILE_NOTICE_TEXT.noDrive }]])
+    expect(h.line.replies.map((r) => r.messages)).toEqual([[expect.objectContaining({ type: 'flex', altText: FILE_NOTICE_TEXT.noDrive })]])
     expect(h.line.pushes).toEqual([])
     expect(h.store.tables.files).toEqual([])
   })
@@ -878,7 +878,7 @@ describe('the sender is told why (#99)', () => {
     await send(h, file('p2'))
     await h.runDeferred()
     expect(h.line.replies.map((r) => r.replyToken)).toEqual(['rt-p1'])
-    expect(h.line.replies[0].messages).toEqual([{ type: 'text', text: FILE_NOTICE_TEXT.noOwner }])
+    expect(h.line.replies[0].messages).toEqual([expect.objectContaining({ type: 'flex', altText: FILE_NOTICE_TEXT.noOwner })])
     expect(h.line.pushes).toEqual([])
 
     h.setNow(new Date(h.deps.now().getTime() + 24 * 60 * 60 * 1000))
@@ -894,7 +894,7 @@ describe('the sender is told why (#99)', () => {
     await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-o', fileName: 'o.pdf', fileSize: 1, replyToken: 'rt-o' }))
     await h.runDeferred()
     expect(h.store.tables.files).toEqual([])
-    expect(h.line.replies.map((r) => r.messages)).toEqual([[{ type: 'text', text: FILE_NOTICE_TEXT.noDrive }]])
+    expect(h.line.replies.map((r) => r.messages)).toEqual([[expect.objectContaining({ type: 'flex', altText: FILE_NOTICE_TEXT.noDrive })]])
   })
 
   it('file saving turned off stays silent', async () => {
@@ -941,7 +941,7 @@ describe('the sender is told why (#99)', () => {
       { type: 'text', text: FILE_NOTICE_TEXT.saving('m-LP1.mp4') }, { type: 'text', text: FILE_NOTICE_TEXT.saving('m-LP2.mp4') },
     ])
     const toSub = h.line.pushes.filter((p) => p.to === SUB)
-    expect(toSub.map((p) => p.messages)).toEqual([[{ type: 'text', text: FILE_NOTICE_TEXT.noDrive }], [{ type: 'text', text: FILE_NOTICE_TEXT.noDrive }]])
+    expect(toSub.map((p) => p.messages)).toEqual([[expect.objectContaining({ type: 'flex', altText: FILE_NOTICE_TEXT.noDrive })], [expect.objectContaining({ type: 'flex', altText: FILE_NOTICE_TEXT.noDrive })]])
   })
 
   it('a file at or under the threshold keeps the single reply', async () => {

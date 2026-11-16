@@ -10,6 +10,7 @@ import type { LineMessage } from '@/server/line/types'
 import { AdapterError } from '@/server/log'
 import { handleTickRequest } from '@/server/tick/handle-request'
 import { makeTestDeps, TEST_LIFF_ID, TEST_NOW, tickRequest } from './harness'
+import { buttonActions, messageText } from './flex-text'
 
 // #82: the person disconnects Google Drive from the LIFF Google view. Google revokes the
 // grant, the account is marked revoked (so file saving pauses), the main group gets one
@@ -58,9 +59,10 @@ async function signIn(h: H, idToken: string, n: number) {
 
 const accountOf = (h: H, n: number) => h.store.tables.google_accounts.find((a) => a.googleSubject === `g-sub-${n}`)!
 
+/** UX review 2.2: the card is Flex now; its words and its buttons' actions. */
 function buttons(m: LineMessage) {
-  if (m.type !== 'template') throw new Error('not a template')
-  return m.template
+  if (m.type !== 'flex') throw new Error('not a Flex card')
+  return { text: messageText(m), actions: buttonActions<{ type: string; label: string; uri: string }>(m.contents) }
 }
 
 async function connected(h: H) {
@@ -89,9 +91,9 @@ describe('disconnect Google Drive (#82)', () => {
     expect(h.line.pushes[0].to).toBe(MAIN_LINE_GROUP)
     expect(h.store.tables.push_log).toEqual([expect.objectContaining({ purpose: 'drive_disconnected', lineTargetId: MAIN_LINE_GROUP })])
     const card = buttons(h.line.pushes[0].messages[0])
-    expect(card.text).toBe(DISCONNECTED_TEXT.card)
+    expect(card.text).toContain(DISCONNECTED_TEXT.title)
+    expect(card.text).toContain(DISCONNECTED_TEXT.note) // files already saved stay
     expect(card.actions).toEqual([{ type: 'uri', label: DISCONNECTED_TEXT.button, uri: liffUrl(TEST_LIFF_ID, 'google') }])
-    expect(card.text.length).toBeLessThanOrEqual(160)
     expect(card.actions[0].label.length).toBeLessThanOrEqual(20)
 
     // The page then reads "sign in again", and later Drive runs and the daily access check

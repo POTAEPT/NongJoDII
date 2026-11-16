@@ -1,3 +1,4 @@
+import { replyHelpCard } from '@/server/commands/help'
 import { parseGroupCommand } from '@/server/commands/parse'
 import { handleFileRequest } from '@/server/files/request'
 import { handleGroupFile } from '@/server/files/save'
@@ -8,8 +9,8 @@ import { handleProgressPostback } from '@/server/progress/handle-postback'
 import { handleProgressText } from '@/server/progress/handle-text'
 import { handleMemberLeft } from '@/server/members/left'
 import { handleMemberJoined } from '@/server/members/welcome'
-import { handleReminderCommand, handleReminderPostback } from '@/server/reminders/answer'
-import { parseReminderAction } from '@/server/reminders/postback'
+import { ANSWER_TEXT, handleReminderCommand, handleReminderPostback } from '@/server/reminders/answer'
+import { parseReminderAction, PICK_CANCEL_DATA } from '@/server/reminders/postback'
 import { handleJoin } from '@/server/setup/join'
 import { replySettingsCard } from '@/server/settings/card'
 import { runSummaryCommand } from '@/server/summary/run-summary'
@@ -108,6 +109,11 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
       if (replyToken) await replySettingsCard(deps, { groupId, replyToken })
       return
     }
+    // UX review 1.3: "น้องจดดี วิธีใช้", or the bot's name alone.
+    if (command === 'help') {
+      if (replyToken) await replyHelpCard(deps, { groupId, replyToken })
+      return
+    }
     // #33: a quote-reply asking for a saved file's Drive link.
     if (command === 'request_file') {
       if (replyToken) await handleFileRequest(deps, { groupId, quotedMessageId: job.quotedMessageId, replyToken })
@@ -125,6 +131,15 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
   if (job.kind === 'group_postback') {
     if (job.replyToken) {
       await namesReady
+      // UX review 6.1: "ยกเลิก" on a "งานไหน…?" picker changes nothing; say so.
+      if (job.data === PICK_CANCEL_DATA) {
+        try {
+          await deps.line.reply(job.replyToken, [{ type: 'text', text: ANSWER_TEXT.pickCancelled }])
+        } catch (err) {
+          logError('pick_cancel_reply_failed', { groupId: job.groupId }, err)
+        }
+        return
+      }
       // Reminder buttons (#45) and progress cards (#7) use different `a` codes.
       if (parseReminderAction(job.data)) {
         await handleReminderPostback(deps, {

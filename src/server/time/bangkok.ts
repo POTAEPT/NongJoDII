@@ -10,6 +10,9 @@ const THAI_MONTHS_LONG = [
   'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม',
 ]
 
+/** ISO weekday 1..7 (Monday first). */
+export const THAI_WEEKDAY_SHORT = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.']
+
 const pad = (n: number) => String(n).padStart(2, '0')
 
 /** Bangkok wall-clock parts; m is 1..12. */
@@ -24,10 +27,33 @@ export function formatPromptTime(d: Date): string {
   return `${p.y}-${pad(p.m)}-${pad(p.d)} ${pad(p.hh)}:${pad(p.mm)}`
 }
 
-/** '12 พ.ย. 09:15' */
+/** The one date-and-time style of the cards (UX review 4.2): 'พฤ. 12 พ.ย. 09:15'. The
+ *  weekday is there because people plan work by day ("ส่งวันพฤหัส"). */
 export function formatThaiShort(d: Date): string {
+  return `${formatThaiWeekdayDay(d)} ${formatHhmm(d)}`
+}
+
+/** 'พฤ. 12 พ.ย.' */
+export function formatThaiWeekdayDay(d: Date): string {
+  return `${THAI_WEEKDAY_SHORT[bangkokIsoWeekday(d) - 1]} ${formatThaiDayMonth(d)}`
+}
+
+/** '09:15' */
+export function formatHhmm(d: Date): string {
   const p = bangkokParts(d)
-  return `${p.d} ${THAI_MONTHS_SHORT[p.m - 1]} ${pad(p.hh)}:${pad(p.mm)}`
+  return `${pad(p.hh)}:${pad(p.mm)}`
+}
+
+/** UX review 4.3, for cards about today (the daily reminder): 'วันนี้ 17:00',
+ *  'พรุ่งนี้ 09:00', 'เมื่อวาน 17:00', otherwise formatThaiShort. Not for cards people read
+ *  days later, where "วันนี้" would turn wrong. */
+export function formatRelativeDue(d: Date, now: Date): string {
+  const day = (x: Date) => Math.floor((x.getTime() + BKK_OFFSET_MS) / 86_400_000)
+  const diff = day(d) - day(now)
+  if (diff === 0) return `วันนี้ ${formatHhmm(d)}`
+  if (diff === 1) return `พรุ่งนี้ ${formatHhmm(d)}`
+  if (diff === -1) return `เมื่อวาน ${formatHhmm(d)}`
+  return formatThaiShort(d)
 }
 
 /** '16 พ.ย.' */

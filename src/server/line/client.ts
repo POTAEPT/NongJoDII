@@ -131,8 +131,10 @@ export class LineHttpClient implements LinePort {
     }
   }
 
-  /** POST /v2/bot/group/{groupId}/leave (LINE answers 200, 400 or 404). 404: the bot is
-   *  not in the group. */
+  /** POST /v2/bot/group/{groupId}/leave. LINE's reference (line-openapi messaging-api.yml)
+   *  lists 200, 400 (Bad Request) and 404 (Not Found); it does not say 400 can mean the bot
+   *  already left. So only 404 answers 'not_in_group' (the bot is not in the group); 400
+   *  and any other status throw, as a failure the caller may retry. */
   async leaveGroup(lineGroupId: string): Promise<'left' | 'not_in_group'> {
     const url = `${API}/v2/bot/group/${encodeURIComponent(lineGroupId)}/leave`
     const res = await this.fetchImpl(url, { method: 'POST', headers: { Authorization: `Bearer ${this.token}` } })

@@ -24,6 +24,7 @@ export type BotLeaveReason = 'stop_using' | 'no_owner'
  */
 export type BotLeaveResult = {
   outcome: 'left' | 'not_in_group' | 'already_left' | 'unknown_group'
+  /** Null only for unknown_group. */
   deleteAfter: Date | null
 }
 
@@ -37,8 +38,9 @@ export type BotLeaveResult = {
  *   delete_after = now + 7 days, unless the group already had a mark, which stays.
  * - Throws when LINE's answer is not 200 or 404 (a 5xx, a timeout): nothing is marked and
  *   the bot may still be in the group, so the caller may retry later. Throws when the
- *   store fails after LINE accepted: the bot is out with no mark yet; a retry gets 404
- *   (not_in_group) and marks it, so callers retry on the next run.
+ *   store fails after LINE accepted, or the mark matched no row (deleteAfter would be
+ *   null): the bot is out with no mark yet; a retry gets 404 (not_in_group) and marks
+ *   it, so callers retry on the next run. A success always carries a deleteAfter.
  * - Posts nothing to the group and touches no Drive file.
  */
 export async function botLeaveGroup(
@@ -52,6 +54,10 @@ export async function botLeaveGroup(
   if (marked) return { outcome: 'already_left', deleteAfter: marked }
   const outcome = await deps.line.leaveGroup(group.lineGroupId)
   const { deleteAfter } = await deps.store.markBotLeft({ lineGroupId: group.lineGroupId, at: now })
+  // LINE let the bot out but no row holds a delete date (the row went, or a newer join
+  // stamp blocked the mark): not a success. The caller retries; LINE then answers 404 and
+  // the mark is tried again.
+  if (deleteAfter === null) throw new Error('bot_leave_unmarked')
   log('bot_left_group', { groupId, reason, outcome })
   return { outcome, deleteAfter }
 }

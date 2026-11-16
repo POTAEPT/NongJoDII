@@ -27,16 +27,20 @@ export const MEMBER_CHECK_TIME = '08:00'
  *  daily reminder's, so the next tick can take over from a request that stopped. */
 export const MEMBER_CHECK_CLAIM_TTL_MS = 10 * 60_000
 
-/** LINE calls the leave card can make one after another: the quota and member count (run
+/** LINE calls one card can make one after another: the quota and member count (run
  *  together), then the push. Kept free before a leave is written, so a person is never
- *  marked left without time for their card (a later run would skip them, and the card would
- *  be lost). Without the time, the tick stops and the next one asks again. */
+ *  marked left without time for their cards (a later run would skip them, and a card would
+ *  be lost). A confirmed Owner's leave posts two cards (owner_needed, then the member-left
+ *  card), so it keeps twice this. Without the time, the tick stops and the next one asks
+ *  again. */
 const CARD_CALLS = 2
 
 type Released = { lineUserId: string; tasks: TaskRow[] }[]
 type Counts = { members: number; left: number; errors: number; repaired: number }
 
-export type MemberCheckResult = 'not_due' | 'claimed_elsewhere' | 'not_in_group' | 'checked'
+/** line_failed: LINE's group lookup failed (5xx, timeout) before anyone was asked; the
+ *  claim is released, so a later tick the same day tries again. */
+export type MemberCheckResult = 'not_due' | 'claimed_elsewhere' | 'not_in_group' | 'line_failed' | 'checked'
 
 /** One group, on one tick. Throws DriveTimeUp when the tick's time runs out; the claim is
  *  cleared first, so the next tick goes on. */
@@ -50,15 +54,10 @@ export async function runMemberCheckForGroup(
 
   const { groupId, lineGroupId } = group
   const counts: Counts = { members: 0, left: 0, errors: 0, repaired: 0 }
-  const card = async (lineUserId: string, released: Released, ownerLeft: string | null = null) => {
+  const card = async (eventId: string, released: Released, ownerLeft: string | null = null) => {
     if (released.length === 0 && ownerLeft === null) return
     try {
-      // One card per person, keyed on them and the day: a retried tick never posts it twice,
-      // and two people's cards never share a key.
-      await handleMemberLeft(deps, {
-        kind: 'member_left', groupId, lineGroupId, released,
-        eventId: `member_check:${groupId}:${lineUserId}:${today}`, ownerLeft,
-      })
+      await handleMemberLeft(deps, { kind: 'member_left', groupId, lineGroupId, released, eventId, ownerLeft })
     } catch (err) {
       logError('member_check_card_failed', { groupId }, err)
     }
@@ -70,8 +69,13 @@ export async function runMemberCheckForGroup(
     // own leave event can be lost too (its handling belongs to #11). So ask about the group
     // first, and again before each leave, and mark nobody when LINE no longer knows it.
     const inGroup = await groupKnown(deps, groupId, lineGroupId, deadline, 0)
-    if (inGroup === null) counts.errors++
-    else if (!inGroup) result = 'not_in_group'
+    if (inGroup === null) {
+      // Nobody was asked: give the day back rather than mark it checked.
+      await deps.store.releaseMemberCheck(groupId, now)
+      log('member_check', { groupId, result: 'line_failed' })
+      return 'line_failed'
+    }
+    if (!inGroup) result = await botGone(deps, group, now)
     else {
       await repairUnreleased(deps, groupId, deadline, card, counts)
       for (const lineUserId of await deps.store.listMembersToCheck(groupId, today)) {
@@ -90,25 +94,32 @@ export async function runMemberCheckForGroup(
           await deps.store.markMemberChecked(groupId, lineUserId, today)
           continue
         }
-        const still = await groupKnown(deps, groupId, lineGroupId, deadline, CARD_CALLS)
+        // Stamped with the tick's start, read before the call: a join that lands since is
+        // newer and wins (markMemberLeft applies only a leave newer than the last event).
+        const before = await deps.store.getGroupById(groupId) // read before the leave writes
+        // The Owner (confirmed, or already marked left) gets the owner_needed card too.
+        const isOwner = before !== null && before.nominatedOwnerLineUserId === lineUserId &&
+          (before.ownerConfirmedAt !== null || before.ownerLeftAt !== null)
+        const still = await groupKnown(deps, groupId, lineGroupId, deadline, CARD_CALLS * (isOwner ? 2 : 1))
         if (still === null) {
           counts.errors++
           await deps.store.markMemberChecked(groupId, lineUserId, today)
           continue
         }
         if (!still) {
-          result = 'not_in_group'
+          result = await botGone(deps, group, now)
           break
         }
-        // Stamped with the tick's start, read before the call: a join that lands since is
-        // newer and wins (markMemberLeft applies only a leave newer than the last event).
-        const before = await deps.store.getGroupById(groupId) // read before the leave writes
         const released = await recordMemberLeft(deps, { groupId, lineUserIds: [lineUserId], at: now })
         // #30: the confirmed Owner found gone pauses the group and asks for a new Owner, as a
         // leave event would (markOwnerLeftOnLeave, then the owner_needed card with the job).
+        // If this write fails after the leave above, the owner_needed reconcile job
+        // (members/owner-needed-reconcile.ts) marks the Owner on a later tick.
         const ownerLeft = before ? await markOwnerLeftOnLeave(deps, before, [lineUserId], now) : null
         counts.left++
-        await card(lineUserId, released, ownerLeft)
+        // One card per person, keyed on them and the day: a retried tick never posts it
+        // twice, and two people's cards never share a key.
+        await card(`member_check:${groupId}:${lineUserId}:${today}`, released, ownerLeft)
       }
     }
   } catch (err) {
@@ -120,6 +131,16 @@ export async function runMemberCheckForGroup(
   await deps.store.finishMemberCheck(groupId, today, now)
   log('member_check', { groupId, result, ...counts })
   return result
+}
+
+/** D2 (#71): LINE answered 404 for the group itself, so the bot is out and its leave event
+ *  was lost. Marks the group as #11 does for botLeaveGroup's not_in_group: left_at now and
+ *  delete_after 7 days later, written only where no mark is (idempotent). Nobody is marked
+ *  as a left Member. */
+async function botGone(deps: Deps, group: MemberCheckGroup, now: Date): Promise<'not_in_group'> {
+  const { deleteAfter } = await deps.store.markBotLeft({ lineGroupId: group.lineGroupId, at: now })
+  log('member_check_bot_gone', { groupId: group.groupId, marked: deleteAfter !== null })
+  return 'not_in_group'
 }
 
 /** true when LINE still knows the group, false on its 404, null on any other failure
@@ -141,7 +162,7 @@ async function groupKnown(
  *  them. So each run first releases open Tasks whose assignee is not a live Member. */
 async function repairUnreleased(
   deps: Deps, groupId: string, deadline: Date,
-  card: (lineUserId: string, released: Released) => Promise<void>, counts: Counts,
+  card: (eventId: string, released: Released) => Promise<void>, counts: Counts,
 ): Promise<void> {
   const live = new Set((await deps.store.listLiveMembers(groupId)).map((m) => m.lineUserId))
   const stale = new Set<string>()
@@ -154,7 +175,10 @@ async function repairUnreleased(
     const tasks = await deps.store.releaseTasksIfLeft({ groupId, lineUserId })
     if (tasks.length === 0) continue
     counts.repaired++
-    await card(lineUserId, [{ lineUserId, tasks }])
+    // Keyed on the released Tasks, not the person and day: a leave card already posted for
+    // this person today would otherwise make LINE drop this one as a repeat.
+    const ids = tasks.map((t) => t.id).sort().join(',')
+    await card(`member_check_repair:${groupId}:${ids}`, [{ lineUserId, tasks }])
   }
 }
 

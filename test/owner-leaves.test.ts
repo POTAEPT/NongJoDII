@@ -5,6 +5,7 @@ import { liffUrl } from '@/server/liff-links'
 import { retryKeyFrom } from '@/server/line/push-budget'
 import type { LineEvent, LineMessage } from '@/server/line/types'
 import { MEMBER_LEFT_TEXT } from '@/server/members/card'
+import { memberCheckJob } from '@/server/members/daily-check'
 import { OWNER_NEEDED_TEXT } from '@/server/members/owner-left'
 import { TAKEOVER_CARD_TEXT } from '@/server/owner-change/card'
 import { loadSetup } from '@/server/setup/load'
@@ -390,3 +391,112 @@ describe('the Owner change reaches #31 and #32', () => {
   })
 })
 
+
+describe('review follow-ups (#74)', () => {
+  const isTakeoverCard = (m: LineMessage) => texts(m.type === 'flex' ? m.contents : null).includes(TAKEOVER_CARD_TEXT.title)
+  const ownerCards = (h: H) => h.line.pushes.filter((p) => p.messages.some(isOwnerCard))
+
+  it('the daily member check failing between the leave and the Owner mark: a later tick marks the Owner and posts the card', async () => {
+    const t = await setup()
+    t.line.groupNames.set(MAIN, 'ทีมหลัก')
+    for (const u of [PIM, TON]) t.line.profiles.set(`${MAIN}:${u}`, u) // OWNER has no profile: gone
+    t.store.failNext('markOwnerLeft')
+    t.setNow(bkk('2026-11-16T08:00:00'))
+    expect((await handleTickRequest(tickRequest(), t.deps, t.defer, [memberCheckJob])).status).toBe(200)
+    await t.runDeferred()
+    // The leave was written, the Owner mark was not: no pause, no card yet.
+    expect(t.store.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === OWNER)!.leftAt).not.toBeNull()
+    expect(group(t, t.groupId).ownerLeftAt).toBeNull()
+    expect(ownerCards(t)).toHaveLength(0)
+
+    await tickAt(t, bkk('2026-11-16T08:15:00'))
+    expect(group(t, t.groupId)).toMatchObject({ ownerConfirmedAt: null })
+    expect(group(t, t.groupId).ownerLeftAt).not.toBeNull()
+    expect(ownerCards(t)).toHaveLength(1)
+    await tickAt(t, bkk('2026-11-16T08:30:00'))
+    expect(ownerCards(t)).toHaveLength(1)
+  })
+
+  it('the weekly insight skips a Sub group waiting on the take-over question (no confirmed Owner)', async () => {
+    const t = await setup()
+    const sub = t.store.seedGroup({ lineGroupId: SUB, projectId: t.projectId, nominatedOwnerLineUserId: OWNER, ownerConfirmedAt: null })
+    expect((await t.store.listWeeklySummaryGroups(1)).map((g) => g.groupId)).not.toContain(sub.id)
+    expect((await t.store.listWeeklySummaryGroups(1)).map((g) => g.groupId)).toContain(t.groupId)
+  })
+
+  it('the Google callback finishes a second Owner change too; the Sub group the first new Owner took over is asked by the next', async () => {
+    const t = await setup()
+    const sub = t.store.seedGroup({
+      lineGroupId: SUB, projectId: t.projectId, nominatedOwnerLineUserId: OWNER, ownerConfirmedAt: TEST_NOW,
+    })
+    t.store.seedMember({ groupId: sub.id, lineUserId: OWNER, displayName: 'เจ้าของ' })
+    // OWNER -> PIM through LINE login, then the Google callback; PIM takes the Sub group over.
+    await send(t, ev.memberLeft({ userIds: [OWNER], groupId: MAIN }))
+    await press(t, t.groupId, PIM)
+    expect(await signIn(t, PIM, 2)).toBe('ok')
+    expect((await t.store.answerSubgroupTakeover(t.projectId, [sub.id])).outcome).toBe('saved')
+    expect(group(t, sub.id)).toMatchObject({ nominatedOwnerLineUserId: PIM })
+    expect(group(t, sub.id).ownerConfirmedAt).not.toBeNull()
+
+    // PIM leaves; TON takes the card, then signs in to Google: the callback runs the change.
+    t.setNow(new Date(TEST_NOW.getTime() + 86_400_000))
+    await send(t, ev.memberLeft({ userIds: [PIM], groupId: MAIN, timestamp: t.deps.now().getTime() }))
+    t.line.pushes = []
+    expect((await press(t, t.groupId, TON)).body).toEqual({ state: 'needs_drive' })
+    expect(await signIn(t, TON, 3)).toBe('ok')
+    expect(t.store.tables.projects.find((p) => p.id === t.projectId)!.ownerLineUserId).toBe(TON)
+    expect(group(t, t.groupId)).toMatchObject({ nominatedOwnerLineUserId: TON, ownerLeftAt: null })
+    // The Sub group cannot stay on PIM (same-Owner rule): it waits on TON's question.
+    expect(group(t, sub.id)).toMatchObject({ projectId: t.projectId, nominatedOwnerLineUserId: PIM, ownerConfirmedAt: null })
+    expect(t.line.pushes.filter((p) => p.messages.some(isTakeoverCard))).toHaveLength(1)
+  })
+
+  it('the reconcile leaves alone an Owner confirmed after an old leave (a Sub group taken over by a former Member)', async () => {
+    const t = await setup()
+    // PIM's membership is marked left from before the confirm: the take-over confirms an
+    // Owner without a membership check, so this is not a lost Owner leave.
+    const pim = t.store.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === PIM)!
+    pim.leftAt = new Date(TEST_NOW.getTime() - 86_400_000)
+    Object.assign(group(t, t.groupId), { nominatedOwnerLineUserId: PIM, ownerConfirmedAt: TEST_NOW })
+    await tickAt(t, bkk('2026-11-12T11:00:00'))
+    expect(group(t, t.groupId)).toMatchObject({ nominatedOwnerLineUserId: PIM, ownerConfirmedAt: TEST_NOW, ownerLeftAt: null })
+    expect(t.line.pushes.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(0)
+  })
+
+  it('a paused group whose owner_needed card never opened (the member_left job was lost) gets it from the tick, once', async () => {
+    const t = await setup()
+    Object.assign(group(t, t.groupId), { ownerLeftAt: TEST_NOW, ownerConfirmedAt: null })
+    t.store.tables.group_members.find((m) => m.groupId === t.groupId && m.lineUserId === OWNER)!.leftAt = TEST_NOW
+    await tickAt(t, bkk('2026-11-12T11:00:00'))
+    expect(ownerCards(t)).toHaveLength(1)
+    expect(ownerCards(t)[0].to).toBe(MAIN)
+    expect(prompts(t, t.groupId)).toEqual([expect.objectContaining({ subjectLineUserId: OWNER, answer: null })])
+    await tickAt(t, bkk('2026-11-12T11:15:00'))
+    await tickAt(t, bkk('2026-11-12T13:00:00'))
+    expect(ownerCards(t)).toHaveLength(1)
+  })
+
+  it('an owner_needed card skipped near the quota is pushed again on a retry tick, under its own key', async () => {
+    const t = await setup()
+    t.line.quota = { limit: 10, used: 10 }
+    await send(t, ev.memberLeft({ userIds: [OWNER], groupId: MAIN }))
+    expect(t.line.delivered.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(0)
+    t.line.quota = { limit: null, used: 0 }
+    await tickAt(t, new Date(TEST_NOW.getTime() + 10 * 60_000)) // not a retry tick yet
+    expect(t.line.delivered.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(0)
+    await tickAt(t, new Date(TEST_NOW.getTime() + 15 * 60_000))
+    const sent = t.line.delivered.filter((p) => p.messages.some(isOwnerCard))
+    expect(sent).toHaveLength(1)
+    expect(sent[0].retryKey).toBe(retryKeyFrom(`owner_needed:${prompts(t, t.groupId)[0].id}`))
+    await tickAt(t, new Date(TEST_NOW.getTime() + 120 * 60_000))
+    expect(t.line.delivered.filter((p) => p.messages.some(isOwnerCard))).toHaveLength(1)
+  })
+
+  it('an owner_needed card LINE keeps refusing (4xx) is tried three more times, then not again', async () => {
+    const t = await setup()
+    t.line.rejectPush = true
+    await send(t, ev.memberLeft({ userIds: [OWNER], groupId: MAIN }))
+    for (let m = 15; m <= 3 * 24 * 60; m += 15) await tickAt(t, new Date(TEST_NOW.getTime() + m * 60_000))
+    expect(ownerCards(t)).toHaveLength(1 + 3)
+  })
+})

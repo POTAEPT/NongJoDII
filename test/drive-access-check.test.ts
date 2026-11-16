@@ -40,6 +40,10 @@ async function seedConnectedOwner(h: H, n: number) {
   const g = h.store.seedGroup({ lineGroupId, name: `ทีม ${n}`, nominatedOwnerLineUserId: owner })
   h.store.seedMember({ groupId: g.id, lineUserId: owner, displayName: `Owner ${n}` })
   h.line.groupMemberCounts.set(lineGroupId, 2)
+  // LINE knows the group and the Owner, so the full tick's daily member check (#32) runs
+  // here and finds nobody gone.
+  h.line.groupNames.set(lineGroupId, `ทีม ${n}`)
+  h.line.profiles.set(`${lineGroupId}:${owner}`, `Owner ${n}`)
   expect((await h.store.confirmGroupOwner(g.id, owner, TEST_NOW)).outcome).toBe('confirmed')
   const projectId = h.store.tables.groups.find((r) => r.id === g.id)!.projectId as string
   const { id: accountId } = await h.store.upsertGoogleAccount({
@@ -106,6 +110,10 @@ describe('daily Drive access check', () => {
 
     // A week later, well outside the 2-hour window of the setup finisher.
     await tick(h, new Date(SLOT.getTime() + 7 * 24 * 60 * MIN), TICK_JOBS)
+    // The member check ran in the same tick and marked nobody.
+    expect(h.line.profileCalls).toContainEqual({ lineGroupId: a.lineGroupId, lineUserId: a.owner })
+    expect(infos.mock.calls.map((c) => JSON.parse(String(c[0])))).toContainEqual(
+      expect.objectContaining({ event: 'member_check', groupId: a.groupId, result: 'checked', left: 0 }))
 
     expect(accountRow(h, a.accountId)).toMatchObject({ tokenStatus: 'revoked', refreshTokenCiphertext: null })
     expect(cards(h)).toHaveLength(1)

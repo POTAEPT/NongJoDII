@@ -113,7 +113,7 @@ describe('SupabaseStore.detachExpiredTakeovers', () => {
     ])
     expect(chains[0]).toEqual([
       { method: 'from', args: ['groups'] },
-      { method: 'update', args: [{ project_id: null, takeover_asked_at: null }] },
+      { method: 'update', args: [{ project_id: null, takeover_asked_at: null, drive_folder_id: null }] },
       { method: 'lt', args: ['takeover_asked_at', cutoff.toISOString()] },
       { method: 'select', args: ['id, line_group_id, name, nominated_owner_line_user_id'] },
     ])
@@ -125,7 +125,7 @@ describe('SupabaseStore.detachExpiredTakeovers', () => {
     const now = new Date('2026-11-12T03:00:00Z')
     await store.detachExpiredTakeovers(cutoff, now)
     expect(chains[0]).toContainEqual(
-      { method: 'update', args: [{ project_id: null, takeover_asked_at: null, owner_left_at: now.toISOString() }] },
+      { method: 'update', args: [{ project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: now.toISOString() }] },
     )
   })
 })

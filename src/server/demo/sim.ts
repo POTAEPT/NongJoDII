@@ -2,11 +2,14 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { LineEvent, LineMention } from '@/server/line/types'
 import { runTick } from '@/server/tick/run-tick'
-import { BKK_OFFSET_MS } from '@/server/time/bangkok'
+import { ownerInsightKey } from '@/server/insight/owner'
+import {
+  BKK_OFFSET_MS, bangkokIsoWeekday, bangkokTodayLabel, bangkokWeekStartLabel, isWeeklyDue, parseTimeOfDay,
+} from '@/server/time/bangkok'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { attachSubGroup, getDemo, resetDemo, seedLiveMember, type Demo } from './demo-deps'
 import { signedWebhookRequest } from './sign'
-import type { ChatItem, DemoGroupInfo, DemoPersona, DemoScript, DemoState } from './types'
+import type { ChatItem, DemoDirectInfo, DemoGroupInfo, DemoPersona, DemoScript, DemoState } from './types'
 import { DEMO_LIFF_ID, demoUserId, type DemoGroup } from './world'
 
 // The sim API (docs/demo-contract.md): each function builds the LINE event a real group
@@ -49,6 +52,11 @@ export async function runSimAction(action: string, method: string, body: unknown
   if (action === 'tick') return tick(demo)
   if (action === 'quota') return quota(demo, b)
   if (action === 'persona') return persona(demo, b)
+  // 1:1 chat with the bot (the user is the event source; no group involved).
+  if (action === 'open-direct') return openDirect(demo, b)
+  if (action === 'follow') return follow(demo, b)
+  if ((action === 'send' || action === 'message') && b.direct === true) return sendDirect(demo, b)
+  if (action === 'postback' && b.direct === true) return postbackDirect(demo, b)
   const g = groupOf(demo, b.group)
   if (isResult(g)) return g
   switch (action) {
@@ -65,6 +73,7 @@ export async function runSimAction(action: string, method: string, body: unknown
     case 'member-join': return memberJoin(demo, g, b)
     case 'member-leave': return memberLeave(demo, g, b)
     case 'load-script': return await loadScript(demo, g, b)
+    case 'weekly': return await weekly(demo, g)
     default: return bad(`unknown sim route POST ${action}`, 404)
   }
 }
@@ -99,6 +108,8 @@ export function simState(demo: Demo): DemoState {
     google: { connected: accounts.length > 0, email: accounts[0]?.email ?? null },
     chat: selected.chat,
     direct: Object.fromEntries(world.direct),
+    directChats: world.personas.map((p) => directInfo(demo, p.key)),
+    openDirect: world.openDirect,
     log: world.log,
   }
 }
@@ -126,8 +137,17 @@ function groupInfo(demo: Demo, g: DemoGroup): DemoGroupInfo {
   }
 }
 
-/** The chat list's one-line preview, LINE style ("Nont: ..."). */
-function preview(demo: Demo, c: ChatItem): string {
+function directInfo(demo: Demo, personaKey: string): DemoDirectInfo {
+  const last = demo.world.direct.get(personaKey)?.at(-1)
+  return {
+    persona: personaKey,
+    lastMessage: last ? { text: preview(demo, last, false), at: last.at } : null,
+    unread: demo.world.directUnread(personaKey),
+  }
+}
+
+/** The chat list's one-line preview, LINE style ("Nont: ..."); a 1:1 chat shows no name. */
+function preview(demo: Demo, c: ChatItem, withName = true): string {
   const m = c.message
   let text: string
   if (m.type === 'text') text = m.text
@@ -137,6 +157,7 @@ function preview(demo: Demo, c: ChatItem): string {
   else if (m.type === 'system') return m.text
   else text = m.altText
   if (c.unsent) text = 'ยกเลิกข้อความแล้ว'
+  if (!withName) return text
   const who = c.from === 'bot' ? 'NongJoDII' : demo.world.persona(c.persona ?? '')?.lineName ?? c.persona ?? ''
   return who ? `${who}: ${text}` : text
 }
@@ -288,6 +309,84 @@ async function unsend(demo: Demo, g: DemoGroup, b: Record<string, unknown>): Pro
   event.unsend = { messageId: b.messageId }
   await deliver(demo, g, [event], `${p.key} unsent ${b.messageId}`)
   return ok({})
+}
+
+// ---- 1:1 chat with the bot (#84 Rich Menu, #120 Owner card) ----
+
+/** An event from the person's 1:1 chat with the OA: source {type:'user'}. Its reply token
+ *  maps to the persona, so DemoLine answers into that 1:1 thread, never into a group. */
+function directBase(demo: Demo, p: DemoPersona, type: string, withReply = true): LineEvent {
+  const { world } = demo
+  const replyToken = withReply ? world.nextId('rt') : null
+  if (replyToken) world.directReplyTokens.set(replyToken, p.key)
+  return {
+    type,
+    mode: 'active',
+    timestamp: world.eventTime(),
+    source: { type: 'user', userId: p.lineUserId },
+    ...(replyToken ? { replyToken } : {}),
+    webhookEventId: world.nextId('ev'),
+    deliveryContext: { isRedelivery: false },
+  }
+}
+
+/** A 1:1 event always reaches the bot (the persona is a friend of the OA). */
+async function deliverDirect(demo: Demo, p: DemoPersona, events: LineEvent[], label: string): Promise<void> {
+  const where = `[1:1 ${p.lineName}] ${label}`
+  demo.world.addLog('event', where)
+  const res = await handleWebhookRequest(signedWebhookRequest(events, demo.deps.config.lineChannelSecret), demo.deps, demo.defer)
+  if (res.status !== 200) demo.world.addLog('error', `${where}: webhook answered ${res.status}`)
+}
+
+/** POST send {persona, type:'text', text, direct:true}: a text the person types (or a Rich
+ *  Menu tile sends) in their 1:1 chat. Only text: the menu handler reads nothing else. */
+async function sendDirect(demo: Demo, b: Record<string, unknown>): Promise<SimResult> {
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  if ((b.type ?? 'text') !== 'text') return bad('a 1:1 message must be text')
+  if (typeof b.text !== 'string' || b.text.trim() === '') return bad('text is required')
+  const { world } = demo
+  const messageId = world.nextId('')
+  const event = directBase(demo, p, 'message')
+  event.message = { id: messageId, type: 'text', text: b.text }
+  world.addDirect(p.key, { at: new Date(event.timestamp).toISOString(), from: 'user', persona: p.key, messageId, message: { type: 'text', text: b.text } })
+  await deliverDirect(demo, p, [event], `${p.key} sent "${b.text.slice(0, 60)}"`)
+  return ok({ messageId })
+}
+
+/** POST postback {persona, data, params?, direct:true}: a button pressed in the 1:1 chat.
+ *  The bot records 1:1 postbacks and answers none. */
+async function postbackDirect(demo: Demo, b: Record<string, unknown>): Promise<SimResult> {
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  if (typeof b.data !== 'string' || b.data === '') return bad('data is required')
+  const event = directBase(demo, p, 'postback')
+  event.postback = { data: b.data }
+  await deliverDirect(demo, p, [event], `${p.key} pressed postback "${b.data.slice(0, 60)}"`)
+  return ok({})
+}
+
+/** POST follow {persona}: the person adds the OA as a friend; the bot answers with the
+ *  Google Drive card, as in LINE. */
+async function follow(demo: Demo, b: Record<string, unknown>): Promise<SimResult> {
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  demo.world.addDirect(p.key, { from: 'system', message: { type: 'system', text: `${p.lineName} เพิ่ม NongJoDII เป็นเพื่อน` } })
+  await deliverDirect(demo, p, [directBase(demo, p, 'follow')], `${p.key} followed the OA`)
+  return ok({})
+}
+
+/** POST open-direct {persona | null}: the phone shows that persona's 1:1 chat (its unread
+ *  goes to 0) or, with null, no 1:1 chat. The selected group stays selected. */
+function openDirect(demo: Demo, b: Record<string, unknown>): SimResult {
+  if (b.persona === null) {
+    demo.world.openDirectChat(null)
+    return ok({ openDirect: null })
+  }
+  const p = personaOf(demo, b.persona)
+  if (isResult(p)) return p
+  demo.world.openDirectChat(p.key)
+  return ok({ openDirect: p.key })
 }
 
 // ---- group membership ----
@@ -456,6 +555,78 @@ async function runDemoTick(demo: Demo): Promise<void> {
   const before = count()
   await runTick(demo.deps)
   demo.world.addLog('tick', `tick ran at ${demo.world.now().toISOString()}: ${count() - before} new chat item(s) across ${demo.world.groups.length} group(s)`)
+}
+
+// ---- weekly (#21 group card, #120 Owner card) ----
+
+export type WeeklySlot = { weekday: number; time: string; lastSentOn: string | null }
+
+/** A group's weekly slot as the store holds it; no schedule row = the schema defaults
+ *  (Monday 09:00, never sent). null: the weekly summary is off or the bot left. */
+function weeklySlotOf(demo: Demo, groupId: string): WeeklySlot | null {
+  const s = demo.store.tables.group_schedules.find((r) => r.groupId === groupId)
+  if (!s) return { weekday: 1, time: '09:00:00', lastSentOn: null }
+  if (!s.featureWeeklySummary || s.leftAt !== null) return null
+  return { weekday: s.weeklySummaryWeekday, time: s.weeklySummaryTime, lastSentOn: s.weeklySummaryLastSentOn }
+}
+
+/** This week's run already happened for the main group: its weekly insight row, or the
+ *  Owner card's ledger row (owner_insight:<projectId>:<weekStart>, once per Project per week). */
+function weeklyRan(demo: Demo, mainGroupId: string, projectId: string, weekStart: string): boolean {
+  const { tables } = demo.store
+  return tables.weekly_insights.some((w) => w.groupId === mainGroupId && w.weekStart === weekStart)
+    || tables.webhook_events.some((e) => e.webhookEventId === ownerInsightKey(projectId, weekStart))
+}
+
+/** When a tick next sends the weekly post (and, for a main group, the Owner card): `now`
+ *  when the slot is reached today and this week has not run; else the first slot strictly
+ *  after now whose week has not run. null: none in the next four weeks. */
+export function nextWeeklyFire(now: Date, slot: WeeklySlot, ran: (weekStart: string) => boolean): Date | null {
+  if (isWeeklyDue(slot, now) && !ran(bangkokWeekStartLabel(now))) return now
+  const minutes = parseTimeOfDay(slot.time)
+  const dayStart = Math.floor((now.getTime() + BKK_OFFSET_MS) / DAY_MS) * DAY_MS
+  for (let i = 0; i <= 28; i++) {
+    const at = new Date(dayStart + i * DAY_MS + minutes * 60_000 - BKK_OFFSET_MS)
+    if (at.getTime() <= now.getTime() || bangkokIsoWeekday(at) !== slot.weekday) continue
+    if (slot.lastSentOn !== null && slot.lastSentOn >= bangkokTodayLabel(at)) continue
+    if (!ran(bangkokWeekStartLabel(at))) return at
+  }
+  return null
+}
+
+/** POST weekly {group?}: moves the clock to the next weekly slot of the group's Project
+ *  main group (a group with no Project: the main group whose slot comes first), then runs
+ *  the tick, so that main group posts its weekly card (#21) and the Project's Owner gets the
+ *  per-person card in their 1:1 chat (#120). Every other group whose slot the new time
+ *  reaches posts too, as on a real tick. A week that already ran is skipped, so a second
+ *  call gives the next week's card. */
+async function weekly(demo: Demo, g: DemoGroup): Promise<SimResult> {
+  const { store, world } = demo
+  const mains = store.tables.groups.filter((r) => r.projectId !== null && r.ownerConfirmedAt !== null && isMainRow(demo, r.id))
+  if (mains.length === 0) return bad('no Project main group with a confirmed Owner yet')
+  const now = world.now()
+  const own = storeRow(demo, g)?.projectId
+  const pool = own ? mains.filter((r) => r.projectId === own) : mains
+  const plans = pool
+    .map((row) => {
+      const slot = weeklySlotOf(demo, row.id)
+      const at = slot ? nextWeeklyFire(now, slot, (ws) => weeklyRan(demo, row.id, row.projectId as string, ws)) : null
+      return { row, at }
+    })
+    .filter((x): x is { row: typeof x.row; at: Date } => x.at !== null)
+    .sort((a, b) => a.at.getTime() - b.at.getTime())
+  const target = plans[0]
+  if (!target) return bad('the main group has no weekly slot to reach (weekly summary off?)')
+  const project = store.tables.projects.find((x) => x.id === target.row.projectId)
+  const owner = project ? world.personaById(project.ownerLineUserId) : undefined
+  const before = owner ? world.direct.get(owner.key)?.length ?? 0 : 0
+  if (target.at.getTime() > now.getTime()) world.setNow(target.at)
+  world.addLog('tick', `weekly: clock moved to ${world.now().toISOString()}, the weekly slot of ${target.row.name ?? target.row.lineGroupId}`)
+  await runDemoTick(demo)
+  const after = owner ? world.direct.get(owner.key)?.length ?? 0 : 0
+  return ok({
+    now: world.now().toISOString(), group: target.row.lineGroupId, owner: owner?.key ?? null, ownerCards: after - before,
+  })
 }
 
 function quota(demo: Demo, b: Record<string, unknown>): SimResult {

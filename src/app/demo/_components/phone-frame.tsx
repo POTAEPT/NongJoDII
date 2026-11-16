@@ -28,8 +28,8 @@ export function StatusBar({ now }: { now: string | null }) {
 }
 
 /** The open chat's header. The back arrow opens the chat list; `unread` counts the other
- *  groups' unread messages, as LINE shows next to its back arrow. */
-export function ChatHeader({ name, members, unread = 0, onBack }: { name: string; members: number; unread?: number; onBack?: () => void }) {
+ *  chats' unread messages, as LINE shows next to its back arrow. No `members`: a 1:1 chat. */
+export function ChatHeader({ name, members, unread = 0, onBack }: { name: string; members?: number; unread?: number; onBack?: () => void }) {
   return (
     <div className="flex h-12 shrink-0 items-center gap-1 border-b border-black/5 bg-white px-2 text-[#1E1E1E]">
       <button type="button" onClick={onBack} aria-label="กลับไปที่รายการแชต" className="flex shrink-0 items-center rounded-full pr-1 hover:bg-black/5">
@@ -37,7 +37,7 @@ export function ChatHeader({ name, members, unread = 0, onBack }: { name: string
         {unread > 0 && <span className="text-[14px] font-semibold tabular-nums">{unread > 99 ? '99+' : unread}</span>}
       </button>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[16px] font-semibold">{name} <span className="font-normal text-[#6B778A]">({members})</span></p>
+        <p className="truncate text-[16px] font-semibold">{name}{members !== undefined && <> <span className="font-normal text-[#6B778A]">({members})</span></>}</p>
       </div>
       <span className="flex items-center gap-3.5 pr-1.5 [&_svg]:size-[21px]"><Search /><Phone /><Menu /></span>
     </div>

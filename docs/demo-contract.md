@@ -38,6 +38,11 @@ Every `/demo` page and `/demo/api/**` route answers 404 unless `process.env.DEMO
 | `POST quota` | `{limit?: number \| null, used?: number}` | Sets the push quota |
 | `POST persona` | `{key, lineName, role?, owner?}` | Adds or updates a persona (does not join it to the group) |
 | `POST reset` | `{setup?: boolean}` | Wipes everything and reseeds (see "Seed" below) |
+| `POST weekly` | `{group?}` | The weekly post on demand: moves the demo clock to the next weekly slot (`weekly_summary_weekday` / `weekly_summary_time`; no schedule row = Monday 09:00) of `group`'s Project main group (a group with no Project: the main group whose slot comes first), then runs `runTick`. The main group posts its weekly card (#21) and the Project's Owner gets the per-person card (#120) in their 1:1 chat (`direct.<owner>`, cost 1). "Now" when the slot is reached today and not yet run. A week that already ran (the main group's `weekly_insights` row or the `owner_insight:<projectId>:<weekStart>` ledger row) is skipped, so a second call gives the next week's card. Every other group whose slot the new time reaches posts too, as on a real tick. The clock never moves back. Answers `{now, group /* the main group */, owner /* persona key or null */, ownerCards /* new items in direct.<owner> */}`; 400 when no Project main group has a confirmed Owner |
+| `POST send` with `direct: true` | `{persona, type:'text', text, direct: true}` | A text in the persona's **1:1 chat** with the bot (`source: {type:'user', userId}`), through `handleWebhookRequest`; the Rich Menu tiles send their words this way. The bubble goes to `direct.<persona>`; the reply to that event's token lands in the same 1:1 thread (DemoLine maps 1:1 reply tokens to the persona), never in a group. Text only (400 otherwise). Answers `{messageId}`. `POST message {persona, text, direct: true}` is the same |
+| `POST postback` with `direct: true` | `{persona, data, direct: true}` | A 1:1 postback (for example the Drive card's "ไว้ทีหลัง"). The bot records 1:1 postbacks and answers none |
+| `POST follow` | `{persona}` | The persona adds the OA as a friend: a system line in `direct.<persona>`, then a follow event; the bot answers with the Google Drive card |
+| `POST open-direct` | `{persona: string \| null}` | The phone shows that persona's 1:1 chat (its unread goes to 0 and stays 0 while open); `null`: none. `select-group` also clears it. The selected group does not change |
 | `POST load-script` | `{name: string}` (a file in `src/app/demo/scripts/`) or `{script: DemoScript}`; `delayMs?` (default 1200); `group?` | Plays the script's messages into that group (fixed at the call) in the background, one per delay, then the summary command if present. Answers `{steps, delayMs, group, joined}` |
 
 Errors: `{error: string}` with 400 or 404.
@@ -68,6 +73,13 @@ type DemoState = {
   }
   google: { connected: boolean; email: string | null }
   chat: ChatItem[]           // the selected group's chat, oldest first
+  direct: Record<string, ChatItem[]>   // the bot's 1:1 chat per persona key, oldest first: 1:1 messages, replies, pushes (the Owner card)
+  directChats: Array<{       // one row per persona, empty threads included: the phone's "NongJoDII (แชตส่วนตัว)" entry for "me"
+    persona: string
+    lastMessage: { text: string; at: string } | null   // no name prefix (a 1:1 chat)
+    unread: number           // non-system items since the thread was last open; 0 while open
+  }>
+  openDirect: string | null  // the 1:1 thread open on the phone (persona key)
   log: Array<{ at: string; kind: 'event' | 'reply' | 'push' | 'error' | 'tick'; summary: string }>  // newest last, max 200
 }
 
@@ -98,7 +110,7 @@ type ChatItem = {
   - `ทีม Dev` (`...0002`): Sub group of Project A; nont, tae.
   - `ลูกค้า ร้านกาแฟ` (`...0003`): main group of Project B; nont, bomb, jeff.
 
-  Each has 3 to 4 Thai Tasks in the store (assignees, dues relative to now, open, done and exactly one overdue) and a few chat lines; the two other groups start with 2 unread. The Dashboard as Nont lists all three. `{setup: false}` keeps one fresh group (`...0001`, the four personas, the bot not in it, no store row) for the onboarding demo (join, setup card, setup LIFF, Owner confirm).
+  Each has 3 to 4 Thai Tasks in the store (assignees, dues relative to now, open, done and exactly one overdue) and a few chat lines; the two other groups start with 2 unread. For the Owner card (#120) every count shows: Tasks in process, one done this week per group (done_at earlier this Bangkok week), the overdue one, and one stale Task (last update 6 days ago) in each main group. The weekly slot of each **main group** is set near the reset, so "done this week" usually holds when the card fires (not for `ลูกค้า ร้านกาแฟ` after a Sunday reset: its slot falls in the next week): `ทีมพิตช์ NongJoDII` on the reset day's weekday, `ลูกค้า ร้านกาแฟ` the next day, both at the next full Bangkok hour (23:00 at the latest). The Sub group keeps the default (Monday 09:00). The Dashboard as Nont lists all three. `{setup: false}` keeps one fresh group (`...0001`, the four personas, the bot not in it, no store row) for the onboarding demo (join, setup card, setup LIFF, Owner confirm).
 - **Replies and pushes** land in the chat of the group they target: DemoLine maps each reply token to the group of the event that carried it, and a push goes to the group named by `to`. Push cost counts that group's members.
 - **Sub group path.** The bot code has no user-facing way for a group to join an existing Project (the "Sub group attach flow" is referenced but not built; confirming an Owner always creates a new Project). So `create-group` with `mode: 'sub-group'` writes the store after the join, as the seed does: the group's `projectId` is the parent's Project, its Owner is that Project's Owner (one admin per Project), confirmed now, and `isMain` is false. It answers 400 when the parent has no Project with a confirmed Owner, or the Project's Owner is not in `members`.
 - **AI calls.** Each finished call of the demo AI is recorded: the cost OpenRouter reported (`usage.costUsd`), else the tokens at the app's price (`src/server/usage/pricing.ts`, `estimated: true`), else `null` ("n/a"). A canned fallback costs 0 and has `fallback: true`. `kind` comes from the schema (`summary`, `progress_decision`) or a prompt that mentions tags. The UI shows one Sonner toast per call id (kept until closed, stacked), remembered in `localStorage` so a reload does not repeat them, and lists the calls in the AI tab.
@@ -115,3 +127,7 @@ type ChatItem = {
 ## How to add a scenario
 
 See `docs/demo-scenarios.md`.
+
+## 1:1 chat on the phone
+
+The chat list has one more row, **NongJoDII (แชตส่วนตัว)**: the bot's 1:1 chat with the persona chosen as sender ("me"), with its last message, time and unread badge, shown even when empty ("ยังไม่มีข้อความ"). The UI keeps the server's `openDirect` equal to what the phone shows ("me" in the 1:1 view, else `null`), calling `open-direct` whenever `state.openDirect` differs (after a reset or a reload too). The thread uses the group chat's renderer, without read counts, reply or unsend. Under it is the OA's Rich Menu (#84): a "เมนู" bar that folds a 2x2 tile grid (Dashboard, งานของฉัน, ตั้งค่า, เชื่อมต่อ Google Drive; each sends exactly those words), and a keyboard button that swaps in a text composer. Buttons in the thread act as in groups (uri buttons open the LIFF drawer), but their postbacks and message actions go out as 1:1 events. Any persona can be "me" there. The presenter's "ส่งสรุปรายสัปดาห์" (Clock tab, and "สรุปรายสัปดาห์" in the header) calls `weekly` for the selected group, then opens the Owner's 1:1 chat and shows a toast.

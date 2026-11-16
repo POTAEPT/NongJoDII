@@ -56,6 +56,12 @@ export class DemoWorld {
   log: LogEntry[] = []
   /** The bot's 1:1 chat with each persona (persona key -> messages, oldest first). */
   direct = new Map<string, ChatItem[]>()
+  /** 1:1 items the presenter has seen, per persona key (the rest are unread). */
+  directRead = new Map<string, number>()
+  /** The 1:1 thread open on the phone (persona key), or null. Its items are read as they come. */
+  openDirect: string | null = null
+  /** Reply token -> the persona whose 1:1 event carried it (DemoLine replies into that thread). */
+  directReplyTokens = new Map<string, string>()
   /** LINE message id -> uploaded bytes (images and files the presenter sent). */
   contents = new Map<string, { data: Uint8Array; contentType: string | null; fileName: string }>()
 
@@ -121,6 +127,8 @@ export class DemoWorld {
     if (!g) return false
     this.selectedGroupId = g.lineGroupId
     g.readCount = g.chat.length
+    // The phone shows the group now, not a 1:1 thread.
+    this.openDirect = null
     return true
   }
   unread(group: DemoGroup): number {
@@ -149,6 +157,28 @@ export class DemoWorld {
   system(text: string, group: DemoGroup = this.group): ChatItem {
     const message: ChatMessage = { type: 'system', text }
     return this.addChat({ from: 'system', message }, group)
+  }
+
+  // ---- 1:1 chats ----
+
+  /** A chat item in the bot's 1:1 chat with `personaKey`. */
+  addDirect(personaKey: string, item: Omit<ChatItem, 'id' | 'at'> & { at?: string }): ChatItem {
+    const full: ChatItem = { id: randomUUID(), at: item.at ?? this.now().toISOString(), ...item }
+    const thread = this.direct.get(personaKey) ?? []
+    thread.push(full)
+    this.direct.set(personaKey, thread)
+    if (this.openDirect === personaKey) this.directRead.set(personaKey, thread.length)
+    return full
+  }
+  /** Opens a 1:1 thread on the phone (its items are read); null closes it. */
+  openDirectChat(personaKey: string | null): void {
+    this.openDirect = personaKey
+    if (personaKey !== null) this.directRead.set(personaKey, this.direct.get(personaKey)?.length ?? 0)
+  }
+  directUnread(personaKey: string): number {
+    if (this.openDirect === personaKey) return 0
+    const thread = this.direct.get(personaKey) ?? []
+    return thread.slice(this.directRead.get(personaKey) ?? 0).filter((c) => c.from !== 'system').length
   }
 
   addLog(kind: LogKind, summary: string): void {

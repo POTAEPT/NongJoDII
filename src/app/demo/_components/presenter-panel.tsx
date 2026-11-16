@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { cn } from 'cn'
 import {
-  Bot, Clock3, Cloud, Crown, Gauge, LayoutDashboard, LogIn, LogOut, Play, Plus, RotateCcw, ScrollText, Sparkles, UserPlus, Users,
+  Bot, CalendarClock, Clock3, Cloud, Crown, Gauge, LayoutDashboard, LogIn, LogOut, Play, Plus, RotateCcw, ScrollText, Sparkles, UserPlus, Users,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AI_KIND, usd } from '../_lib/ai'
-import { demoApi, type ClockAdvance, type Persona, type ScriptInfo } from '../_lib/api'
+import { demoApi, type ClockAdvance, type Persona, type ScriptInfo, type WeeklyResult } from '../_lib/api'
 import { clockLabel, timeLabel } from '../_lib/time'
 import { BotAvatar, PersonaAvatar } from './avatars'
 import { useDemo } from './demo-context'
@@ -51,9 +51,11 @@ function useRun() {
   return { busy, run }
 }
 
-export function PresenterPanel({ onOpenLiff, onOpenGroup }: {
+export function PresenterPanel({ onOpenLiff, onOpenGroup, onWeekly }: {
   onOpenLiff: (view: string, id: string | null) => void
   onOpenGroup: (lineGroupId: string) => void
+  /** After POST weekly: open the Owner's 1:1 chat and toast. */
+  onWeekly: (r: WeeklyResult) => void
 }) {
   const { state, me } = useDemo()
   const { busy, run } = useRun()
@@ -69,6 +71,7 @@ export function PresenterPanel({ onOpenLiff, onOpenGroup }: {
           onClick={() => onOpenLiff('dashboard', null)}>
           <LayoutDashboard /> เปิด Dashboard
         </Button>
+        <WeeklyButton onWeekly={onWeekly} compact />
         <ResetButton busy={busy === 'reset'}
           onConfirm={(setup) => run('reset', () => demoApi.reset(setup),
             setup ? 'รีเซ็ตแล้ว (3 กลุ่ม ตั้งค่าแล้ว)' : 'รีเซ็ตแล้ว (กลุ่มใหม่ สำหรับ onboarding)')} />
@@ -91,7 +94,7 @@ export function PresenterPanel({ onOpenLiff, onOpenGroup }: {
         <div className="min-h-0 flex-1 overflow-y-auto pt-2 pb-32">
           <TabsContent value="scripts"><ScriptsTab /></TabsContent>
           <TabsContent value="people"><PeopleTab /></TabsContent>
-          <TabsContent value="clock"><ClockTab /></TabsContent>
+          <TabsContent value="clock"><ClockTab onWeekly={onWeekly} /></TabsContent>
           <TabsContent value="quota"><QuotaTab /></TabsContent>
           <TabsContent value="ai"><AiTab /></TabsContent>
           <TabsContent value="google"><GoogleTab onConnect={() => onOpenLiff('google', null)} /></TabsContent>
@@ -446,7 +449,35 @@ const CLOCK: { advance: ClockAdvance; label: string }[] = [
   { advance: 'nextMon0900', label: 'จันทร์ 09:00 ถัดไป' },
 ]
 
-function ClockTab() {
+/** "ส่งสรุปรายสัปดาห์": POST weekly for the selected group's Project, then the phone opens
+ *  the Owner's 1:1 chat with the per-person card (#120). */
+function WeeklyButton({ onWeekly, compact = false }: { onWeekly: (r: WeeklyResult) => void; compact?: boolean }) {
+  const { state, refresh } = useDemo()
+  const [busy, setBusy] = useState(false)
+  const click = async () => {
+    setBusy(true)
+    try {
+      onWeekly(await demoApi.weekly(state?.selectedGroup))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      refresh()
+    }
+  }
+  return compact ? (
+    <Button size="lg" variant="outline" className="h-10 gap-2 px-3.5 text-[15px]" disabled={busy || !state}
+      title="เลื่อนเวลาไปรอบสรุปรายสัปดาห์ของโปรเจกต์ที่เลือก แล้วเปิดแชตส่วนตัวของ Owner" onClick={() => void click()}>
+      <CalendarClock /> สรุปรายสัปดาห์
+    </Button>
+  ) : (
+    <Button size="lg" className="mt-2 h-12 w-full gap-2 text-[16px]" disabled={busy || !state} onClick={() => void click()}>
+      <CalendarClock /> ส่งสรุปรายสัปดาห์
+    </Button>
+  )
+}
+
+function ClockTab({ onWeekly }: { onWeekly: (r: WeeklyResult) => void }) {
   const { state } = useDemo()
   const { busy, run } = useRun()
   if (!state) return null
@@ -468,6 +499,10 @@ function ClockTab() {
       <Button variant="outline" className="mt-2 w-full" disabled={busy !== null} onClick={() => run('tick', () => demoApi.tick(), 'รัน tick แล้ว')}>
         รัน tick ตอนนี้ (ไม่เลื่อนเวลา)
       </Button>
+      <WeeklyButton onWeekly={onWeekly} />
+      <p className="mt-1.5 text-[13px] text-[#5F6B7E]">
+        เลื่อนเวลาไปรอบสรุปรายสัปดาห์ของกลุ่มหลักในโปรเจกต์ที่เลือก แล้วรัน tick: กลุ่มได้การ์ดสรุป และ Owner ได้การ์ดรายคนในแชตส่วนตัว
+      </p>
     </Section>
   )
 }

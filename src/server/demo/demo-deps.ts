@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto'
 import { GoogleHttpClient } from '@/server/google/client'
 import type { Defer, Deps, GooglePort, HandlerConfig } from '@/server/ports'
+import { NO_UPDATE_DAYS } from '@/server/reminders/select'
 import { MemoryStore } from '@/server/store/memory-store'
+import { bangkokIsoWeekday, bangkokParts, bangkokWeekStartLabel } from '@/server/time/bangkok'
 import { DemoLine } from './demo-line'
 import { DemoLlm } from './demo-llm'
 import type { ChatItem, DemoPersona } from './types'
@@ -129,11 +131,20 @@ function buildDemo(s: Shared, opts: DemoOptions): Demo {
 const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
 
-type SeedTask = { title: string; assignee: string | null; dueInMs: number; status: 'not_assigned' | 'in_process' | 'done' }
+type SeedTask = {
+  title: string; assignee: string | null; dueInMs: number; status: 'not_assigned' | 'in_process' | 'done'
+  /** Open: last update NO_UPDATE_DAYS + 1 days ago, so the Owner card counts it as stale (#120). */
+  stale?: true
+  /** Done: done_at earlier this Bangkok week, so the Owner card counts it as done this week. */
+  doneThisWeek?: true
+}
 type SeedSpec = {
   name: string; members: string[]; workDescription: string
   /** The main group of a new Project, or a Sub group of the spec at this index. */
   subGroupOf?: number
+  /** A main group's weekly slot: this many days after the reset day, at the next full
+   *  Bangkok hour (see weeklySlotAfter). Absent: the schema default (Monday 09:00). */
+  weeklyDayOffset?: number
   tasks: SeedTask[]
   /** Chat lines, oldest first: [persona key, text, minutes ago]. */
   chat: Array<[string, string, number]>
@@ -143,10 +154,11 @@ type SeedSpec = {
 const SEED: SeedSpec[] = [
   {
     name: DEMO_GROUP_NAME, members: ['nont', 'tae', 'bomb', 'jeff'], workDescription: DEMO_WORK_DESCRIPTION,
+    weeklyDayOffset: 0,
     tasks: [
       { title: 'อัปเดตสไลด์พิตช์รอบสุดท้าย', assignee: 'bomb', dueInMs: DAY_MS, status: 'in_process' },
-      { title: 'เขียนสคริปต์พูดพิตช์ 5 นาที', assignee: 'jeff', dueInMs: -DAY_MS, status: 'in_process' },
-      { title: 'ซ้อมพิตช์กับอาจารย์ที่ปรึกษา', assignee: 'nont', dueInMs: -2 * DAY_MS, status: 'done' },
+      { title: 'เขียนสคริปต์พูดพิตช์ 5 นาที', assignee: 'jeff', dueInMs: -DAY_MS, status: 'in_process', stale: true },
+      { title: 'ซ้อมพิตช์กับอาจารย์ที่ปรึกษา', assignee: 'nont', dueInMs: -2 * DAY_MS, status: 'done', doneThisWeek: true },
       { title: 'สรุปตัวเลข break-even ใส่สไลด์', assignee: null, dueInMs: 3 * DAY_MS, status: 'not_assigned' },
     ],
     chat: [
@@ -160,7 +172,7 @@ const SEED: SeedSpec[] = [
     tasks: [
       { title: 'ทำหน้า Dashboard ให้แสดงผลบนมือถือ', assignee: 'tae', dueInMs: 2 * DAY_MS, status: 'in_process' },
       { title: 'แก้บั๊กปุ่มยืนยันงานไม่ตอบสนอง', assignee: 'tae', dueInMs: -5 * HOUR_MS, status: 'in_process' },
-      { title: 'ตั้งค่า LINE webhook บนเซิร์ฟเวอร์จริง', assignee: 'tae', dueInMs: -DAY_MS, status: 'done' },
+      { title: 'ตั้งค่า LINE webhook บนเซิร์ฟเวอร์จริง', assignee: 'tae', dueInMs: -DAY_MS, status: 'done', doneThisWeek: true },
     ],
     chat: [
       ['tae', 'บั๊กปุ่มยืนยันงานยังแก้ไม่เสร็จนะพี่', 70],
@@ -170,10 +182,11 @@ const SEED: SeedSpec[] = [
   },
   {
     name: 'ลูกค้า ร้านกาแฟ', members: ['nont', 'bomb', 'jeff'], workDescription: 'ทำแบรนด์และเพจให้ร้านกาแฟเปิดใหม่',
+    weeklyDayOffset: 1,
     tasks: [
-      { title: 'ออกแบบโลโก้ร้านกาแฟ 3 แบบ', assignee: 'bomb', dueInMs: DAY_MS, status: 'in_process' },
+      { title: 'ออกแบบโลโก้ร้านกาแฟ 3 แบบ', assignee: 'bomb', dueInMs: DAY_MS, status: 'in_process', stale: true },
       { title: 'ถ่ายรูปเมนูใหม่ลงเพจ', assignee: 'jeff', dueInMs: -DAY_MS, status: 'in_process' },
-      { title: 'ส่งใบเสนอราคาให้ลูกค้า', assignee: 'nont', dueInMs: -3 * DAY_MS, status: 'done' },
+      { title: 'ส่งใบเสนอราคาให้ลูกค้า', assignee: 'nont', dueInMs: -3 * DAY_MS, status: 'done', doneThisWeek: true },
       { title: 'นัดคุยลูกค้าเรื่องโปรเปิดร้าน', assignee: null, dueInMs: 4 * DAY_MS, status: 'not_assigned' },
     ],
     chat: [
@@ -206,19 +219,41 @@ function seedSetUpWorld(world: DemoWorld, store: MemoryStore): void {
     })
     markSetup(store, row.id, spec.subGroupOf === undefined, owner.lineUserId, now)
     for (const p of world.membersInGroup(wg)) seedLiveMember(store, row.id, p, true)
+    if (spec.weeklyDayOffset !== undefined) store.seedSchedule(row.id, weeklySlotAfter(now, spec.weeklyDayOffset))
     for (const t of spec.tasks) {
       const assignee = t.assignee ? world.persona(t.assignee)?.lineUserId ?? null : null
       const due = new Date(now.getTime() + t.dueInMs)
-      store.seedTask({
+      const announcedAt = new Date(now.getTime() - 3 * HOUR_MS)
+      let doneAt: Date | null = null
+      if (t.status === 'done') {
+        doneAt = t.doneThisWeek
+          // Two hours ago, but never before this Bangkok week's Monday 00:00.
+          ? new Date(Math.max(now.getTime() - 2 * HOUR_MS, Date.parse(`${bangkokWeekStartLabel(now)}T00:00:00+07:00`)))
+          : new Date(Math.min(due.getTime(), now.getTime() - HOUR_MS))
+      }
+      const lastActivityAt = doneAt ?? (t.stale ? new Date(now.getTime() - (NO_UPDATE_DAYS + 1) * DAY_MS) : announcedAt)
+      const task = store.seedTask({
         groupId: row.id, title: t.title, createdByLineUserId: owner.lineUserId, assigneeLineUserId: assignee,
-        status: t.status, dueAt: due, announcedAt: new Date(now.getTime() - 3 * HOUR_MS),
-        ...(t.status === 'done' ? { doneAt: new Date(Math.min(due.getTime(), now.getTime() - HOUR_MS)) } : {}),
+        status: t.status, dueAt: due, announcedAt,
       })
+      // done_at and last activity are store columns TaskRow does not carry.
+      const record = store.tables.tasks.find((x) => x.id === task.id)
+      if (record) Object.assign(record, { doneAt, lastActivityAt })
     }
     seedChat(world, wg, spec.chat)
     // The other groups keep their last two lines unread, so the chat list shows badges.
     wg.readCount = i === 0 ? wg.chat.length : Math.max(0, wg.chat.length - 2)
   })
+}
+
+/** The weekly slot `dayOffset` days after `now`'s Bangkok day, at the next full Bangkok hour
+ *  (23:00 at the latest). Near the reset, so the Owner card's "done this week" and "stale"
+ *  read the seeded Tasks as they are, and the two Projects' slots differ by a day, so
+ *  POST weekly reaches one Project's slot without the other's. */
+function weeklySlotAfter(now: Date, dayOffset: number): { weeklySummaryWeekday: number; weeklySummaryTime: string } {
+  const hour = Math.min(23, bangkokParts(now).hh + 1)
+  const weekday = ((bangkokIsoWeekday(now) - 1 + dayOffset) % 7) + 1
+  return { weeklySummaryWeekday: weekday, weeklySummaryTime: `${String(hour).padStart(2, '0')}:00:00` }
 }
 
 function seedChat(world: DemoWorld, group: DemoGroup, lines: SeedSpec['chat']): void {

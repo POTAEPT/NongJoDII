@@ -1,8 +1,8 @@
 // Typed client for the /demo sim API (docs/demo-contract.md). JSON in and out; an error
 // answer is {error} with 400 or 404 and throws a DemoApiError.
-import type { AiCall, ChatItem, DemoGroupInfo, DemoScript, DemoState } from '@/server/demo/types'
+import type { AiCall, ChatItem, DemoDirectInfo, DemoGroupInfo, DemoScript, DemoState } from '@/server/demo/types'
 
-export type { AiCall, ChatItem, DemoGroupInfo, DemoScript, DemoState }
+export type { AiCall, ChatItem, DemoDirectInfo, DemoGroupInfo, DemoScript, DemoState }
 export type Persona = DemoState['personas'][number]
 export type LogEntry = DemoState['log'][number]
 
@@ -30,6 +30,8 @@ export type PostbackParams = { date?: string; time?: string; datetime?: string }
 export type ClockAdvance = '1h' | '1d' | 'next0900' | 'nextMon0900' | { ms: number }
 export type ScriptInfo = { name: string; description: string; messages: number }
 export type ImageSet = { id: string; index: number; total: number }
+/** POST weekly: owner is the persona key whose 1:1 chat got the card; ownerCards how many. */
+export type WeeklyResult = { now: string; group: string; owner: string | null; ownerCards: number }
 
 export const demoApi = {
   state: () => call<DemoState>('state'),
@@ -59,6 +61,14 @@ export const demoApi = {
   loadScript: (name: string, opts: { delayMs?: number; group?: string } = {}) =>
     call<unknown>('load-script', { name, ...opts }),
   selectGroup: (group: string) => call<{ selectedGroup: string }>('select-group', { group }),
+  /** Moves the clock to the next weekly slot of the group's Project main group and runs the tick. */
+  weekly: (group?: string) => call<WeeklyResult>('weekly', group ? { group } : {}),
+  /** The persona's 1:1 chat with the bot (source: the user), through the real webhook. */
+  sendDirect: (persona: string, text: string) => call<{ messageId: string }>('send', { persona, type: 'text', text, direct: true }),
+  postbackDirect: (persona: string, data: string) => call<unknown>('postback', { persona, data, direct: true }),
+  follow: (persona: string) => call<unknown>('follow', { persona }),
+  /** The phone shows this persona's 1:1 chat (its unread goes to 0); null: none. */
+  openDirect: (persona: string | null) => call<{ openDirect: string | null }>('open-direct', { persona }),
   createGroup: (g: { name: string; members: string[]; mode: 'new-project' | 'sub-group'; parentGroup?: string }) =>
     call<{ lineGroupId: string }>('create-group', g),
 }

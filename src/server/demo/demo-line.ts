@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { LineMessage } from '@/server/line/types'
 import { AdapterError, ContentTooLarge, LinePushRejected } from '@/server/log'
 import type { LinePort, LinePushResult } from '@/server/ports'
@@ -22,6 +21,14 @@ export class DemoLine implements LinePort {
       throw new AdapterError('line reply 400')
     }
     this.usedReplyTokens.add(replyToken)
+    // A 1:1 event's token: the reply lands in that person's 1:1 chat, never in a group.
+    const personaKey = this.world.directReplyTokens.get(replyToken)
+    if (personaKey !== undefined) {
+      for (const message of messages) this.world.addDirect(personaKey, { from: 'bot', via: 'reply', message })
+      const who = this.world.persona(personaKey)?.lineName ?? personaKey
+      this.world.addLog('reply', `1:1 reply to ${who}, ${messages.length} message(s): ${describe(messages)}`)
+      return
+    }
     // The reply lands in the group whose event carried the token.
     const id = this.world.replyTokens.get(replyToken)
     const group = (id ? this.world.groupById(id) : undefined) ?? this.world.group
@@ -45,11 +52,7 @@ export class DemoLine implements LinePort {
       }
       if (key !== undefined) this.acceptedRetryKeys.add(key)
       this.world.quota.used += 1
-      const thread = this.world.direct.get(person.key) ?? []
-      for (const message of messages) {
-        thread.push({ id: randomUUID(), at: this.world.now().toISOString(), from: 'bot', via: 'push', message })
-      }
-      this.world.direct.set(person.key, thread)
+      for (const message of messages) this.world.addDirect(person.key, { from: 'bot', via: 'push', message })
       this.world.addLog('push', `1:1 push to ${person.lineName}, ${messages.length} message(s), cost 1: ${describe(messages)}`)
       return 'sent'
     }

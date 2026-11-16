@@ -61,14 +61,16 @@ function RichText({ text, names }: { text: string; names: string[] }) {
   )
 }
 
-export function ChatThread({ items, onReply, onUnsend }: {
+/** direct: the bot's 1:1 chat (no read count, no reply or unsend, its own empty text). */
+export function ChatThread({ items, onReply, onUnsend, direct = false }: {
   items: ThreadItem[]
   onReply: (item: ThreadItem) => void
   onUnsend: (item: ThreadItem) => void
+  direct?: boolean
 }) {
   const { state, me, personaName } = useDemo()
   const scroller = useRef<HTMLDivElement>(null)
-  const busy = state?.ai.busy ?? false
+  const busy = !direct && (state?.ai.busy ?? false)
   const now = state?.now ?? items.at(-1)?.at ?? '1970-01-01T00:00:00Z'
   const names = [BOT_NAME, ...(state?.personas.map((p) => p.lineName) ?? []), 'All']
   const lastId = items.at(-1)?.id
@@ -108,7 +110,7 @@ export function ChatThread({ items, onReply, onUnsend }: {
       ? byMessageId.get(item.message.quotedMessageId) : undefined
     rows.push(
       <MessageRow key={item.id} item={item} mine={item.from === 'user' && item.persona === me?.key}
-        showHead={showHead} quoted={quoted} names={names} onReply={onReply} onUnsend={onUnsend} />,
+        showHead={showHead} quoted={quoted} names={names} onReply={onReply} onUnsend={onUnsend} direct={direct} />,
     )
   }
 
@@ -116,7 +118,9 @@ export function ChatThread({ items, onReply, onUnsend }: {
     <div ref={scroller} className="demo-scroll flex-1 overflow-y-auto bg-(--line-chat-bg) px-3 pt-3 pb-4">
       {items.length === 0 && (
         <div className="mt-24 text-center text-sm text-[#4A5A73]">
-          ยังไม่มีข้อความ<br />เพิ่มน้องจดดีเข้ากลุ่ม แล้วเริ่มคุยได้เลย
+          {direct
+            ? <>ยังไม่มีข้อความ<br />กดเมนูด้านล่างเพื่อคุยกับน้องจดดี</>
+            : <>ยังไม่มีข้อความ<br />เพิ่มน้องจดดีเข้ากลุ่ม แล้วเริ่มคุยได้เลย</>}
         </div>
       )}
       <div className="flex flex-col gap-2">
@@ -148,9 +152,9 @@ function TypingRow() {
   )
 }
 
-function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend }: {
+function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend, direct }: {
   item: ThreadItem; mine: boolean; showHead: boolean; quoted: ThreadItem | undefined; names: string[]
-  onReply: (item: ThreadItem) => void; onUnsend: (item: ThreadItem) => void
+  onReply: (item: ThreadItem) => void; onUnsend: (item: ThreadItem) => void; direct: boolean
 }) {
   const { personaName, state } = useDemo()
   const [menu, setMenu] = useState(false)
@@ -158,8 +162,8 @@ function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend }: 
   const isBot = item.from === 'bot'
   const name = isBot ? BOT_NAME : personaName(item.persona)
   const m = item.message
-  const canReply = !!item.messageId && !item.local
-  const canUnsend = mine && !!item.messageId && !item.local
+  const canReply = !direct && !!item.messageId && !item.local
+  const canUnsend = !direct && mine && !!item.messageId && !item.local
   const canCopy = m.type === 'text'
   const hasMenu = canReply || canUnsend || canCopy
   const readers = mine ? Math.max(0, (state?.personas.filter((p) => p.inGroup).length ?? 1) - 1 + (state?.group.botInGroup ? 1 : 0)) : 0
@@ -183,7 +187,8 @@ function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend }: 
 
   const meta = (
     <div className={cn('flex shrink-0 flex-col pb-0.5 text-[11px] leading-tight text-[#4A5A73]', mine ? 'items-end' : 'items-start')}>
-      {mine && readers > 0 && <span>อ่านแล้ว {readers}</span>}
+      {mine && direct && <span>อ่านแล้ว</span>}
+      {mine && !direct && readers > 0 && <span>อ่านแล้ว {readers}</span>}
       <span>{timeLabel(item.at)}</span>
     </div>
   )

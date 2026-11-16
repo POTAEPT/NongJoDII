@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent } from '@/server/line/types'
 import { liffUrl } from '@/server/liff-links'
+import { saveMyProfile } from '@/server/members/profile'
 import { SETTINGS_CARD_TEXT } from '@/server/settings/card'
 import { loadSettings, submitSettings } from '@/server/settings/settings'
 import type { SettingsLoad } from '@/server/settings/types'
@@ -67,11 +68,52 @@ describe('loadSettings (#28)', () => {
     expect(view.members.find((m) => m.lineUserId === BIW)).toEqual({ lineUserId: BIW, displayName: 'บิว', nicknames: ['บิว', 'Bew'], role: 'ออกแบบ' })
   })
 
-  it('a Member may look but not edit, and sees LINE names without nicknames or roles', async () => {
+  // #81: every Member sees everyone's nicknames and role; the group values stay the Owner's.
+  it('a Member sees every Member\'s nicknames and role, cannot edit the group, and knows their own row', async () => {
     const t = setup()
     const view = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
     expect(view.canEdit).toBe(false)
-    expect(view.members.map((m) => [m.displayName, m.nicknames, m.role])).toEqual([['บิว', [], null], ['โอ๋', [], null]])
+    expect(view.requesterLineUserId).toBe(BIW)
+    expect(view.members.map((m) => [m.displayName, m.nicknames, m.role])).toEqual([
+      ['บิว', ['บิว', 'Bew'], 'ออกแบบ'], ['โอ๋', ['โอ๋'], 'หัวหน้า'],
+    ])
+  })
+
+  it('a Member saves their own nicknames and role, and everyone then sees them', async () => {
+    const t = setup()
+    const res = await saveMyProfile(t.deps, { idToken: 'tok-biw', groupId: t.group.id, nicknames: [' บิ๋ว ', 'Bew'], role: 'กราฟิก' })
+    expect(res).toEqual({ status: 200, body: { nicknames: ['บิ๋ว', 'Bew'], role: 'กราฟิก' } })
+    const byOwner = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(byOwner.members.find((m) => m.lineUserId === BIW)).toMatchObject({ nicknames: ['บิ๋ว', 'Bew'], role: 'กราฟิก' })
+  })
+
+  it('a Member cannot change another row: the save writes only the requester, and the group save is the Owner\'s', async () => {
+    const t = setup()
+    // A body naming someone else is ignored: the person comes from the ID token.
+    await saveMyProfile(t.deps, { idToken: 'tok-biw', groupId: t.group.id, lineUserId: OWNER, nicknames: ['แฮก'], role: 'x' })
+    const view = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(view.members.find((m) => m.lineUserId === OWNER)).toMatchObject({ nicknames: ['โอ๋'], role: 'หัวหน้า' })
+    expect(view.members.find((m) => m.lineUserId === BIW)).toMatchObject({ nicknames: ['แฮก'], role: 'x' })
+
+    // The Settings save (every row and the group values) stays the Owner's.
+    const res = await submitSettings(t.deps, { ...t.body(), idToken: 'tok-biw' })
+    expect(res).toEqual({ status: 403, body: { error: 'not_owner' } })
+    const still = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(still.members.find((m) => m.lineUserId === OWNER)).toMatchObject({ nicknames: ['โอ๋'], role: 'หัวหน้า' })
+  })
+
+  it('a Member who was in the group before the bot (never welcomed) sets their nickname through Settings', async () => {
+    const t = setup()
+    // Known only from a chat message: no welcome reply, no setup form row.
+    await t.send(ev.groupText({ text: 'สวัสดี', userId: 'Uold' }))
+    t.line.idTokens.set('tok-old', { lineUserId: 'Uold', displayName: 'เก่า' })
+    const before = (await loadSettings(t.deps, { idToken: 'tok-old', groupId: t.group.id })).body as SettingsLoad
+    expect(before.requesterLineUserId).toBe('Uold')
+    expect(before.members.find((m) => m.lineUserId === 'Uold')).toMatchObject({ nicknames: [], role: null })
+
+    expect((await saveMyProfile(t.deps, { idToken: 'tok-old', groupId: t.group.id, nicknames: ['เก่า'], role: '' })).status).toBe(200)
+    const after = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(after.members.find((m) => m.lineUserId === 'Uold')).toMatchObject({ nicknames: ['เก่า'], role: null })
   })
 
   it('a group without a confirmed Owner is not set up yet', async () => {

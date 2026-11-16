@@ -62,6 +62,8 @@ export type DemoState = {
   ai: { model: string | null; lastCallFallback: boolean; busy: boolean; calls: AiCall[]; totalUsd: number }
   google: { connected: boolean; email: string | null }
   chat: ChatItem[]
+  /** The bot's 1:1 chats, per persona key (for example the Owner's weekly card, #120). */
+  direct: Record<string, ChatItem[]>
   log: LogEntry[]
 }
 

@@ -31,6 +31,14 @@ describe('DemoLine', () => {
     expect(world.chat).toHaveLength(1)
   })
 
+  it('records a 1:1 push to a persona in its direct chat, charging one', async () => {
+    const { world, line } = setup()
+    expect(await line.push('Udemo0000000000000000000000000a01', [{ type: 'text', text: 'สรุปรายสัปดาห์' }])).toBe('sent')
+    expect(world.quota.used).toBe(1)
+    expect(world.chat).toHaveLength(0)
+    expect(world.direct.get('nont')?.map((c) => c.message)).toEqual([{ type: 'text', text: 'สรุปรายสัปดาห์' }])
+  })
+
   it('refuses a push past the quota', async () => {
     const { world, line } = setup()
     world.quota = { limit: 5, used: 3 }

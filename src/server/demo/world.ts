@@ -54,6 +54,8 @@ export class DemoWorld {
   replyTokens = new Map<string, string>()
   quota: { limit: number | null; used: number } = { limit: DEFAULT_QUOTA_LIMIT, used: 0 }
   log: LogEntry[] = []
+  /** The bot's 1:1 chat with each persona (persona key -> messages, oldest first). */
+  direct = new Map<string, ChatItem[]>()
   /** LINE message id -> uploaded bytes (images and files the presenter sent). */
   contents = new Map<string, { data: Uint8Array; contentType: string | null; fileName: string }>()
 

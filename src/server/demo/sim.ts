@@ -98,6 +98,7 @@ export function simState(demo: Demo): DemoState {
     },
     google: { connected: accounts.length > 0, email: accounts[0]?.email ?? null },
     chat: selected.chat,
+    direct: Object.fromEntries(world.direct),
     log: world.log,
   }
 }

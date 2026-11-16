@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { LineMessage } from '@/server/line/types'
 import { AdapterError, ContentTooLarge, LinePushRejected } from '@/server/log'
 import type { LinePort, LinePushResult } from '@/server/ports'
@@ -33,6 +34,24 @@ export class DemoLine implements LinePort {
     if (key !== undefined && this.acceptedRetryKeys.has(key)) {
       this.world.addLog('push', `push duplicate (retry key ${key}): nothing sent`)
       return 'duplicate'
+    }
+    const person = this.world.personaById(to)
+    if (person) {
+      // A 1:1 push (#120: the Owner's weekly card). LINE counts it once.
+      const { limit, used } = this.world.quota
+      if (limit !== null && used + 1 > limit) {
+        this.world.addLog('error', `push refused: quota ${used}/${limit}, this push costs 1`)
+        throw new LinePushRejected(429)
+      }
+      if (key !== undefined) this.acceptedRetryKeys.add(key)
+      this.world.quota.used += 1
+      const thread = this.world.direct.get(person.key) ?? []
+      for (const message of messages) {
+        thread.push({ id: randomUUID(), at: this.world.now().toISOString(), from: 'bot', via: 'push', message })
+      }
+      this.world.direct.set(person.key, thread)
+      this.world.addLog('push', `1:1 push to ${person.lineName}, ${messages.length} message(s), cost 1: ${describe(messages)}`)
+      return 'sent'
     }
     const group = this.world.groupById(to)
     if (!group || !group.botInGroup) {

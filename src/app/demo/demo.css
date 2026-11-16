@@ -1,0 +1,75 @@
+/* /demo only (imported by src/app/demo/layout.tsx). The shadcn/ui token values live here,
+   not in globals.css, and apply only while the demo page is mounted: `:root:has(.demo-root)`
+   matches nothing on any other page. Radix portals (dialog, popover, menu, tooltip) render
+   into <body>, so the tokens sit on the root, not on .demo-root itself.
+
+   shadcn's `primary` is the app's existing --color-primary (NongJoDII blue, globals.css),
+   so the LIFF views shown in the drawer keep their exact colours. */
+
+:root:has(.demo-root) {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #12294d;
+  --card: #ffffff;
+  --card-foreground: #12294d;
+  --popover: #ffffff;
+  --popover-foreground: #12294d;
+  --primary-foreground: #ffffff;
+  --secondary: #eef2f7;
+  --secondary-foreground: #12294d;
+  --muted: #f4f6f9;
+  --muted-foreground: #5f6b7e;
+  --accent: #eef2f7;
+  --accent-foreground: #12294d;
+  --destructive: #c2410c;
+  --border: #dde3ec;
+  --input: #cfd8e5;
+  --ring: #1f5fb0;
+  --radius: 0.75rem;
+
+  /* LINE look */
+  --line-green: #06c755;
+  --line-chat-bg: #c9d6e8;
+  --line-me: #9ee17d;
+  --line-ink: #1e1e1e;
+}
+
+:root:has(.demo-root) body {
+  background: #e9edf3;
+  color: var(--foreground);
+  font-family: var(--font-thai);
+}
+
+/* shadcn's base rule, kept away from the LIFF views in the drawer (.demo-liff), which must
+   look exactly as they do live. In the base layer, so every utility still wins. */
+@layer base {
+  :root:has(.demo-root) :where(*:not(.demo-liff, .demo-liff *)) {
+    border-color: var(--border);
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+}
+
+/* The LIFF views size themselves to the browser viewport; in the drawer they fill it. */
+.demo-liff .min-h-dvh {
+  min-height: 100%;
+}
+.demo-liff .min-h-\[70dvh\] {
+  min-height: 60%;
+}
+
+/* Typing dots */
+@keyframes demo-typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+.demo-typing-dot {
+  animation: demo-typing 1.2s infinite ease-in-out;
+}
+.demo-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.demo-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+/* Thin scrollbars inside the phone */
+.demo-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}

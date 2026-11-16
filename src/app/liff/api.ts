@@ -2,8 +2,23 @@
 // token goes up as identity: the server verifies it with LINE. A 200 must carry JSON (a bad
 // body throws, and the view shows its error). An error answer's JSON (a 400's field, a
 // 403's reason) is read when there is one; otherwise json is null.
+//
+// The views name their routes as '/api/...'. The /demo simulator serves the same routes
+// under '/demo/api/...' and calls setApiBase('/demo/api') before it renders a view; the
+// live LIFF never calls it, so its paths stay exactly as written.
+let apiBase = '/api'
+
+export function setApiBase(base: string): void {
+  apiBase = base
+}
+
+/** '/api/x' under the current API base ('/api/x' on the live LIFF). */
+export function apiPath(path: string): string {
+  return path.startsWith('/api/') ? `${apiBase}${path.slice('/api'.length)}` : path
+}
+
 export async function post(path: string, body: Record<string, unknown>): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(path, {
+  const res = await fetch(apiPath(path), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),

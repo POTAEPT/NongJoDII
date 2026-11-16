@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchGoogleStatus as fetchStatus, type GoogleFailure, phaseOnOpen, postDisconnect, retryStep, returnStep, returnVisit,
 } from './google-status'
+import { apiPath } from './api'
 import type { LiffViewProps } from './liff-sdk'
 import { Button, IconCheck, IconCloud, IconLock, Notice, Page, StatusScreen } from './ui'
 
@@ -68,7 +69,7 @@ export function GoogleView({ liff, idToken, id }: LiffViewProps) {
     try {
       // Only the ID token (and the change flag) go up: the server takes the user from the
       // verified token and checks the Owner role itself.
-      const res = await fetch('/api/google/start', {
+      const res = await fetch(apiPath('/api/google/start'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(change ? { idToken, change: true } : { idToken }),

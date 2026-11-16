@@ -27,6 +27,24 @@ E2E_REAL_LLM=1 infisical run --env=dev -- npm run test:e2e   # real model
 
 `npm run test:e2e` is not part of `npm test` or CI, because it needs Docker.
 
+### Real chats (#118)
+
+A LINE chat export (in the chat: ☰ → Settings → Export chat history) becomes a scenario:
+
+```bash
+npm run import-chat -- chat.txt --name real-team1 --from 2026-06-24 --to 2026-06-25 --rename "ฟ้า=แบงค์"
+E2E_SCENARIOS=private E2E_SCENARIO=real-team1 E2E_REAL_LLM=1 infisical run --env=dev -- npm run test:e2e
+```
+
+- **Where it goes:** the output goes to `e2e/private/`, which git ignores. `<name>.json` holds personas only. `<name>.names.json` maps real names to personas and must never be shared.
+- **Names:** sender names and `@mentions` are replaced. Nicknames inside the text are not, so read the output and add them with `--rename`.
+- **Dates:** `startAt` is the chat's real date, so "ศุกร์นี้" means what it meant then.
+  - Keep one or two days with `--from` and `--to`: the Summary reads at most 100 new messages.
+  - The tool warns about anything over 100 messages or 7 days.
+- **Expected Tasks:** `expectedTasks` starts empty. Fill it in by reading the chat, then the real-model run compares against it.
+- **Pitch script:** `--pitch --start 2026-11-18T03:00:00Z --max-lines 8` keeps the first lines and places them one minute apart from that time.
+- **Format checked so far:** the Thai app's export (2026-11-16). The tool also reads English and year-first date lines and AM/PM times. A line it cannot place is reported with its line number, never guessed.
+
 ### Local database facts
 
 - All 21 migrations apply cleanly to a fresh local stack (checked 2026-11-16, Supabase CLI 2.119.0, Postgres 17). 20 public tables.

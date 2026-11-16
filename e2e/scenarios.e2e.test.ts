@@ -6,12 +6,17 @@ import { runScenario, type ScenarioResult } from './run-scenario'
 
 const REAL_LLM = process.env.E2E_REAL_LLM === '1'
 
+/** e2e/scenarios by default. E2E_SCENARIOS=private reads e2e/private instead (imported real
+ *  chats, #118, git-ignored); a name filter keeps one: E2E_SCENARIO=real-jun. The name maps
+ *  (*.names.json) are never scenarios. */
 function loadScenarios(): Scenario[] {
-  const dir = new URL('./scenarios/', import.meta.url)
+  const dir = new URL(process.env.E2E_SCENARIOS === 'private' ? './private/' : './scenarios/', import.meta.url)
+  const only = process.env.E2E_SCENARIO
   return readdirSync(dir)
-    .filter((f) => f.endsWith('.json'))
+    .filter((f) => f.endsWith('.json') && !f.endsWith('.names.json'))
     .sort()
     .map((f) => JSON.parse(readFileSync(new URL(f, dir), 'utf8')) as Scenario)
+    .filter((s) => !only || s.name === only)
 }
 
 function textOf(messages: LineMessage[]): string {
@@ -58,10 +63,11 @@ function checkFake(s: Scenario, r: ScenarioResult): void {
   })
 }
 
-/** Real model: counts only, then a side-by-side log for a human to read. */
+/** Real model: a side-by-side log for a human to read, then the counts. The log comes first
+ *  so a count mismatch still shows what the model proposed (#118: an imported chat starts
+ *  with no expectedTasks). */
 function checkReal(s: Scenario, r: ScenarioResult): void {
   expect(r.summaries).toHaveLength(1)
-  expect(r.candidates).toHaveLength(s.expectedTasks.length)
   const personaOf = (lineUserId: string | null): string => {
     const hit = Object.entries(s.personas).find(([, p]) => p.lineUserId === lineUserId)
     return hit ? hit[1].lineName : '-'
@@ -81,4 +87,5 @@ function checkReal(s: Scenario, r: ScenarioResult): void {
   })
   console.log(`[${s.name}] expected vs actual (real model)`)
   console.table(table)
+  expect(r.candidates).toHaveLength(s.expectedTasks.length)
 }

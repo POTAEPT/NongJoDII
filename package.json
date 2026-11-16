@@ -10,7 +10,8 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "vitest run --config vitest.e2e.config.mts"
+    "test:e2e": "vitest run --config vitest.e2e.config.mts",
+    "import-chat": "node e2e/import-chat.mts"
   },
   "engines": {
     "node": ">=24"

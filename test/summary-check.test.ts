@@ -179,6 +179,21 @@ describe('Summary task check (#157)', () => {
     expect(messagesText(t.replyMessages())).toContain('อาจมีงานเพิ่ม')
   })
 
+  it('"one" with no Task found: the retry still asks for the missed one; none found, the line goes under the no-Task words', async () => {
+    const t = await setup(CHAT_01)
+    t.decisions.respond(jev(0.9, 'one'))
+    t.answer([])
+    t.answer([])
+    await t.summarize()
+
+    expect(t.llm.requests).toHaveLength(2)
+    expect(t.llm.requests[1].user).toMatch(/already found/i)
+    expect(t.llm.requests[1].user).not.toBe(t.llm.requests[0].user)
+    expect(t.store.tables.task_candidates).toHaveLength(0)
+    expect(t.reviewButtons()).toHaveLength(0)
+    expect(messagesText(t.replyMessages())).toBe('สรุปแชตล่าสุด\nทีมคุยเรื่องงานพิตช์\n\nไม่พบงานใหม่ในแชตช่วงนี้\nอาจมีงานเพิ่ม')
+  })
+
   it('"many" with 3 Tasks retries; a failed retry keeps the first answer and adds the line', async () => {
     const t = await setup(CHAT_03)
     t.decisions.respond(jev(0.99, 'many'))

@@ -19,8 +19,8 @@ const STATUS_WORD: Record<TaskStatus, string> = { not_assigned: 'no assignee', i
  *  without message refs (so no task can point at it). `existingTasks` are the group's open
  *  and recently done Tasks, which the model must not propose again.
  *  #157: `summaryOnly` (the decision model found no work) asks for the summary alone, with no
- *  Task part; `taskHint` adds "expect about N separate tasks"; `alreadyFound` (the retry) lists
- *  the first answer's task titles and asks only for the tasks it missed. With none of the
+ *  Task part; `taskHint` adds "expect about N separate tasks"; `alreadyFound` (given only on the
+ *  retry, possibly empty) lists the first answer's task titles and asks only for the missed tasks. With none of the
  *  three the prompt is the one used before #157. */
 export function buildSummaryPrompt(p: {
   now: Date; workDescription: string | null; members: Member[]; messages: StoredMessage[]
@@ -34,7 +34,9 @@ export function buildSummaryPrompt(p: {
   // Summary only: no Task part at all, so the existing Tasks and the tags stay out too.
   const existingTasks = summaryOnly ? [] : p.existingTasks ?? []
   const groupTags = summaryOnly ? [] : p.groupTags ?? []
-  const alreadyFound = summaryOnly ? [] : p.alreadyFound ?? []
+  // The retry: `alreadyFound` is given (it may be empty when the first answer found none).
+  const retry = !summaryOnly && p.alreadyFound !== undefined
+  const alreadyFound = retry ? p.alreadyFound ?? [] : []
   const memberRefs: PromptRef[] = []
   const refByUser = new Map<string, string>()
   const lines: string[] = []
@@ -79,9 +81,9 @@ export function buildSummaryPrompt(p: {
       ? ['Existing tasks (already in the group; never propose these again):',
         ...existingTasks.map((t) => `- [${STATUS_WORD[t.status]}] ${oneLine(t.title)}`)]
       : []),
-    ...(alreadyFound.length > 0
+    ...(retry
       ? ['Tasks already found (an earlier answer listed these; never repeat them):',
-        ...alreadyFound.map((t) => `- ${oneLine(t)}`)]
+        ...(alreadyFound.length > 0 ? alreadyFound.map((t) => `- ${oneLine(t)}`) : ['- (none)'])]
       : []),
     ...(groupTags.length > 0 ? [`Group tags (set by the Owner; use these first): ${groupTags.join(', ')}`] : []),
     ...(tagsInUse(existingTasks).length > 0 ? [`Tags in use: ${tagsInUse(existingTasks).join(', ')}`] : []),
@@ -105,7 +107,7 @@ export function buildSummaryPrompt(p: {
     ...(hint
       ? [`- Expect about ${hint.expect} separate tasks in the "Chat" section. Work for different people, or with different deadlines, is a separate task each. Never invent a task to reach that number.`]
       : []),
-    ...(alreadyFound.length > 0
+    ...(retry
       ? ['- An earlier answer missed some tasks. List ONLY the tasks that are not under "Tasks already found"; never repeat a found one. [] when there are no others.']
       : []),
     '- Summarize and take tasks ONLY from the "Chat" section. "Earlier chat" was summarized before: use it only to understand the new chat, and never take a task from it.',

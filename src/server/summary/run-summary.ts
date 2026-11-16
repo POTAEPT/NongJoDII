@@ -134,8 +134,9 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   // #157: one decision-model call (TypeSafe Jev) on the same chat window says whether the chat
   // holds work and about how many Tasks. null (refused, failed, the cap) keeps the single text
   // call with the prompt used before. With Draft tasks off the Tasks are dropped anyway: no check.
-  const startedAt = deps.now().getTime()
-  const remainingMs = () => SUMMARY_AI_BUDGET_MS - (deps.now().getTime() - startedAt)
+  // Wall time, not deps.now(): the /demo clock can be moved by the presenter mid-Summary.
+  const startedAt = Date.now()
+  const remainingMs = () => SUMMARY_AI_BUDGET_MS - (Date.now() - startedAt)
   const check: SummaryCheck | null = group.featureDraftTasks ? await checkSummary(deps, meterCtx, fullPrompt.user) : null
   const prompt = check?.kind === 'no_task'
     ? buildSummaryPrompt({ ...promptInput, summaryOnly: true })

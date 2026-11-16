@@ -1,19 +1,19 @@
 'use client'
 
 import { useState, type KeyboardEvent, type ReactNode } from 'react'
-import { cn } from 'cn'
-import { ChevronDown, ChevronUp, HardDrive, Keyboard, LayoutDashboard, LayoutGrid, ListTodo, SendHorizontal, Settings } from 'lucide-react'
+import { ChevronDown, ChevronUp, Keyboard, LayoutGrid, SendHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { demoApi } from '../_lib/api'
 import { useDemo } from './demo-context'
 
-/** The four Rich Menu tiles of the OA (#84). `text` is exactly what the tile sends, the
- *  words src/server/chat/menu.ts parses. */
-const TILES: { text: string; label: string; icon: ReactNode }[] = [
-  { text: 'Dashboard', label: 'แดชบอร์ด', icon: <LayoutDashboard /> },
-  { text: 'งานของฉัน', label: 'งานของฉัน', icon: <ListTodo /> },
-  { text: 'ตั้งค่า', label: 'ตั้งค่า', icon: <Settings /> },
-  { text: 'เชื่อมต่อ Google Drive', label: 'เชื่อม Google Drive', icon: <HardDrive /> },
+/** The OA's Rich Menu (#84): the team's 2000x1349 image, three tap areas. `text` is exactly
+ *  what the area sends, the words src/server/chat/menu.ts parses. Areas in % of the image:
+ *  the top half is Dashboard, the bottom half is Google Drive (left) and Settings (right). */
+const RICH_MENU_IMAGE = '/demo/rich-menu.png'
+const AREAS: { text: string; label: string; box: { left: number; top: number; width: number; height: number } }[] = [
+  { text: 'Dashboard', label: 'Dashboard', box: { left: 0, top: 0, width: 100, height: 50 } },
+  { text: 'เชื่อมต่อ Google Drive', label: 'เชื่อม Google Drive', box: { left: 0, top: 50, width: 50, height: 50 } },
+  { text: 'ตั้งค่า', label: 'ตั้งค่า', box: { left: 50, top: 50, width: 50, height: 50 } },
 ]
 
 /** The bottom of the 1:1 chat with the bot, LINE style: the Rich Menu (a tile grid under a
@@ -83,17 +83,14 @@ export function DirectBottom({ onSent }: { onSent: () => void }) {
         <span className="size-9 shrink-0" />
       </div>
       {open && (
-        <div className="grid grid-cols-2 border-t border-black/5">
-          {TILES.map((t, i) => (
-            <button key={t.text} type="button" disabled={disabled || sending} onClick={() => void send(t.text)}
-              className={cn(
-                'flex h-[84px] flex-col items-center justify-center gap-1.5 bg-[#F4FBF7] text-[14px] font-semibold text-[#12613A] transition-colors',
-                'hover:bg-[#E3F6EA] active:bg-[#D2F0DD] disabled:opacity-50 [&_svg]:size-7 [&_svg]:text-(--line-green)',
-                i % 2 === 0 && 'border-r border-black/5', i < 2 && 'border-b border-black/5',
-              )}>
-              {t.icon}
-              {t.label}
-            </button>
+        <div className="relative border-t border-black/5">
+          {/* eslint-disable-next-line @next/next/no-img-element -- a static demo asset at its own size */}
+          <img src={RICH_MENU_IMAGE} alt="เมนูน้องจดดี" className="block w-full select-none" draggable={false} />
+          {AREAS.map((a) => (
+            <button key={a.text} type="button" aria-label={a.label} title={a.label}
+              disabled={disabled || sending} onClick={() => void send(a.text)}
+              style={{ left: `${a.box.left}%`, top: `${a.box.top}%`, width: `${a.box.width}%`, height: `${a.box.height}%` }}
+              className="absolute transition-colors hover:bg-white/10 active:bg-white/20 disabled:cursor-not-allowed" />
           ))}
         </div>
       )}

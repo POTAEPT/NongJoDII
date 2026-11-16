@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn, retryStep, returnStep, returnVisit } from '@/app/liff/google-status'
+import { fetchGoogleStatus, type GoogleStatusResult, phaseOnOpen, phaseOnReturn, postDisconnect, retryStep, returnStep, returnVisit } from '@/app/liff/google-status'
 
 const result = (status: GoogleStatusResult['status'], signedInAt: string | null = null, canChange = false): GoogleStatusResult =>
   ({ status, signedInAt, canChange })
@@ -127,5 +127,26 @@ describe('fetchGoogleStatus', () => {
   it('a network error gives failed', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
     expect(await fetchGoogleStatus('tok')).toEqual({ status: 'failed', canChange: false, signedInAt: null })
+  })
+})
+
+describe('postDisconnect (#82)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  const respond = (status: number, body: unknown = {}) =>
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status })))
+
+  it('sends only the id token to the disconnect route', async () => {
+    respond(200, { disconnected: true })
+    expect(await postDisconnect('tok')).toBe('disconnected')
+    const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(url).toBe('/api/google/disconnect')
+    expect(JSON.parse(init.body)).toEqual({ idToken: 'tok' })
+  })
+  it('maps 409, 401, 502 and a network error', async () => {
+    respond(409); expect(await postDisconnect('tok')).toBe('not_connected')
+    respond(401); expect(await postDisconnect('tok')).toBe('unauthorized')
+    respond(502); expect(await postDisconnect('tok')).toBe('failed')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    expect(await postDisconnect('tok')).toBe('failed')
   })
 })

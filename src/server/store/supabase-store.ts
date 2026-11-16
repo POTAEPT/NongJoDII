@@ -469,7 +469,9 @@ export class SupabaseStore implements StorePort {
   async listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]> {
     const { data, error } = await this.db
       .from('messages')
-      .select('id, sender_line_user_id, text, sent_at, mentions, line_users(display_name)')
+      // Hint the FK: messages also references line_users through progress_dismissed_by_line_user_id
+      // (20261115150000), so a bare line_users(...) embed is ambiguous (PostgREST PGRST201).
+      .select('id, sender_line_user_id, text, sent_at, mentions, line_users!sender_line_user_id(display_name)')
       .eq('group_id', groupId)
       .eq('message_type', 'text')
       .not('text', 'is', null)
@@ -1740,6 +1742,19 @@ export class SupabaseStore implements StorePort {
     check('findGoogleAccountByLineUser', error)
     const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired'; connected_at: string } | null
     return row ? { id: row.id, tokenStatus: row.token_status, signedInAt: toDate(row.connected_at) } : null
+  }
+
+  async findGoogleAccountToken(lineUserId: string): Promise<{ id: string; tokenStatus: 'valid' | 'revoked' | 'expired'; refreshTokenCiphertext: string | null } | null> {
+    const { data, error } = await this.db
+      .from('google_accounts')
+      .select('id, token_status, refresh_token_ciphertext')
+      .eq('line_user_id', lineUserId)
+      .order('connected_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    check('findGoogleAccountToken', error)
+    const row = data as { id: string; token_status: 'valid' | 'revoked' | 'expired'; refresh_token_ciphertext: string | null } | null
+    return row ? { id: row.id, tokenStatus: row.token_status, refreshTokenCiphertext: row.refresh_token_ciphertext } : null
   }
 
   async markGoogleAccountRevoked(googleAccountId: string, refreshTokenCiphertext: string): Promise<{ revoked: boolean }> {

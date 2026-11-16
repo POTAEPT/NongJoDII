@@ -105,3 +105,23 @@ export async function fetchGoogleStatus(idToken: string): Promise<GoogleStatusRe
     return result('failed')
   }
 }
+
+/** #82: what POST /api/google/disconnect answered. 'not_connected': nothing to disconnect
+ *  (already revoked, or never connected); the page shows it as done. */
+export type DisconnectResult = 'disconnected' | 'not_connected' | 'unauthorized' | 'failed'
+
+export async function postDisconnect(idToken: string): Promise<DisconnectResult> {
+  try {
+    const res = await fetch('/api/google/disconnect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ idToken }),
+    })
+    if (res.status === 200) return 'disconnected'
+    if (res.status === 409) return 'not_connected'
+    if (res.status === 401) return 'unauthorized'
+    return 'failed'
+  } catch {
+    return 'failed'
+  }
+}

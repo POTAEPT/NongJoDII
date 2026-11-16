@@ -2,13 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent, LineMessage } from '@/server/line/types'
 import type { LlmUsage } from '@/server/ports'
 import { DECIDE_CALL_MAX_MS, DECISION_SCHEMA, decide } from '@/server/progress/decide'
+import { looksLikeProgress } from '@/server/progress/keywords'
 import { answerProgressFromLiff } from '@/server/progress/liff'
 import { DECISION_MODEL, TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, TEST_LIFF_ID, TEST_NOW, webhookBody } from './harness'
+import { buttonActions } from './flex-text'
 
 // #7 Track progress through the event seam: group text lines and button presses go in
 // as signed webhooks; replies, task_prompts rows, Task rows and AI usage come out.
+// #132: only a line that passes the keyword gate reaches the model.
 
 const OWNER = 'Uowner1'
 const BIW = 'Ubiw'
@@ -94,7 +97,7 @@ describe('a progress line that matches an open Task', () => {
     expect(card.type).toBe('flex')
     expect(json(card)).toContain('ทำสไลด์คู่แข่ง')
     expect(json(card)).toContain('จากข้อความของ บิว · 10:00')
-    expect(Object.keys(buttons(card))).toEqual(['ไม่ใช่', 'ใช่ ปิดงาน', 'เลือกงานอื่น'])
+    expect(Object.keys(buttons(card))).toEqual(['ไม่ใช่', 'ใช่ เสร็จแล้ว', 'เลือกงานอื่น'])
 
     expect(t.store.tables.task_prompts).toHaveLength(1)
     expect(t.store.tables.task_prompts[0]).toMatchObject({
@@ -107,7 +110,7 @@ describe('a progress line that matches an open Task', () => {
   it('asks "<name> รับงานนี้ใช่ไหม?" when the sender takes an unowned Task', async () => {
     const t = setup()
     t.answer({ kind: 'match', task: 2, status: 'in_process' })
-    await t.say(TON, 'เดี๋ยวเราทำโลโก้เอง')
+    await t.say(TON, 'โลโก้เดี๋ยวทำเองนะ')
     const card = lastReply(t)
     expect(json(card)).toContain('ให้ ต้น รับงานนี้ไหม?')
     expect(json(card)).toContain('ยังไม่มีกำหนดส่ง')
@@ -132,7 +135,7 @@ describe('a progress line that matches an open Task', () => {
   it('uses the decision model, inside the time budget, and records usage against the Owner', async () => {
     const t = setup()
     t.answer({ kind: 'none' })
-    await t.say(BIW, 'กินข้าวยัง')
+    await t.say(BIW, 'สไลด์เสร็จแล้ว')
     expect(t.llm.requests).toHaveLength(1)
     expect(t.llm.requests[0].model).toBe(DECISION_MODEL)
     expect(t.llm.requests[0].schema).toBe(DECISION_SCHEMA) // #111
@@ -172,7 +175,7 @@ describe('a progress line that matches an open Task', () => {
     const t = setup()
     t.answer({ kind: 'match', task: 1, status: 'done' })
     await t.say(BIW, 'สไลด์เสร็จแล้ว')
-    const oldYes = buttons(lastReply(t))['ใช่ ปิดงาน']
+    const oldYes = buttons(lastReply(t))['ใช่ เสร็จแล้ว']
 
     t.setNow(new Date(TEST_NOW.getTime() + 25 * 3600_000))
     t.answer({ kind: 'match', task: 1, status: 'done' })
@@ -209,14 +212,15 @@ describe('a progress line that matches an open Task', () => {
     await t.say(TON, 'สไลด์เสร็จแล้วนะ')
     const card = lastReply(t)
     expect(json(card)).toContain('อัปเดตนี้หมายถึงงานไหน?')
-    expect(Object.keys(buttons(card))).toEqual(['ทำสไลด์คู่แข่ง', 'ทำสไลด์ปัญหา', 'ไม่ใช่การอัปเดตงาน'])
+    // The sender's own Task first.
+    expect(Object.keys(buttons(card))).toEqual(['ทำสไลด์ปัญหา', 'ทำสไลด์คู่แข่ง', 'ไม่ใช่การอัปเดตงาน'])
     expect(t.store.tables.task_prompts).toHaveLength(0)
   })
 
   it('treats a model answer that would move a Task backwards as noise', async () => {
     const t = setup()
     t.answer({ kind: 'match', task: 1, status: 'in_process' }) // already in process
-    await t.say(BIW, 'ทำสไลด์อยู่')
+    await t.say(BIW, 'กำลังทำสไลด์อยู่')
     expect(t.line.replies).toHaveLength(0)
   })
 })
@@ -231,13 +235,13 @@ describe('answers', () => {
   it('Yes moves the Task to Done and records who answered', async () => {
     const t = setup()
     const b = await askDone(t)
-    await t.press(BIW, b['ใช่ ปิดงาน'])
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'])
 
     const task = t.task(t.slides.id)
     expect(task).toMatchObject({ status: 'done', doneAt: LATER, lastActivityAt: LATER, lastEditedByLineUserId: BIW })
     expect(t.store.tables.task_prompts[0]).toMatchObject({ answer: 'yes', answeredByLineUserId: BIW, answeredAt: LATER })
     expect(t.line.replies[1].replyToken).toBe('rt-press')
-    expect(json(lastReply(t))).toContain('ปิดงาน “ทำสไลด์คู่แข่ง” แล้ว')
+    expect(json(lastReply(t))).toContain('“ทำสไลด์คู่แข่ง” เสร็จแล้ว')
     expect(json(lastReply(t))).toContain('ยืนยันโดย บิว · 10:01')
   })
 
@@ -253,7 +257,7 @@ describe('answers', () => {
   it('Yes on In Process makes the sender the assignee', async () => {
     const t = setup()
     t.answer({ kind: 'match', task: 2, status: 'in_process' })
-    await t.say(TON, 'เดี๋ยวเราทำโลโก้เอง')
+    await t.say(TON, 'โลโก้เดี๋ยวทำเองนะ')
     await t.press(TON, buttons(lastReply(t))['ใช่ รับงาน'])
     expect(t.task(t.logo.id)).toMatchObject({ status: 'in_process', assigneeLineUserId: TON, doneAt: null })
     expect(json(lastReply(t))).toContain('ผู้รับ: ต้น')
@@ -262,7 +266,7 @@ describe('answers', () => {
   it('refuses someone who is neither the assignee nor the sender', async () => {
     const t = setup()
     const b = await askDone(t)
-    await t.press(JEFF, b['ใช่ ปิดงาน'])
+    await t.press(JEFF, b['ใช่ เสร็จแล้ว'])
     expect(json(lastReply(t))).toContain('เฉพาะ บิว')
     expect(t.task(t.slides.id).status).toBe('in_process')
     expect(t.store.tables.task_prompts[0].answer).toBeNull()
@@ -271,19 +275,19 @@ describe('answers', () => {
   it('lets the assignee answer when someone else wrote the line', async () => {
     const t = setup()
     const b = await askDone(t, TON)
-    await t.press(BIW, b['ใช่ ปิดงาน'])
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'])
     expect(t.task(t.slides.id).status).toBe('done')
   })
 
   it('a press without a userId changes nothing and replies with a LIFF login button', async () => {
     const t = setup()
     const b = await askDone(t)
-    await t.press(null, b['ใช่ ปิดงาน'])
+    await t.press(null, b['ใช่ เสร็จแล้ว'])
     const reply = lastReply(t)
-    expect(reply.type).toBe('template')
-    if (reply.type !== 'template') throw new Error('not a template')
-    const uri = reply.template.actions[0].uri
-    expect(uri).toBe(`https://liff.line.me/${TEST_LIFF_ID}?view=progress&id=${encodeURIComponent(b['ใช่ ปิดงาน'])}`)
+    expect(reply.type).toBe('flex')
+    if (reply.type !== 'flex') throw new Error('not a Flex card')
+    const uri = buttonActions<{ uri: string }>(reply.contents)[0].uri
+    expect(uri).toBe(`https://liff.line.me/${TEST_LIFF_ID}?view=progress&id=${encodeURIComponent(b['ใช่ เสร็จแล้ว'])}`)
     expect(t.task(t.slides.id).status).toBe('in_process')
     expect(t.store.tables.task_prompts[0].answer).toBeNull()
   })
@@ -291,12 +295,12 @@ describe('answers', () => {
   it('the LIFF page repeats the press as the verified LINE user', async () => {
     const t = setup()
     const b = await askDone(t)
-    await t.press(null, b['ใช่ ปิดงาน'])
+    await t.press(null, b['ใช่ เสร็จแล้ว'])
     t.line.idTokens.set('tok-biw', { lineUserId: BIW, displayName: 'บิว' })
 
-    const res = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: b['ใช่ ปิดงาน'] })
+    const res = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: b['ใช่ เสร็จแล้ว'] })
     expect(res.status).toBe(200)
-    expect(res.body).toMatchObject({ result: 'updated', text: 'ปิดงาน “ทำสไลด์คู่แข่ง” แล้ว' })
+    expect(res.body).toMatchObject({ result: 'updated', text: '“ทำสไลด์คู่แข่ง” เสร็จแล้ว' })
     expect(t.task(t.slides.id)).toMatchObject({ status: 'done', lastEditedByLineUserId: BIW })
     expect(t.store.tables.task_prompts[0]).toMatchObject({ answer: 'yes', answeredByLineUserId: BIW })
   })
@@ -304,7 +308,7 @@ describe('answers', () => {
   it('the LIFF page refuses a bad token, an outsider and someone not allowed to answer', async () => {
     const t = setup()
     const b = await askDone(t)
-    const yes = b['ใช่ ปิดงาน']
+    const yes = b['ใช่ เสร็จแล้ว']
     expect((await answerProgressFromLiff(t.deps, { idToken: 'nope', data: yes })).status).toBe(401)
 
     t.line.idTokens.set('tok-out', { lineUserId: 'Uoutsider', displayName: 'X' }) // LINE: not in the group
@@ -352,7 +356,7 @@ describe('answers', () => {
 
     const t2 = setup()
     const b2 = await askDone(t2)
-    await t2.press(BIW, b2['ใช่ ปิดงาน'], 'ev-y')
+    await t2.press(BIW, b2['ใช่ เสร็จแล้ว'], 'ev-y')
     await t2.press(BIW, b2['เลือกงานอื่น'], 'ev-w')
     expect(json(lastReply(t2))).toContain('งานนี้ถูกปิดไปแล้ว')
   })
@@ -370,7 +374,7 @@ describe('answers', () => {
 
     await t.press(TON, pick, 'ev-p2')
     expect(t.task(t.problem.id).status).toBe('done')
-    expect(json(lastReply(t))).toContain('ปิดงาน “ทำสไลด์ปัญหา” แล้ว')
+    expect(json(lastReply(t))).toContain('“ทำสไลด์ปัญหา” เสร็จแล้ว')
   })
 
   it('a pick retried after both the write and the clean-up failed reuses its row', async () => {
@@ -406,11 +410,11 @@ describe('answers', () => {
     const t = setup()
     const b = await askDone(t)
     t.store.failNext('confirmProgressYes')
-    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-yes-1')
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'], 'ev-yes-1')
     expect(t.task(t.slides.id).status).toBe('in_process')
     expect(t.store.tables.task_prompts[0].answer).toBeNull()
 
-    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-yes-2')
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'], 'ev-yes-2')
     expect(t.task(t.slides.id).status).toBe('done')
   })
 
@@ -418,7 +422,7 @@ describe('answers', () => {
     const t = setup()
     t.answer({ kind: 'match', task: 1, status: 'done' })
     await t.say(TON, 'สไลด์คู่แข่งเสร็จละ')              // card on Task 1 (assignee BIW), sent by TON
-    const yes = buttons(lastReply(t))['ใช่ ปิดงาน']
+    const yes = buttons(lastReply(t))['ใช่ เสร็จแล้ว']
 
     // Between the handler's check and the write, someone reassigns the Task to JEFF.
     const original = t.store.confirmProgressYes.bind(t.store)
@@ -437,7 +441,7 @@ describe('answers', () => {
     const t = setup()
     const b = await askDone(t)
     t.setNow(LATER)
-    const press = ev.groupPostback({ data: b['ใช่ ปิดงาน'], userId: BIW, eventId: 'ev-retry', replyToken: 'rt-press' })
+    const press = ev.groupPostback({ data: b['ใช่ เสร็จแล้ว'], userId: BIW, eventId: 'ev-retry', replyToken: 'rt-press' })
     t.store.failNext('ensureGroup')
     const first = await handleWebhookRequest(signedRequest(webhookBody(press)), t.deps, t.defer)
     expect(first.status).toBe(500)
@@ -451,8 +455,8 @@ describe('answers', () => {
   it('a second press on a card that closed its Task says the Task is already closed', async () => {
     const t = setup()
     const b = await askDone(t)
-    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-1')
-    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-2')
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'], 'ev-1')
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'], 'ev-2')
     expect(json(lastReply(t))).toContain('งานนี้ถูกปิดไปแล้ว')
     await t.press(BIW, b['ไม่ใช่'], 'ev-3')
     expect(json(lastReply(t))).toContain('งานนี้ถูกปิดไปแล้ว')
@@ -463,7 +467,7 @@ describe('answers', () => {
     const t = setup()
     const b = await askDone(t)
     await t.press(BIW, b['ไม่ใช่'], 'ev-1')
-    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-2')
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'], 'ev-2')
     expect(json(lastReply(t))).toContain('การ์ดนี้มีคนตอบไปแล้ว')
     expect(t.task(t.slides.id).status).toBe('in_process')
   })
@@ -472,15 +476,15 @@ describe('answers', () => {
     const t = setup()
     const b = await askDone(t)
     t.task(t.slides.id).status = 'done'
-    await t.press(BIW, b['ใช่ ปิดงาน'])
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'])
     expect(json(lastReply(t))).toContain('งานนี้ถูกปิดไปแล้ว')
   })
 
   it('a redelivered press runs once', async () => {
     const t = setup()
     const b = await askDone(t)
-    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-press')
-    await t.press(BIW, b['ใช่ ปิดงาน'], 'ev-press')
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'], 'ev-press')
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'], 'ev-press')
     expect(t.line.replies).toHaveLength(2) // the card, then one result
   })
 
@@ -488,7 +492,7 @@ describe('answers', () => {
     const t = setup()
     const b = await askDone(t)
     t.task(t.slides.id).deletedAt = TEST_NOW
-    await t.press(BIW, b['ใช่ ปิดงาน'])
+    await t.press(BIW, b['ใช่ เสร็จแล้ว'])
     expect(t.task(t.slides.id).status).toBe('in_process')
     expect(json(lastReply(t))).toContain('ถูกลบหรือเปลี่ยนไปแล้ว')
   })
@@ -550,7 +554,8 @@ describe('answers', () => {
     await t.press(JEFF, b['ไม่ใช่การอัปเดตงาน'], 'ev-d1')
     expect(json(lastReply(t))).toContain('เฉพาะ ต้น ที่ปิดรายการนี้ได้')
     await t.press(null, b['ไม่ใช่การอัปเดตงาน'], 'ev-d2')
-    expect(lastReply(t).type).toBe('template')
+    expect(lastReply(t).type).toBe('flex')
+    expect(json(lastReply(t))).toContain('ยืนยันตัวตนก่อนนะ')
     expect(t.store.tables.messages[0].progressDismissedAt ?? null).toBeNull()
 
     // Still open: a pick works.
@@ -650,11 +655,70 @@ describe('answers', () => {
   })
 })
 
-describe('noise', () => {
-  it('gets no reply', async () => {
+const NOT_PROGRESS = [
+  'ใครว่างไปกินข้าวบ้าง', 'เที่ยงนี้กินอะไรดี', 'ฝนจะตกแล้ว', 'พรุ่งนี้ประชุมกี่โมง', 'สไลด์อยู่ในไดรฟ์นะ',
+  'ขอบคุณครับ', '555', 'เมื่อคืนดูบอลไหม', 'ok ครับ', 'ฝากดูโลโก้ให้หน่อย',
+]
+
+describe('the keyword gate (#132)', () => {
+  it.each([
+    'เสร็จแล้ว', 'เสร็จละ', 'ทำเสร็จละ', 'เสร็จเรียบร้อย', 'เรียบร้อยครับ', 'ส่งไฟล์แล้ว', 'ส่งงานแล้ว',
+    'อัปไดรฟ์แล้ว', 'อัพไดรฟ์แล้วนะ', 'อัปโหลดเสร็จ', 'ส่งแล้ว', 'Done', 'finished the slides',
+  ])('"%s" reads as done', (line) => {
+    expect(looksLikeProgress(line)).toBe('done')
+  })
+
+  it.each(['เดี๋ยวทำเอง', 'เริ่มทำแล้ว', 'กำลังทำอยู่', 'รับไปนะ', 'started'])('"%s" reads as started', (line) => {
+    expect(looksLikeProgress(line)).toBe('in_process')
+  })
+
+  it.each(['ยังไม่เสร็จ', 'สไลด์ไม่เสร็จแน่เลย', 'not done', 'สไลด์เสร็จยัง', 'ต้องเสร็จเมื่อไหร่ครับ', ...NOT_PROGRESS])(
+    '"%s" does not pass', (line) => {
+      expect(looksLikeProgress(line)).toBeNull()
+    })
+
+  it('ten lines without a progress word make no model call and get no reply', async () => {
+    const t = setup()
+    const complete = vi.spyOn(t.llm, 'complete')
+    for (const line of NOT_PROGRESS) await t.say(BIW, line)
+    expect(complete).not.toHaveBeenCalled()
+    expect(t.store.tables.ai_usage).toHaveLength(0)
+    expect(t.line.replies).toHaveLength(0)
+    expect(t.store.tables.messages).toHaveLength(NOT_PROGRESS.length)
+  })
+
+  it('"ยังไม่เสร็จ" makes no model call and gets no reply', async () => {
+    const t = setup()
+    await t.say(BIW, 'สไลด์ยังไม่เสร็จเลย')
+    expect(t.llm.requests).toHaveLength(0)
+    expect(t.line.replies).toHaveLength(0)
+  })
+
+  it('"เสร็จแล้ว" makes exactly one model call, and the card follows its answer', async () => {
+    const t = setup()
+    const complete = vi.spyOn(t.llm, 'complete')
+    t.answer({ kind: 'match', task: 1, status: 'done' })
+    await t.say(BIW, 'สไลด์คู่แข่งเสร็จแล้ว')
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(json(lastReply(t))).toContain('อัปเดตงานนี้ไหม?')
+    expect(t.store.tables.task_prompts[0]).toMatchObject({ taskId: t.slides.id, targetStatus: 'done' })
+  })
+
+  it('a keyword line the model calls not progress gets no card', async () => {
     const t = setup()
     t.answer({ kind: 'none' })
+    await t.say(BIW, 'เสร็จแล้วค่อยไปกินข้าวกัน')
+    expect(t.llm.requests).toHaveLength(1)
+    expect(t.line.replies).toHaveLength(0)
+    expect(t.store.tables.task_prompts).toHaveLength(0)
+  })
+})
+
+describe('noise', () => {
+  it('gets no reply and no model call', async () => {
+    const t = setup()
     await t.say(BIW, 'ใครว่างไปกินข้าวบ้าง')
+    expect(t.llm.requests).toHaveLength(0)
     expect(t.line.replies).toHaveLength(0)
     expect(t.store.tables.task_prompts).toHaveLength(0)
   })
@@ -702,6 +766,8 @@ describe('when the decision model fails', () => {
     t.llm.fail(new Error('503'))
     t.llm.fail(new Error('timeout'))
     await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
+    // decide() tries the decision model, then the text model; the picker makes no further call.
+    expect(t.llm.requests.map((r) => r.model)).toEqual([DECISION_MODEL, TEXT_MODEL])
     const picker = buttons(lastReply(t))
     expect(Object.keys(picker)[0]).toBe('ทำสไลด์คู่แข่ง') // the sender's own Task first
     expect(t.store.tables.messages).toHaveLength(1)
@@ -710,13 +776,13 @@ describe('when the decision model fails', () => {
     expect(t.task(t.slides.id).status).toBe('done')
   })
 
-  it('stays silent when both models fail on ordinary chat', async () => {
+  it('uses the keyword status for the picker: a started word offers the Tasks nobody owns', async () => {
     const t = setup()
     t.llm.fail(new Error('503'))
     t.llm.fail(new Error('timeout'))
-    await t.say(BIW, 'ใครว่างไปกินข้าวบ้าง')
-    expect(t.line.replies).toHaveLength(0)
-    expect(t.store.tables.messages).toHaveLength(1)
+    await t.say(TON, 'โลโก้เดี๋ยวทำเองนะ')
+    expect(Object.keys(buttons(lastReply(t)))).toEqual(['ทำโลโก้', 'ไม่ใช่การอัปเดตงาน'])
+    expect(t.llm.requests).toHaveLength(2)
   })
 })
 
@@ -729,9 +795,11 @@ describe('without AI', () => {
     expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
   })
 
-  it('in a group without a confirmed Owner, uses the free keyword check', async () => {
+  it('in a group without a confirmed Owner, a keyword line gets the picker with no model call', async () => {
     const t = setup({ owned: false })
+    const complete = vi.spyOn(t.llm, 'complete')
     await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
+    expect(complete).not.toHaveBeenCalled()
     expect(t.llm.requests).toHaveLength(0)
     expect(t.store.tables.ai_usage).toHaveLength(0)
     expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')

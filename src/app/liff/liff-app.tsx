@@ -51,7 +51,11 @@ export function LiffApp({ liffId }: { liffId: string }) {
   if (state.kind === 'error') return <StatusScreen kind="error" title="เปิดหน้านี้ไม่สำเร็จ" message={OPEN_FAILED} />
   if (state.kind === 'loading') return <StatusScreen kind="loading" message="กำลังเปิด..." />
 
-  const { params, props } = state
+  return <LiffView params={state.params} props={state.props} />
+}
+
+/** The view a LIFF link names (?view=&id=). Shared with the /demo simulator's LIFF drawer. */
+export function LiffView({ params, props }: { params: LiffParams; props: Omit<LiffViewProps, 'id'> }) {
   const viewProps: LiffViewProps = { ...props, id: params.id }
   if (params.view === 'google') return <GoogleView {...viewProps} />
   if (params.view === 'review') return <ReviewView {...viewProps} />

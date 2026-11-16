@@ -9,7 +9,7 @@ import type { Deps, SavedFile } from '../ports'
 import { bangkokParts, bangkokTodayLabel } from '../time/bangkok'
 import type { Job } from '../webhook/ingest'
 import {
-  driveFolderLink, FILE_NOTICE_TEXT, fileFailedCard, fileSavedCard, photosFailedCard, photosSavedCard, sharedReason,
+  driveFolderLink, FILE_NOTICE_TEXT, filePausedCard, fileFailedCard, fileSavedCard, photosFailedCard, photosSavedCard, sharedReason,
 } from './card'
 
 // #4 Feature 1, file saver. A file or image sent in a group of a Project is downloaded from
@@ -116,7 +116,7 @@ export function pausedNoticeKey(groupId: string, now: Date): string {
  *  out (the reply token is then used, so later messages are pushes). */
 type JobState = { driveFileId: string | null; saving: Promise<boolean> | null }
 
-type PauseReason = 'no_owner' | 'feature_off' | 'no_drive' | 'other_account'
+type PauseReason = 'no_owner' | 'owner_left' | 'feature_off' | 'no_drive' | 'other_account'
 
 export async function handleGroupFile(deps: Deps, job: FileJob): Promise<FileSaveOutcome> {
   const ids = { groupId: job.groupId, messageType: job.messageType }
@@ -163,7 +163,7 @@ async function save(deps: Deps, job: FileJob, state: JobState): Promise<Saved | 
   // Paused while the Owner left (#30) or a Sub group waits for the take-over answer (#31):
   // both clear owner_confirmed_at. A paused save is not a failure: no card.
   const pause = (reason: PauseReason) => paused(deps, job, state, reason)
-  if (!group?.projectId || !ownerBackedOn(group)) return pause('no_owner')
+  if (!group?.projectId || !ownerBackedOn(group)) return pause(group?.ownerLeftAt ? 'owner_left' : 'no_owner')
   const setup = await deps.store.getGroupSetup(job.groupId)
   if (!setup?.features.saveFiles) return pause('feature_off')
   const fail = (reason: FailReason, err?: unknown) => failed(deps, job, state, reason, err)
@@ -236,11 +236,13 @@ async function save(deps: Deps, job: FileJob, state: JobState): Promise<Saved | 
 async function paused(deps: Deps, job: FileJob, state: JobState, reason: PauseReason): Promise<FileSaveOutcome> {
   log('file_save_skipped', { groupId: job.groupId, messageType: job.messageType, reason })
   if (reason === 'feature_off') return 'paused'
-  const text = reason === 'no_owner' ? FILE_NOTICE_TEXT.noOwner : FILE_NOTICE_TEXT.noDrive
+  const card = filePausedCard({
+    reason: reason === 'no_owner' || reason === 'owner_left' ? reason : 'no_drive', liffId: deps.config.liffId, groupId: job.groupId,
+  })
   try {
     // After a "saving…" reply the sender waits for an answer: tell them every time, by push.
     if (await state.saving) {
-      await sendCard(deps, job, state, { type: 'text', text }, `file_failed:paused:${job.storedMessageId}`)
+      await sendCard(deps, job, state, card, `file_failed:paused:${job.storedMessageId}`)
       return 'paused'
     }
     const { inserted } = await deps.store.recordWebhookEvent({
@@ -253,7 +255,7 @@ async function paused(deps: Deps, job: FileJob, state: JobState, reason: PauseRe
       log('file_paused_notice', { groupId: job.groupId, via: 'none' })
       return 'paused'
     }
-    await deps.line.reply(job.replyToken, [{ type: 'text', text }])
+    await deps.line.reply(job.replyToken, [card])
     log('file_paused_notice', { groupId: job.groupId, via: 'reply', reason })
   } catch (err) {
     logError('file_paused_notice_failed', { groupId: job.groupId }, err)

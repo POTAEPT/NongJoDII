@@ -14,6 +14,10 @@ export type ReminderAction =
   | { kind: 'discard_no'; taskId: string }                 // the confirm's "ไม่ลบ": changes nothing
   | { kind: 'restore'; taskId: string }                    // "กู้คืน" on the deleted reply: undoes the delete
 
+/** UX review 6.1: "ยกเลิก" on the "งานไหน…?" picker. No Task, so not a ReminderAction: the
+ *  webhook answers it before the Task buttons (webhook/process.ts). */
+export const PICK_CANCEL_DATA = 'a=rcx'
+
 const CODE = { done: 'rd', postpone: 'rp', postpone_to: 'rpt', postpone_pick: 'rpc', take: 'rt', discard: 'td', discard_yes: 'tdy', discard_no: 'tdn', restore: 'tdu' } as const
 const KIND_OF: Record<string, ReminderAction['kind']> = Object.fromEntries(
   Object.entries(CODE).map(([kind, code]) => [code, kind as ReminderAction['kind']]),

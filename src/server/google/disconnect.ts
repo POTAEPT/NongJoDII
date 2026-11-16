@@ -1,5 +1,6 @@
 import { open } from '../crypto/secretbox'
 import { liffUrl } from '../liff-links'
+import { nextStepCard, uri } from '../line/flex-ui'
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import type { LineMessage } from '../line/types'
 import { requireLiffUser } from '../liff-auth'
@@ -24,18 +25,17 @@ import { LOST_ACCESS_PUSH_RESERVE } from './lost-access'
 export const DISCONNECTED_TEXT = {
   card: 'เจ้าของบอทยกเลิกการเชื่อม Google Drive แล้ว ไฟล์ใหม่ในกลุ่มจะยังไม่ถูกบันทึก ไฟล์ที่บันทึกไว้แล้วยังอยู่ใน Drive ของเจ้าของบอท',
   button: 'เชื่อม Drive ใหม่',
+  // UX review 2.2: the Flex card's parts.
+  title: 'ยกเลิกการเชื่อม Google Drive แล้ว',
+  body: 'ไฟล์ใหม่ในกลุ่มจะยังไม่ถูกบันทึก จนกว่าจะเชื่อม Drive ใหม่',
+  note: 'ไฟล์ที่บันทึกไว้แล้วยังอยู่ใน Drive ของเจ้าของบอท',
 } as const
 
 export function disconnectedCard(liffId: string): LineMessage {
-  return {
-    type: 'template',
-    altText: 'เจ้าของบอทยกเลิกการเชื่อม Google Drive แล้ว',
-    template: {
-      type: 'buttons',
-      text: DISCONNECTED_TEXT.card,
-      actions: [{ type: 'uri', label: DISCONNECTED_TEXT.button, uri: liffUrl(liffId, 'google') }],
-    },
-  }
+  return nextStepCard({
+    tone: 'warning', title: DISCONNECTED_TEXT.title, body: DISCONNECTED_TEXT.body, note: DISCONNECTED_TEXT.note,
+    button: uri(DISCONNECTED_TEXT.button, liffUrl(liffId, 'google')), altText: 'เจ้าของบอทยกเลิกการเชื่อม Google Drive แล้ว',
+  })
 }
 
 /** POST /api/google/disconnect { idToken }. Only the verified LINE user's own latest Google

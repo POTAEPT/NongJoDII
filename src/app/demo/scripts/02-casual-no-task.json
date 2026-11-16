@@ -1,0 +1,112 @@
+{
+  "name": "02-casual-no-task",
+  "feature": "Summary with no Task (#5, #15)",
+  "description": "สี่คนคุยเรื่องมื้อเที่ยง ไม่มีใครรับงาน แล้ว Nont สั่งสรุป ผลที่คาด: สรุปอย่างเดียว ไม่มีงาน ไม่มีปุ่มตรวจงาน",
+  "startAt": "2026-11-16T03:00:00Z",
+  "group": {
+    "lineGroupId": "Cdemo0000000000000000000000000001",
+    "name": "ทีมพิตช์ NongJoDII",
+    "workDescription": "เตรียมงานพิตช์รอบสุดท้ายของทีม NongJoDII"
+  },
+  "personas": {
+    "nont": {
+      "lineName": "Nont",
+      "role": "manager",
+      "owner": true,
+      "lineUserId": "Udemo0000000000000000000000000a01"
+    },
+    "tae": {
+      "lineName": "Tae",
+      "role": "developer",
+      "lineUserId": "Udemo0000000000000000000000000a02"
+    },
+    "bomb": {
+      "lineName": "Bomb",
+      "role": "designer",
+      "lineUserId": "Udemo0000000000000000000000000a03"
+    },
+    "jeff": {
+      "lineName": "Jeff",
+      "role": "marketing",
+      "lineUserId": "Udemo0000000000000000000000000a04"
+    }
+  },
+  "messages": [
+    {
+      "id": "m1",
+      "persona": "tae",
+      "minute": 0,
+      "text": "หิวแล้วครับ เที่ยงนี้กินอะไรกันดี"
+    },
+    {
+      "id": "m2",
+      "persona": "bomb",
+      "minute": 1,
+      "text": "ร้านก๋วยเตี๋ยวเรือหน้าตึกเปิดแล้วนะ เมื่อวานเห็นคนเยอะมาก"
+    },
+    {
+      "id": "m3",
+      "persona": "nont",
+      "minute": 2,
+      "text": "เมื่อวานเพิ่งกินก๋วยเตี๋ยวไปเอง 555 ข้าวมันไก่ได้มั้ย"
+    },
+    {
+      "id": "m4",
+      "persona": "jeff",
+      "minute": 3,
+      "text": "ผมโหวตข้าวมันไก่ครับ ร้านนั้นน้ำจิ้มเด็ด"
+    },
+    {
+      "id": "m5",
+      "persona": "tae",
+      "minute": 4,
+      "text": "ข้าวมันไก่ก็ดีครับ เอาด้วยคน"
+    },
+    {
+      "id": "m6",
+      "persona": "bomb",
+      "minute": 5,
+      "text": "ฝนเหมือนจะตกด้วยนะ ท้องฟ้ามืดเลย"
+    },
+    {
+      "id": "m7",
+      "persona": "nont",
+      "minute": 6,
+      "text": "จริง อากาศแบบนี้น่านอนมากกว่าทำงานอีก 😂"
+    },
+    {
+      "id": "m8",
+      "persona": "tae",
+      "minute": 7,
+      "text": "เมื่อคืนดูบอลดึกด้วย ง่วงสุด ๆ lol"
+    },
+    {
+      "id": "m9",
+      "persona": "jeff",
+      "minute": 8,
+      "text": "ผมก็ดูนัดเดียวกันเลย ยิงกันมันมาก"
+    },
+    {
+      "id": "m10",
+      "persona": "bomb",
+      "minute": 9,
+      "text": "555 ส่วนเราดูซีรีส์จนตีสอง"
+    }
+  ],
+  "summaryCommand": {
+    "persona": "nont",
+    "minute": 10,
+    "text": "NongJoDII สรุปหน่อย"
+  },
+  "expectedTasks": [],
+  "fakeModelAnswer": {
+    "summary": "{tae} {bomb} {nont} และ {jeff} คุยเล่นเรื่องมื้อเที่ยง เลือกระหว่างก๋วยเตี๋ยวเรือกับข้าวมันไก่ และคุยเรื่องอากาศกับการนอนดึก ไม่มีการมอบหมายงาน",
+    "tasks": []
+  },
+  "expect": {
+    "storedMessages": 11,
+    "summaries": 1,
+    "candidates": 0,
+    "replyHasReviewButton": false
+  }
+}

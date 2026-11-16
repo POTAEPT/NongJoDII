@@ -31,3 +31,7 @@ Run the app from the repo root:
 - Apply migrations with `supabase db push`, which records the file's own version. The Supabase MCP `apply_migration` tool stamps the time it ran instead: right after using it, rename the file (`git mv`) to the version it recorded.
 - A file that is not applied yet keeps a version later than every applied one, so it never sorts before applied history.
 - Do not run `supabase migration repair` on the shared database without the team agreeing: it rewrites the live history table.
+
+## Demo simulator (/demo)
+
+Writing or changing a /demo scenario (the scripted group chats in `src/app/demo/scripts/`): follow `docs/demo-scenarios.md`.

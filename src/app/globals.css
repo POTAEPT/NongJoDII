@@ -1,4 +1,11 @@
 @import "tailwindcss";
+/* shadcn/ui (used only by /demo): animation utilities and the data-* variants its components use. */
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* shadcn components write `dark:` classes; /demo is light only, so `dark:` applies only
+   under an explicit .dark ancestor (no live page uses `dark:`). */
+@custom-variant dark (&:is(.dark *));
 
 :root {
   --background: #ffffff;
@@ -13,6 +20,28 @@
   --font-thai: var(--font-plex-thai), var(--font-geist-sans), sans-serif;
 }
 
+/* shadcn/ui colour names for /demo. Only new names: their values are set in
+   src/app/demo/demo.css under the demo page, so no live page is affected. shadcn's
+   primary, background and foreground reuse the existing tokens above and below. */
+@theme inline {
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-heading: var(--font-thai);
+}
+
 /* Figma UI v4 design tokens (file Yi9FCN94TrLPOmfw6f2kuT, variables), used by the LIFF pages.
    Radii map to Tailwind defaults: radius/sm 8 = rounded-lg, md 12 = rounded-xl, lg 16 = rounded-2xl. */
 @theme {
@@ -21,7 +50,7 @@
   --color-primary-soft: #dce8f7;
   --color-ink: #12294d;
   --color-ink-2: #545454;
-  --color-ink-3: #7a879c;
+  --color-ink-3: #5f6b7e; /* UX review 6.2: was #7a879c (3.7:1 on white) */
   --color-page: #ffffff;
   --color-subtle: #f4f6f9;
   --color-line: #d5e2f3;

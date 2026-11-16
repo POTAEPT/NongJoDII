@@ -1,0 +1,133 @@
+{
+  "name": "01-clear-task",
+  "feature": "Summary and Task candidates (#5, #15)",
+  "description": "สี่คนตกลงงานหนึ่งชิ้นที่มีคนรับและกำหนดส่งชัดเจน แล้ว Nont สั่งสรุป ผลที่คาด: งาน 1 งานและปุ่มตรวจงาน",
+  "startAt": "2026-11-16T03:00:00Z",
+  "group": {
+    "lineGroupId": "Cdemo0000000000000000000000000001",
+    "name": "ทีมพิตช์ NongJoDII",
+    "workDescription": "เตรียมงานพิตช์รอบสุดท้ายของทีม NongJoDII"
+  },
+  "personas": {
+    "nont": {
+      "lineName": "Nont",
+      "role": "manager",
+      "owner": true,
+      "lineUserId": "Udemo0000000000000000000000000a01"
+    },
+    "tae": {
+      "lineName": "Tae",
+      "role": "developer",
+      "lineUserId": "Udemo0000000000000000000000000a02"
+    },
+    "bomb": {
+      "lineName": "Bomb",
+      "role": "designer",
+      "lineUserId": "Udemo0000000000000000000000000a03"
+    },
+    "jeff": {
+      "lineName": "Jeff",
+      "role": "marketing",
+      "lineUserId": "Udemo0000000000000000000000000a04"
+    }
+  },
+  "messages": [
+    {
+      "id": "m1",
+      "persona": "nont",
+      "minute": 0,
+      "text": "ทุกคน วันพฤหัสนี้เราต้องพิตช์รอบสุดท้ายแล้วนะ สไลด์ยังเป็นของรอบแรกอยู่เลย"
+    },
+    {
+      "id": "m2",
+      "persona": "tae",
+      "minute": 1,
+      "text": "ใช่ครับ ตัวเลข break-even ในสไลด์ก็ยังไม่ได้แก้ตามที่กรรมการ comment มา"
+    },
+    {
+      "id": "m3",
+      "persona": "jeff",
+      "minute": 2,
+      "text": "ฝั่งการตลาดผมเตรียมสคริปต์พูดเปิดไว้แล้วครับ รอสไลด์ใหม่อย่างเดียว"
+    },
+    {
+      "id": "m4",
+      "persona": "bomb",
+      "minute": 3,
+      "text": "เดี๋ยวบอมทำสไลด์ใหม่ให้เองครับ แก้ดีไซน์ทั้งเด็คเลย"
+    },
+    {
+      "id": "m5",
+      "persona": "nont",
+      "minute": 4,
+      "text": "ดีเลย งั้นฝากบอมอัปเดตสไลด์พิตช์ทั้งเด็ค ใส่ตัวเลข break-even ใหม่ด้วยนะ"
+    },
+    {
+      "id": "m6",
+      "persona": "bomb",
+      "minute": 5,
+      "text": "ได้ครับ ต้องเสร็จเมื่อไหร่ครับ"
+    },
+    {
+      "id": "m7",
+      "persona": "nont",
+      "minute": 6,
+      "text": "ขอภายในพรุ่งนี้ห้าโมงเย็นนะ จะได้มีเวลาซ้อมก่อนวันจริง"
+    },
+    {
+      "id": "m8",
+      "persona": "bomb",
+      "minute": 7,
+      "text": "โอเคครับ พรุ่งนี้ 5 โมงเย็นส่งให้ดูในกลุ่มนี้เลย"
+    },
+    {
+      "id": "m9",
+      "persona": "tae",
+      "minute": 8,
+      "text": "ตัวเลขใหม่ผมส่งไว้ในแชตเมื่อวานแล้วนะครับ ใช้ชุดนั้นได้เลย"
+    },
+    {
+      "id": "m10",
+      "persona": "jeff",
+      "minute": 9,
+      "text": "พอสไลด์เสร็จ ผมจะซ้อมพูดตามเลยครับ"
+    },
+    {
+      "id": "m11",
+      "persona": "nont",
+      "minute": 10,
+      "text": "ขอบคุณทุกคนมาก 🙏"
+    }
+  ],
+  "summaryCommand": {
+    "persona": "nont",
+    "minute": 11,
+    "text": "NongJoDII สรุปหน่อย"
+  },
+  "expectedTasks": [
+    {
+      "title": "อัปเดตสไลด์พิตช์ทั้งเด็ค พร้อมตัวเลข break-even ใหม่",
+      "assignee": "bomb",
+      "due": "tomorrow 17:00 (Asia/Bangkok)",
+      "sourceMessage": "m5"
+    }
+  ],
+  "fakeModelAnswer": {
+    "summary": "ทีมเตรียมพิตช์รอบสุดท้ายวันพฤหัส {nont} มอบหมายให้ {bomb} อัปเดตสไลด์พิตช์ทั้งเด็คและใส่ตัวเลข break-even ใหม่ ส่งภายในพรุ่งนี้ 17:00 น. โดยใช้ตัวเลขที่ {tae} ส่งไว้แล้ว ส่วน {jeff} เตรียมสคริปต์พูดเปิดไว้แล้ว",
+    "tasks": [
+      {
+        "title": "อัปเดตสไลด์พิตช์ทั้งเด็ค พร้อมตัวเลข break-even ใหม่",
+        "details": "แก้ดีไซน์ทั้งเด็คและใช้ตัวเลข break-even ชุดใหม่ที่ {tae} ส่งไว้ในแชต",
+        "assignee": "bomb",
+        "due": "tomorrow 17:00",
+        "source": "m5"
+      }
+    ]
+  },
+  "expect": {
+    "storedMessages": 12,
+    "summaries": 1,
+    "candidates": 1,
+    "replyHasReviewButton": true
+  }
+}

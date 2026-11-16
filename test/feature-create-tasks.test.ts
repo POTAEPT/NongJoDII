@@ -124,7 +124,7 @@ describe('#5.2 candidates carry sender and time context', () => {
     const text = textOf(t.line.replies[0].messages)
     const sentAt = new Date(T0 + MIN)
     expect(text).toContain(`จาก Bank T. เวลา ${formatThaiShort(sentAt)}`)
-    expect(text).toContain('จาก Bank T. เวลา 12 พ.ย. 09:01')
+    expect(text).toContain('จาก Bank T. เวลา พฤ. 12 พ.ย. 09:01')
     // Only the first candidate has a source; the other two lines carry no จาก.
     expect(text.match(/^จาก /gm)).toHaveLength(1)
     // The card lists each Task as its title, then the owner line, then a source line if any.

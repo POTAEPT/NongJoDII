@@ -1,0 +1,153 @@
+{
+  "name": "03-several-tasks",
+  "feature": "Summary with several Task candidates (#5, #15)",
+  "description": "ทีมแบ่งงานสามชิ้นก่อนวันพิตช์ แต่ละชิ้นมีคนรับและกำหนดส่ง แล้ว Nont สั่งสรุป ผลที่คาด: งาน 3 งานและปุ่มตรวจงาน",
+  "startAt": "2026-11-16T03:00:00Z",
+  "group": {
+    "lineGroupId": "Cdemo0000000000000000000000000001",
+    "name": "ทีมพิตช์ NongJoDII",
+    "workDescription": "เตรียมงานพิตช์รอบสุดท้ายของทีม NongJoDII"
+  },
+  "personas": {
+    "nont": {
+      "lineName": "Nont",
+      "role": "manager",
+      "owner": true,
+      "lineUserId": "Udemo0000000000000000000000000a01"
+    },
+    "tae": {
+      "lineName": "Tae",
+      "role": "developer",
+      "lineUserId": "Udemo0000000000000000000000000a02"
+    },
+    "bomb": {
+      "lineName": "Bomb",
+      "role": "designer",
+      "lineUserId": "Udemo0000000000000000000000000a03"
+    },
+    "jeff": {
+      "lineName": "Jeff",
+      "role": "marketing",
+      "lineUserId": "Udemo0000000000000000000000000a04"
+    }
+  },
+  "messages": [
+    {
+      "id": "m1",
+      "persona": "nont",
+      "minute": 0,
+      "text": "ทุกคน สัปดาห์นี้มีนัดซ้อมพิตช์กับอาจารย์ที่ปรึกษานะ เหลือเวลาไม่เยอะแล้ว"
+    },
+    {
+      "id": "m2",
+      "persona": "nont",
+      "minute": 1,
+      "text": "ฝากเต้ทำเดโมแอปให้รันได้ครบทุกหน้า ก่อนวันศุกร์นี้นะ"
+    },
+    {
+      "id": "m3",
+      "persona": "tae",
+      "minute": 2,
+      "text": "ได้ครับ เดี๋ยวผมเก็บบั๊กหน้าแดชบอร์ดด้วยเลย"
+    },
+    {
+      "id": "m4",
+      "persona": "nont",
+      "minute": 3,
+      "text": "รบกวนบอมออกแบบโปสเตอร์งานพิตช์ ขนาด A1 ส่งพรุ่งนี้ 18:00 ได้มั้ย"
+    },
+    {
+      "id": "m5",
+      "persona": "bomb",
+      "minute": 4,
+      "text": "ได้ครับ เดี๋ยวส่งร่างแรกให้ดูก่อน"
+    },
+    {
+      "id": "m6",
+      "persona": "jeff",
+      "minute": 5,
+      "text": "ผมเขียนแคปชันโพสต์โปรโมตวันพิตช์ไว้แล้ว เดี๋ยวลงเพจคืนนี้ครับ"
+    },
+    {
+      "id": "m7",
+      "persona": "tae",
+      "minute": 6,
+      "text": "นนท์ช่วยจองห้องซ้อมที่ตึก 3 ให้หน่อยได้ไหม วันพฤหัส บ่ายโมง"
+    },
+    {
+      "id": "m8",
+      "persona": "nont",
+      "minute": 7,
+      "text": "ได้เลย เดี๋ยวจองให้"
+    },
+    {
+      "id": "m9",
+      "persona": "bomb",
+      "minute": 8,
+      "text": "ขอบคุณทุกคนนะครับ สู้ ๆ"
+    },
+    {
+      "id": "m10",
+      "persona": "jeff",
+      "minute": 9,
+      "text": "สู้ ๆ ครับทุกคน"
+    }
+  ],
+  "summaryCommand": {
+    "persona": "nont",
+    "minute": 10,
+    "text": "NongJoDII สรุปหน่อย"
+  },
+  "expectedTasks": [
+    {
+      "title": "ทำเดโมแอปให้รันได้ครบทุกหน้า",
+      "assignee": "tae",
+      "due": "next Friday 17:00 (Asia/Bangkok)",
+      "sourceMessage": "m2"
+    },
+    {
+      "title": "ออกแบบโปสเตอร์งานพิตช์ ขนาด A1",
+      "assignee": "bomb",
+      "due": "tomorrow 18:00 (Asia/Bangkok)",
+      "sourceMessage": "m4"
+    },
+    {
+      "title": "จองห้องซ้อมที่ตึก 3",
+      "assignee": "nont",
+      "due": "next Thursday 13:00 (Asia/Bangkok)",
+      "sourceMessage": "m7"
+    }
+  ],
+  "fakeModelAnswer": {
+    "summary": "ทีมเตรียมซ้อมพิตช์กับอาจารย์ที่ปรึกษา {nont} ฝาก {tae} ทำเดโมแอปให้ครบทุกหน้าก่อนวันศุกร์ ฝาก {bomb} ออกแบบโปสเตอร์ A1 ส่งพรุ่งนี้ 18:00 {jeff} เตรียมโพสต์โปรโมตแล้ว และ {tae} ขอให้ {nont} จองห้องซ้อมวันพฤหัสบ่ายโมง",
+    "tasks": [
+      {
+        "title": "ทำเดโมแอปให้รันได้ครบทุกหน้า",
+        "details": null,
+        "assignee": "tae",
+        "due": "next Friday 17:00",
+        "source": "m2"
+      },
+      {
+        "title": "ออกแบบโปสเตอร์งานพิตช์ ขนาด A1",
+        "details": null,
+        "assignee": "bomb",
+        "due": "tomorrow 18:00",
+        "source": "m4"
+      },
+      {
+        "title": "จองห้องซ้อมที่ตึก 3",
+        "details": null,
+        "assignee": "nont",
+        "due": "next Thursday 13:00",
+        "source": "m7"
+      }
+    ]
+  },
+  "expect": {
+    "storedMessages": 11,
+    "summaries": 1,
+    "candidates": 3,
+    "replyHasReviewButton": true
+  }
+}

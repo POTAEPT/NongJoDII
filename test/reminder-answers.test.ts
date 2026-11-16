@@ -85,7 +85,7 @@ describe('Done (#45)', () => {
     const t = setup()
     await t.press(BIW, done(t.slides.id))
     expect(t.task(t.slides.id)).toMatchObject({ status: 'done', doneAt: NOW, lastActivityAt: NOW, lastEditedByLineUserId: BIW })
-    expect(textOf(t.lastReply())).toBe('ปิดงาน “ทำสไลด์” แล้ว')
+    expect(textOf(t.lastReply())).toBe('“ทำสไลด์” เสร็จแล้ว')
     expect(t.line.replies[0].replyToken).toBe('rt-press')
     expect(t.line.pushes).toHaveLength(0)
   })
@@ -226,7 +226,7 @@ describe('a press without the presser\'s userId (#45)', () => {
     const t = setup()
     await t.press(null, done(t.slides.id))
     const reply = t.lastReply()
-    expect(reply.type).toBe('template')
+    expect(reply.type).toBe('flex')
     expect(json(reply)).toContain(`https://liff.line.me/${TEST_LIFF_ID}?view=progress&id=${encodeURIComponent(done(t.slides.id))}`)
     expect(t.task(t.slides.id).status).toBe('in_process')
   })
@@ -245,7 +245,7 @@ describe('a press without the presser\'s userId (#45)', () => {
     const refused = await answerProgressFromLiff(t.deps, { idToken: 'tok-ton', data: done(t.slides.id) })
     expect(refused.body).toMatchObject({ result: 'not_allowed' })
     const res = await answerProgressFromLiff(t.deps, { idToken: 'tok-biw', data: done(t.slides.id) })
-    expect(res).toMatchObject({ status: 200, body: { result: 'done', text: 'ปิดงาน “ทำสไลด์” แล้ว' } })
+    expect(res).toMatchObject({ status: 200, body: { result: 'done', text: '“ทำสไลด์” เสร็จแล้ว' } })
     expect(t.task(t.slides.id).status).toBe('done')
   })
 
@@ -301,7 +301,7 @@ describe('typed fallbacks (#45)', () => {
     await t.say(BIW, 'NongJoDII done')
     const b = buttons(t.lastReply())
     expect(textOf(t.lastReply())).toBe(ANSWER_TEXT.pickDone)
-    expect(Object.keys(b)).toEqual(['ทำสไลด์', 'ทำโลโก้'])
+    expect(Object.keys(b)).toEqual(['ทำสไลด์', 'ทำโลโก้', 'ยกเลิก']) // UX review 6.1: a way out
     await t.press(BIW, b['ทำโลโก้'].data)
     expect(t.task(logo.id).status).toBe('done')
     expect(t.task(t.slides.id).status).toBe('in_process')
@@ -317,7 +317,7 @@ describe('typed fallbacks (#45)', () => {
       })
     }
     await t.say(BIW, 'NongJoDII done')
-    const labels = Object.keys(buttons(t.lastReply()))
+    const labels = Object.keys(buttons(t.lastReply())).filter((l) => l !== 'ยกเลิก')
     expect(labels).toHaveLength(PICK_MAX)
     expect(labels[0]).toBe('ทำสไลด์') // due today
     expect(labels).not.toContain('งาน 0') // no due date: last

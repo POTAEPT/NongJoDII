@@ -1,5 +1,5 @@
 import type { LineMessage } from '../line/types'
-import { liffUrl } from '../liff-links'
+import { loginCard } from '../line/login-card'
 import { log, logError } from '../log'
 import type { Deps, ProgressPromptRow, TaskRow } from '../ports'
 import { PROGRESS_REPLY, alreadyUpdatedCard, pickerCard, resultCard, textMessage } from './card'
@@ -44,15 +44,7 @@ export async function handleProgressPostback(deps: Deps, job: ProgressPostbackJo
 /** A button to the LIFF page that repeats this press after LINE login. Only the postback
  *  data (IDs only) travels in the link. */
 function loginMessage(liffId: string, data: string): LineMessage {
-  return {
-    type: 'template',
-    altText: PROGRESS_REPLY.needsLogin,
-    template: {
-      type: 'buttons',
-      text: PROGRESS_REPLY.needsLogin,
-      actions: [{ type: 'uri', label: 'ยืนยันตัวตน', uri: liffUrl(liffId, 'progress', data) }],
-    },
-  }
+  return loginCard(liffId, data)
 }
 
 /** A picker row: made from the same chat message for the same target, never posted as a card. */

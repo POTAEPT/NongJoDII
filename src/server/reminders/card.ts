@@ -1,6 +1,6 @@
 import { COLOR, bubble, button, buttonRow, caption, header, keyValue, panel, postback, text, title, type Tone } from '../line/flex-ui'
 import type { LineMessage } from '../line/types'
-import { BKK_OFFSET_MS, bangkokParts } from '../time/bangkok'
+import { BKK_OFFSET_MS, bangkokParts, formatRelativeDue, formatThaiWeekdayDay } from '../time/bangkok'
 import { encodeReminderAction } from './postback'
 import type { ReminderItem, ReminderReason } from './select'
 
@@ -79,15 +79,14 @@ function reasonTone(reason: ReminderReason): Tone {
   return reason === 'overdue' ? 'warning' : 'reminder'
 }
 
-function dueText(due: Date | null): string {
+/** UX review 4.3: this card is about today, so 'วันนี้ 17:00' / 'พรุ่งนี้ 09:00', else 'พฤ. 19 พ.ย. 17:00'. */
+function dueText(due: Date | null, now: Date): string {
   if (!due) return REMINDER_TEXT.noDue
-  const p = bangkokParts(due)
-  return `${p.d}/${p.m} ${hhmm(due)}`
+  return formatRelativeDue(due, now)
 }
 
 function summaryBubble(items: ReminderItem[], total: number, now: Date) {
   const c = reasonCounts(items)
-  const p = bangkokParts(now)
   const lines = [
     c.overdue ? `เลยกำหนด ${c.overdue} งาน` : null,
     c.dueSoon ? `ครบกำหนดวันนี้-พรุ่งนี้ ${c.dueSoon} งาน` : null,
@@ -96,7 +95,7 @@ function summaryBubble(items: ReminderItem[], total: number, now: Date) {
   ].filter((x): x is string => x !== null)
   return bubble([
     header('reminder', REMINDER_TEXT.title),
-    caption(`${p.d}/${p.m} · ${total} งานที่ต้องดู`),
+    caption(`${formatThaiWeekdayDay(now)} · ${total} งานที่ต้องดู`),
     panel(lines.map((l) => text(`• ${l}`))),
     ...(total > items.length ? [caption(REMINDER_TEXT.more(total - items.length))] : []),
   ])
@@ -112,7 +111,7 @@ function taskBubble(item: ReminderItem, names: Map<string, string | null>, now: 
     [
       header(reasonTone(top), reasonLabel(top, item, now)),
       title(clip(task.title)),
-      panel([keyValue(REMINDER_TEXT.owner, owner, ownerColor), keyValue(REMINDER_TEXT.due, dueText(task.dueAt), dueColor)]),
+      panel([keyValue(REMINDER_TEXT.owner, owner, ownerColor), keyValue(REMINDER_TEXT.due, dueText(task.dueAt, now), dueColor)]),
       ...reasons.slice(1).map((r) => caption(reasonLabel(r, item, now))),
     ],
     // Done and Postpone belong to the Task's owner (the #39 rule). A Task with no owner has

@@ -8,11 +8,12 @@ import { TEXT_MODEL } from '../usage/pricing'
 import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
 import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
-import { setupCard } from '../setup/card'
+import { nextStepCard, uri } from '../line/flex-ui'
+import { liffUrl } from '../liff-links'
 import { isSetupOpen, setupState } from '../setup/rules'
 import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
-import { summaryFailedText, summaryFailure } from './failure'
+import { summaryFailedCard, summaryFailure } from './failure'
 
 export type SummaryJob = { groupId: string; lineGroupId: string; replyToken: string | null; requesterLineUserId: string | null }
 
@@ -30,6 +31,14 @@ const DETAILS_MAX = 2000
 const REPLY_FEATURE_OFF = 'ฟีเจอร์สรุปแชตปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า'
 const REPLY_NO_OWNER = 'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชตไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน'
 const REPLY_NO_MESSAGES = 'ยังไม่มีข้อความให้สรุป'
+export const SUMMARY_CARD_TEXT = {
+  offTitle: 'ฟีเจอร์สรุปแชตปิดอยู่',
+  offBody: 'เจ้าของบอทเปิดได้ในหน้าการตั้งค่า',
+  settingsButton: 'เปิดการตั้งค่า',
+  noOwnerTitle: 'กลุ่มนี้ยังไม่มีเจ้าของบอท',
+  noOwnerBody: 'ต้องมีเจ้าของบอทก่อน น้องจดดีถึงจะสรุปแชตได้',
+  setupButton: 'ตั้งค่ากลุ่ม',
+} as const
 export const REPLY_NOTHING_NEW = 'ยังไม่มีข้อความใหม่ตั้งแต่สรุปครั้งก่อน คุยต่อแล้วค่อยสั่งสรุปอีกครั้งนะ'
 
 /** "NongJoDII summarize": summarizes recent chat into a Summary with Task candidates
@@ -45,7 +54,7 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
     // A store failure outside the AI step (group, usage, messages, members, createSummary) must still answer the group.
     const reason = summaryFailure(err, false)
     logError('summary_failed', { groupId, reason }, err)
-    if (!sent.value) await replyText(deps, replyToken, groupId, summaryFailedText(reason, deps.now()), sent)
+    if (!sent.value) await reply(deps, replyToken, groupId, [summaryFailedCard(reason, deps.now())], sent)
   }
 }
 
@@ -58,19 +67,28 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     log('summary_group_missing', { groupId })
     return
   }
-  if (!group.featureSummarize) return replyText(deps, replyToken, groupId, REPLY_FEATURE_OFF, sent)
+  if (!group.featureSummarize) {
+    // UX review 2.1: a card with the button to Settings, not only words.
+    return reply(deps, replyToken, groupId, [nextStepCard({
+      tone: 'info', title: SUMMARY_CARD_TEXT.offTitle, body: SUMMARY_CARD_TEXT.offBody, altText: REPLY_FEATURE_OFF,
+      button: uri(SUMMARY_CARD_TEXT.settingsButton, liffUrl(deps.config.liffId, 'settings', groupId)),
+    })], sent)
+  }
   // Owner-backed features run only with a confirmed Owner.
   if (!ownerBackedOn(group) || !group.nominatedOwnerLineUserId) {
     // #30: the Owner left. The reply (no push) carries the owner_needed card, so the group
     // can still reach the Owner page when that card's push was skipped near the quota.
     if (group.ownerLeftAt !== null) return reply(deps, replyToken, groupId, [ownerNeededCard(deps.config.liffId, groupId)], sent)
-    const messages: LineMessage[] = [{ type: 'text', text: REPLY_NO_OWNER }]
-    // Setup not finished (no Project yet): the #2a setup card rides on the same reply,
-    // the second way to it after the join reply (#52). It reaches groups whose join reply
-    // failed and groups the bot joined before onboarding existed. A group that has a
-    // Project but no confirmed Owner (the Owner left) needs an Owner change, not setup.
-    if (isSetupOpen(setupState(group))) messages.push(setupCard({ liffId: deps.config.liffId, groupId }))
-    return reply(deps, replyToken, groupId, messages, sent)
+    // Setup not finished (no Project yet): one card with the button to the setup form, the
+    // second way to it after the join reply (#52). It reaches groups whose join reply failed
+    // and groups the bot joined before onboarding existed (UX review 2.1: before, a text plus
+    // the whole #2a setup card). A group that has a Project but no confirmed Owner needs an
+    // Owner change, not setup: words only.
+    const open = isSetupOpen(setupState(group))
+    return reply(deps, replyToken, groupId, [nextStepCard({
+      tone: 'warning', title: SUMMARY_CARD_TEXT.noOwnerTitle, body: SUMMARY_CARD_TEXT.noOwnerBody, altText: REPLY_NO_OWNER,
+      ...(open ? { button: uri(SUMMARY_CARD_TEXT.setupButton, liffUrl(deps.config.liffId, 'setup', groupId)) } : {}),
+    })], sent)
   }
   const ownerLineUserId = group.nominatedOwnerLineUserId
 
@@ -123,7 +141,7 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     // The reply says why, with a code and the time to find this log line (summary/failure.ts).
     const reason = summaryFailure(err, true)
     logError('summary_ai_failed', { groupId, reason }, err)
-    return replyText(deps, replyToken, groupId, summaryFailedText(reason, deps.now()), sent)
+    return reply(deps, replyToken, groupId, [summaryFailedCard(reason, deps.now())], sent)
   }
 
   // H1: the model writes {mN}; code swaps in LINE names, so a nickname never reaches a screen.

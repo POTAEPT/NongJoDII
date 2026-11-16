@@ -20,8 +20,13 @@ export class FakeLine implements LinePort {
   /** lineGroupId -> LINE's member count. A missing key answers 0. */
   groupMemberCounts = new Map<string, number>()
   failMemberCount = false
-  /** lineGroupId -> LINE group name. A missing key answers null (LINE 404). */
+  /** lineGroupId -> LINE group name. A group in neither this map nor goneGroups is one the
+   *  test says nothing about: the lookup fails as on a LINE 5xx, so callers (the join's
+   *  name, the Drive folder name, the #32 member check) treat it as unknown, and nothing is
+   *  marked from it. */
   groupNames = new Map<string, string>()
+  /** Groups LINE answers 404 for (the bot is no longer in them). */
+  goneGroups = new Set<string>()
   failGroupSummary = false
   groupSummaryCalls: string[] = []
   /** How long getGroupSummary takes on `clock` (#13 time limit); 0 (the default) = instant. */
@@ -91,8 +96,10 @@ export class FakeLine implements LinePort {
     this.groupSummaryCalls.push(lineGroupId)
     if (this.groupSummaryMs > 0) this.clock?.advance(this.groupSummaryMs)
     if (this.failGroupSummary) throw new AdapterError('line group summary 500')
+    if (this.goneGroups.has(lineGroupId)) return null
     const groupName = this.groupNames.get(lineGroupId)
-    return groupName === undefined ? null : { groupName }
+    if (groupName === undefined) throw new AdapterError('line group summary 500 (group not set up in FakeLine)')
+    return { groupName }
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {

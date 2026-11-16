@@ -148,7 +148,8 @@ export type DashboardMembership = {
 }
 /** #84: one group in the 1:1 chat menu. */
 export type UserGroup = { groupId: string; name: string | null; isOwner: boolean }
-export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null }
+/** ownerLineUserId (#90): the group's confirmed Owner, or null while none is confirmed. */
+export type DashboardGroupRow = { groupId: string; projectId: string; name: string | null; ownerLineUserId: string | null }
 export type DashboardMemberRow = { groupId: string; lineUserId: string; displayName: string | null }
 /** A live (not soft-deleted) Task; assigneeName is kept for a Member who left (Done Tasks keep the name). */
 export type DashboardTaskRow = {
@@ -307,6 +308,10 @@ export type OwnerChangeState = {
   waiting: TakeoverSubGroup[]
 }
 /** A Sub group the daily rule detached from its Project. */
+export type PausedOwnerCard = {
+  groupId: string; lineGroupId: string; ownerLineUserId: string | null
+  card: { promptId: string; askedAt: Date; pushed: boolean } | null
+}
 export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: string | null }
 /** #30 part B: a group that has had no Owner since ownerLeftAt. subGroup: attached to a
  *  Project and not its main group (it detaches instead of the bot leaving). */
@@ -324,7 +329,10 @@ export type OwnerExitState = {
 export type OwnerChangeOutcome = 'changed' | 'not_nominee'
 /** 'changed': a chosen Sub group stopped waiting (expired and detached) while the answer
  *  was saved; nothing was written. */
-export type TakeoverAnswerOutcome = 'saved' | 'changed'
+/** 'expired': the Sub groups waited more than 7 days (TAKEOVER_WAIT_MS); the tick detaches
+ *  them, so the answer is refused (answer_subgroup_takeover raises SQLSTATE NJ409 once
+ *  20261116010000 is applied). */
+export type TakeoverAnswerOutcome = 'saved' | 'changed' | 'expired'
 
 export interface StorePort {
   // #1 webhook
@@ -552,6 +560,15 @@ export interface StorePort {
   /** Inserts the group's owner_needed card (task_prompts). promptId null when the group already
    *  has an open one (unique index task_prompts_one_open_owner_needed). */
   openOwnerNeededPrompt(p: { groupId: string; subjectLineUserId: string | null; askedAt: Date }): Promise<{ promptId: string | null }>
+  /** #30 reconcile (#74): groups the bot is in whose confirmed Owner's membership is marked
+   *  left at or after the confirm, with the leave time. A leave whose Owner mark failed after
+   *  the membership write. */
+  listConfirmedOwnersWhoLeft(): Promise<{ groupId: string; lineGroupId: string; lineUserId: string; leftAt: Date }[]>
+  /** #30 reconcile (#74): groups the bot is in that are paused by an Owner leave
+   *  (owner_left_at set, no confirmed Owner), with their open owner_needed card: null when
+   *  none is open; `pushed` when an owner_needed push_log row for the group exists since the
+   *  card was opened. ownerLineUserId is the nominee column (null after a detach). */
+  listPausedOwnerCards(): Promise<PausedOwnerCard[]>
   /** The presser becomes the nominee of a main group whose Owner left, or of a group with no
    *  Project whose Owner left (a Sub group detached by #30 part B), unless another live
    *  Member already holds the nomination. Compare-and-set on the nominee read first, so of two
@@ -642,22 +659,23 @@ export interface StorePort {
   /** rpc change_project_owner (one transaction): the main group must name `newOwner` as its
    *  nominee. Makes them the Project's owner, confirms the main group, clears the Project's
    *  and main group's folder IDs, retires the active Drive connection ('replaced') and puts
-   *  every Sub group on the take-over question (takeover_asked_at = now(), Owner confirm
-   *  cleared). Repeating it restarts the question, so the caller guards repeats. */
+   *  on the take-over question (takeover_asked_at = now(), Owner confirm and folder ID
+   *  cleared) every Sub group that is still waiting, or does not run on `newOwner` already
+   *  (20261116010000, D1). A Sub group already confirmed on `newOwner` keeps running.
+   *  Production reaches it only through complete_owner_change (completeOwnerChange). */
   changeProjectOwner(projectId: string, newOwnerLineUserId: string): Promise<{ outcome: OwnerChangeOutcome }>
   /** null when the Project does not exist. */
   getOwnerChange(projectId: string): Promise<OwnerChangeState | null>
   /** rpc answer_subgroup_takeover: the listed waiting Sub groups name the Project's owner and
    *  are confirmed (folder ID cleared); every other waiting Sub group of the Project detaches
-   *  (project_id and takeover_asked_at null; it keeps its old nominee and folder). */
+   *  (project_id, takeover_asked_at and the folder ID null; it keeps its old nominee). */
   answerSubgroupTakeover(projectId: string, takeoverGroupIds: string[]): Promise<{ outcome: TakeoverAnswerOutcome }>
   /** Daily rule: one UPDATE that detaches every Sub group whose question was asked before
    *  `askedBefore` (groups_takeover_expiry_idx), returning those groups.
-   *  #30 part B: a waiting Sub group has no confirmed Owner, so first, in its own UPDATE, the
-   *  same groups start a fresh Owner count (owner_left_at = at, never moved back) with the
-   *  nominee cleared, as startDetachedOwnerCount does; then the detach. That order means a
-   *  run that stops between the two leaves a group still attached (the next tick detaches
-   *  it), never a detached group without owner_left_at. */
+   *  #30 part B: in the same UPDATE, a waiting Sub group (no confirmed Owner) starts a fresh
+   *  Owner count (owner_left_at = at) with the nominee cleared, as startDetachedOwnerCount
+   *  does. owner_left_at never moves back: a group whose owner_left_at is newer than `at`
+   *  is left attached, and detaches on a later tick. */
   detachExpiredTakeovers(askedBefore: Date, at: Date): Promise<DetachedSubGroup[]>
   /** #30 part B, run before a detach: one UPDATE, on those of `groupIds` with no confirmed
    *  Owner whose owner_left_at is null or older than `at`, sets owner_left_at = at (a fresh
@@ -666,11 +684,16 @@ export interface StorePort {
    *  role (decided 2026-11-15, option B). Returns the IDs it changed; a repeat with the same
    *  `at` changes nothing, so a claim made since is kept. */
   startDetachedOwnerCount(groupIds: string[], at: Date): Promise<string[]>
+  /** #31 lost take-over card: Projects whose Sub groups wait on a question asked at or after
+   *  `askedAfter` (not expired), and whose main group has no owner_takeover push_log row
+   *  since that ask (a push LINE refused, or one skipped near the quota, left none). */
+  listUnsentTakeoverCards(askedAfter: Date): Promise<{ projectId: string; askedAt: Date }[]>
   // #11 Removal and recovery. groups.left_at / delete_after mark a group the bot left;
-  // groups.joined_at is the time of the latest join applied, so a stale leave is ignored.
+  // groups.joined_at is the time of the latest join event applied (null until the row's
+  // first join, not the insert time), so a stale leave is ignored.
   /** The bot left the group (LINE accepted its leave call, or a leave event at `at`). One
    *  UPDATE by line_group_id: left_at = at and delete_after = at + 7 days, only where
-   *  left_at is null (an existing mark never moves) and joined_at <= at (a leave older
+   *  left_at is null (an existing mark never moves) and joined_at is null or <= at (a leave older
    *  than the latest re-invite changes nothing). Answers the delete_after the group holds
    *  afterwards; null when no group has this ID or the bot is in it after a newer join. */
   markBotLeft(m: { lineGroupId: string; at: Date }): Promise<{ deleteAfter: Date | null }>
@@ -678,7 +701,7 @@ export interface StorePort {
   getGroupDeleteAfter(groupId: string): Promise<Date | null>
   /** The bot joined the group at `at` (a join event). Separate idempotent UPDATEs: first,
    *  with no confirmed Owner and an owner_left_at older than `at`, owner_left_at = at (the
-   *  7-day Owner count starts again, #30); then joined_at = at where it is older; then
+   *  7-day Owner count starts again, #30); then joined_at = at where it is null or older; then
    *  left_at and delete_after are cleared where left_at <= at (a re-invite inside the 7
    *  days). The Owner reset runs first, so a redelivery after a half-failure redoes all. */
   markBotJoined(j: { groupId: string; at: Date }): Promise<void>

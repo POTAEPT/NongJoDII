@@ -182,7 +182,8 @@ describe('weekly insight (#20)', () => {
     expect(insightsOf(store, group.id)).toHaveLength(0)
     // The claim is stuck on today, with no row for the week.
     expect(store.tables.group_schedules.find((s) => s.groupId === group.id)?.weeklySummaryLastSentOn).toBe('2026-11-16')
-    const events = errors.mock.calls.map((c) => JSON.parse(String(c[0])).event)
+    // Other tick jobs' lines (the member check finds no group set up in FakeLine) aside.
+    const events = errors.mock.calls.map((c) => JSON.parse(String(c[0])).event).filter((e: string) => e.startsWith('weekly_'))
     expect(events).toEqual(['weekly_insight_release_failed', 'weekly_insight_failed'])
 
     await tickAt(bkk('2026-11-16T09:15:00'))

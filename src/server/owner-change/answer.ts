@@ -65,8 +65,9 @@ async function waitingNow(deps: Deps, projectId: string, read: TakeoverSubGroup[
 
 /** POST /api/takeover/answer { idToken, groupId, choice }. The answer covers every Sub
  *  group still waiting when it is saved. 409 nothing_waiting: none waits (answered before,
- *  or detached after 7 days); 409 changed: one detached while this was saved (nothing
- *  written; the page loads again). */
+ *  or detached after 7 days); 409 expired: the 7 days are over and the tick has not
+ *  detached them yet (they detach, the answer is refused); 409 changed: one detached while
+ *  this was saved (nothing written; the page loads again). */
 export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): Promise<ApiResult> {
   // The route's 60 s cover this handler and its after() work.
   const deadline = driveDeadline(deps.now())
@@ -77,25 +78,33 @@ export async function answerTakeover(deps: Deps, body: unknown, defer: Defer): P
   const { change, requester } = gate
   const waiting = change.waiting
   if (waiting.length === 0) return { status: 409, body: { error: 'nothing_waiting' } }
+  const expired = { status: 409, body: { error: 'expired' } }
+  const firstAsked = Math.min(...waiting.map((g) => g.askedAt.getTime()))
+  if (firstAsked < deps.now().getTime() - TAKEOVER_WAIT_MS) return expired
   const ids = choice === 'takeover' ? waiting.map((g) => g.groupId) : []
   // #30 part B: a "detach" answer detaches every Sub group of the Project still waiting when
   // the rpc runs, so they are read again right before it (the gate's read may be older).
   const detaching = choice === 'detach' ? await waitingNow(deps, change.projectId, waiting) : []
   const { outcome } = await deps.store.answerSubgroupTakeover(change.projectId, ids)
   if (outcome === 'changed') return { status: 409, body: { error: 'changed' } }
+  if (outcome === 'expired') return expired
   log('subgroup_takeover_answered', { projectId: change.projectId, choice, subGroups: waiting.length })
   if (choice === 'takeover') {
     // The new Owner's Drive gets the Sub groups' folders, if they have signed in to Google.
     defer(() => syncDriveForOwner(deps, requester, deadline))
   } else {
-    // #30 part B: after the detach, the groups that now have no Project and no Owner start a
-    // fresh Owner count with no nominee (any live Member may claim), and get the owner_needed
-    // card: a Drive-gated new Owner, 7 days, then the bot leaves. Known gap: a request that
-    // dies between the rpc and this write leaves them without owner_left_at; the migration on
-    // review-fixes-15nov makes answer_subgroup_takeover write it in the same statement.
+    // #30 part B: the groups the rpc detached have no Project and no confirmed Owner. The
+    // review-followups migration already started their Owner count (owner_left_at = now())
+    // and cleared the nominee in the rpc's own statement; startDetachedOwnerCount does the
+    // same for a database without it (with the migration it changes nothing, or moves that
+    // start by a few ms to this request's clock). Its result is not used to
+    // pick the cards: the rpc's now() and this request's clock differ, so a group it skips
+    // may still be one this answer detached. Every group read as waiting right before the
+    // rpc (`detaching`) detached with it, so each gets its owner_needed card once (its retry
+    // key carries `at`).
     const at = deps.now()
-    const counted = new Set(await deps.store.startDetachedOwnerCount(detaching.map((g) => g.groupId), at))
-    defer(() => announceDetached(deps, detaching.filter((g) => counted.has(g.groupId)), deadline, at, 'owner_needed'))
+    await deps.store.startDetachedOwnerCount(detaching.map((g) => g.groupId), at)
+    defer(() => announceDetached(deps, detaching, deadline, at, 'owner_needed'))
   }
   const result: TakeoverAnswerResult = { choice: choice as TakeoverChoice, subGroups: waiting.length }
   return { status: 200, body: result }

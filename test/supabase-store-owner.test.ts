@@ -100,8 +100,20 @@ describe('SupabaseStore.claimOwnerChange', () => {
       { data: PENDING, error: null },
       { data: { left_at: '2026-11-12T03:00:00+00:00' }, error: null },
       { data: [], error: null },
+      { data: { nominated_owner_line_user_id: 'Uother' }, error: null }, // read again after the lost CAS
     ])
     expect(await store.claimOwnerChange('g1', 'Unew', AT)).toEqual({ outcome: 'taken' })
+  })
+
+  it('two presses of the same person at once: the press that lost the CAS answers already_claimed', async () => {
+    const { store, calls } = stubDb([
+      { data: PENDING, error: null },
+      { data: { left_at: '2026-11-12T03:00:00+00:00' }, error: null },
+      { data: [], error: null }, // the other press won
+      { data: { nominated_owner_line_user_id: 'Unew' }, error: null },
+    ])
+    expect(await store.claimOwnerChange('g1', 'Unew', AT)).toEqual({ outcome: 'already_claimed' })
+    expect(calls).toContainEqual({ method: 'select', args: ['nominated_owner_line_user_id'] })
   })
 
   it('tells a Sub group and a group with no pending change apart', async () => {
@@ -138,6 +150,42 @@ describe('SupabaseStore.listPendingOwnerChanges', () => {
       { method: 'not', args: ['owner_left_at', 'is', null] },
       { method: 'is', args: ['owner_confirmed_at', null] },
       { method: 'is', args: ['left_at', null] },
+    ]))
+  })
+})
+
+describe('SupabaseStore #30 reconcile queries (#74)', () => {
+  it('listConfirmedOwnersWhoLeft reads confirmed live groups, then only their nominees\' left rows', async () => {
+    const { store, calls } = stubDb([
+      {
+        data: [
+          { id: 'g1', line_group_id: 'C1', nominated_owner_line_user_id: 'Uowner', owner_confirmed_at: '2026-11-01T03:00:00+00:00' },
+          { id: 'g2', line_group_id: 'C2', nominated_owner_line_user_id: 'Unew', owner_confirmed_at: '2026-11-05T03:00:00+00:00' },
+        ],
+        error: null,
+      },
+      {
+        data: [
+          { group_id: 'g1', line_user_id: 'Uowner', left_at: '2026-11-12T03:00:00+00:00' },
+          // Another group's nominee who also left g1 is not g1's Owner.
+          { group_id: 'g1', line_user_id: 'Unew', left_at: '2026-11-12T03:00:00+00:00' },
+          // Confirmed after leaving (a take-over of a Sub group they had left): not a lost leave.
+          { group_id: 'g2', line_user_id: 'Unew', left_at: '2026-11-02T03:00:00+00:00' },
+        ],
+        error: null,
+      },
+    ])
+    expect(await store.listConfirmedOwnersWhoLeft()).toEqual([
+      { groupId: 'g1', lineGroupId: 'C1', lineUserId: 'Uowner', leftAt: new Date('2026-11-12T03:00:00Z') },
+    ])
+    expect(calls).toEqual(expect.arrayContaining([
+      { method: 'from', args: ['groups'] },
+      { method: 'not', args: ['owner_confirmed_at', 'is', null] },
+      { method: 'is', args: ['left_at', null] },
+      { method: 'from', args: ['group_members'] },
+      { method: 'in', args: ['group_id', ['g1', 'g2']] },
+      { method: 'in', args: ['line_user_id', ['Uowner', 'Unew']] },
+      { method: 'not', args: ['left_at', 'is', null] },
     ]))
   })
 })

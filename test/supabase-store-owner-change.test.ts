@@ -116,7 +116,7 @@ describe('SupabaseStore.detachExpiredTakeovers', () => {
       {
         method: 'update',
         args: [{
-          project_id: null, takeover_asked_at: null, owner_left_at: now.toISOString(),
+          project_id: null, takeover_asked_at: null, drive_folder_id: null, owner_left_at: now.toISOString(),
           nominated_owner_line_user_id: null, owner_nominated_by_line_user_id: null, owner_nominated_at: null,
         }],
       },

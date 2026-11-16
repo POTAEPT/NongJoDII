@@ -22,6 +22,7 @@ function recordingDb(answers: unknown[] = []) {
       is(c: string, v: unknown) { q.filters.push(`${c}=is.${String(v)}`); return b },
       lt(c: string, v: unknown) { q.filters.push(`${c}=lt.${String(v)}`); return b },
       lte(c: string, v: unknown) { q.filters.push(`${c}=lte.${String(v)}`); return b },
+      or(f: string) { q.filters.push(`or=${f}`); return b },
       order(c: string) { q.order.push(c); return b },
       limit(n: number) { q.limit = n; return b },
       maybeSingle() { return b },
@@ -44,7 +45,8 @@ describe('SupabaseStore #11 removal', () => {
     expect(queries[0]).toMatchObject({
       table: 'groups', op: 'update',
       payload: { left_at: ISO, delete_after: '2026-11-19T03:00:00.000Z' },
-      filters: ['line_group_id=eq.C1', 'left_at=is.null', `joined_at=lte.${ISO}`],
+      // A row no join was applied to yet (joined_at null) takes any leave.
+      filters: ['line_group_id=eq.C1', 'left_at=is.null', `or=joined_at.is.null,joined_at.lte."${ISO}"`],
     })
     expect(queries[1]).toMatchObject({ table: 'groups', op: 'select', filters: ['line_group_id=eq.C1'] })
   })
@@ -59,7 +61,8 @@ describe('SupabaseStore #11 removal', () => {
     await store.markBotJoined({ groupId: 'g1', at: AT })
     expect(queries.map((q) => ({ op: q.op, payload: q.payload, filters: q.filters }))).toEqual([
       { op: 'update', payload: { owner_left_at: ISO }, filters: ['id=eq.g1', 'owner_confirmed_at=is.null', `owner_left_at=lt.${ISO}`] },
-      { op: 'update', payload: { joined_at: ISO }, filters: ['id=eq.g1', `joined_at=lt.${ISO}`] },
+      // The row's first join sets joined_at (null until then); later ones move it forward.
+      { op: 'update', payload: { joined_at: ISO }, filters: ['id=eq.g1', `or=joined_at.is.null,joined_at.lt."${ISO}"`] },
       { op: 'update', payload: { left_at: null, delete_after: null }, filters: ['id=eq.g1', `left_at=lte.${ISO}`] },
     ])
   })

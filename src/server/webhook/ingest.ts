@@ -127,11 +127,14 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
   if (source.type === 'group' && event.type === 'join') {
     // The group row first (idempotent), the ledger claim last, as for a postback: a
     // redelivered join answers once.
-    let group = await store.ensureGroup(source.groupId)
+    const found = await store.ensureGroup(source.groupId)
     // #11 re-invite. Data already past its delete date goes now, whatever the purge's
     // timing, and the group starts fresh; inside the 7 days the mark is cleared (and,
     // with no confirmed Owner, the 7-day Owner count starts again). Both idempotent.
-    if ((await store.purgeGroup(group.id, eventTimestamp)).purged) group = await store.ensureGroup(source.groupId)
+    await store.purgeGroup(found.id, eventTimestamp)
+    // Looked up again whatever the purge answered: the daily purge may have deleted the row
+    // between the two calls (purged: false here), and the old ID would then point nowhere.
+    const group = await store.ensureGroup(source.groupId)
     await store.markBotJoined({ groupId: group.id, at: eventTimestamp })
     const { inserted } = await store.recordWebhookEvent({
       webhookEventId: event.webhookEventId, eventType: 'join', lineGroupId: source.groupId,

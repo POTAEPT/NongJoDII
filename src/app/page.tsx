@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { ADD_FRIEND_URL } from "./fonts";
+import { LegalFooter } from "./legal";
 
 // Home page of the app's domain: what NongJoDII is and how to start. The product itself
 // lives in LINE (docs/PROJECT.md); this page only introduces it, and gives Google's OAuth
@@ -89,12 +90,7 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="flex flex-col items-center gap-2 border-t border-line px-6 py-6 text-center text-sm text-ink-3">
-        <Link href="/privacy" className="text-primary underline underline-offset-4">
-          นโยบายความเป็นส่วนตัว
-        </Link>
-        <span>น้องจดดี · โปรเจกต์ DII Design, Pitching &amp; Hackathon 2026</span>
-      </footer>
+      <LegalFooter />
     </div>
   );
 }

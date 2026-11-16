@@ -115,7 +115,7 @@ export function ChatThread({ items, onReply, onUnsend, direct = false }: {
   }
 
   return (
-    <div ref={scroller} className="demo-scroll flex-1 overflow-y-auto bg-(--line-chat-bg) px-3 pt-3 pb-4">
+    <div ref={scroller} className="demo-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto bg-(--line-chat-bg) px-3 pt-3 pb-4">
       {items.length === 0 && (
         <div className="mt-24 text-center text-sm text-[#4A5A73]">
           {direct
@@ -177,10 +177,13 @@ function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend, di
     press.current = null
   }
 
+  // A carousel takes the full row width (it scrolls sideways), so it never squeezes its bubbles.
+  const carousel = m.type === 'flex' && (m.contents as { type?: unknown }).type === 'carousel'
+
   const bubble = (
     <div onContextMenu={(e) => { if (hasMenu) { e.preventDefault(); setMenu(true) } }}
       onPointerDown={startPress} onPointerUp={endPress} onPointerLeave={endPress} onPointerCancel={endPress}
-      className={cn('min-w-0', menu && 'brightness-90')}>
+      className={cn('min-w-0', carousel && '-mr-3 self-stretch', menu && 'brightness-90')}>
       <Content item={item} mine={mine} quoted={quoted} names={names} />
     </div>
   )
@@ -198,9 +201,12 @@ function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend, di
   return (
     <div className={cn('flex gap-2', mine ? 'justify-end' : 'justify-start', !showHead && !mine && 'pl-11')}>
       {!mine && showHead && (isBot ? <BotAvatar /> : <PersonaAvatar personaKey={item.persona ?? ''} name={name} />)}
-      <div className={cn('flex min-w-0 flex-col', mine ? 'items-end' : 'items-start', wide ? 'max-w-[88%]' : 'max-w-[75%]')}>
+      <div className={cn('flex min-w-0 flex-col', mine ? 'items-end' : 'items-start',
+        carousel ? 'flex-1' : wide ? 'max-w-[88%]' : 'max-w-[75%]')}>
         {!mine && showHead && <span className="mb-1 ml-1 text-[12px] font-medium text-[#33435C]">{name}</span>}
-        <div className={cn('flex min-w-0 items-end gap-1.5', mine && 'flex-row-reverse')}>
+        {/* A carousel puts its time under the row (as LINE does), so the row reaches the edge
+            and the next card peeks in. */}
+        <div className={cn('flex min-w-0 gap-1.5', carousel ? 'w-full flex-col items-start' : 'items-end', mine && !carousel && 'flex-row-reverse')}>
           <Popover open={menu} onOpenChange={setMenu}>
             <PopoverAnchor asChild>{bubble}</PopoverAnchor>
             <PopoverContent side="top" align={mine ? 'end' : 'start'} sideOffset={6}

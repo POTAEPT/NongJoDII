@@ -8,7 +8,9 @@ import { timeLabel } from '../_lib/time'
 export function PhoneFrame({ children }: { children: ReactNode }) {
   return (
     <div className="relative shrink-0 rounded-[58px] bg-[#16181D] p-[11px] shadow-[0_30px_80px_-20px_rgba(18,41,77,0.45),inset_0_0_0_2px_#3A3F48]"
-      style={{ height: 'min(852px, calc(100dvh - 48px))', aspectRatio: '393 / 852' }}>
+      // An explicit width, not aspect-ratio alone: aspect-ratio lets wide content (a Flex
+      // carousel) stretch the frame, since its automatic minimum size is the content's.
+      style={{ height: 'min(852px, calc(100dvh - 48px))', width: 'calc(min(852px, calc(100dvh - 48px)) * 393 / 852)' }}>
       {/* transform: the frame is the containing block for anything fixed inside it. */}
       <div className="relative flex h-full w-full transform-gpu flex-col overflow-hidden rounded-[47px] bg-white">
         {children}

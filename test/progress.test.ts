@@ -571,6 +571,77 @@ describe('answers', () => {
     expect(t.task(t.logo.id).status).toBe('not_assigned')
   })
 
+  // #87: the reverse order. A pick lands first, then "ไม่ใช่การอัปเดตงาน" on the same picker.
+  it('a pick, then "ไม่ใช่การอัปเดตงาน": says the Task was already updated, offers to fix it, undoes nothing', async () => {
+    const t = setup()
+    t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t.say(TON, 'สไลด์เสร็จแล้วนะ')
+    const b = buttons(lastReply(t))
+    await t.press(TON, b['ทำสไลด์ปัญหา'], 'ev-pick')
+    expect(t.task(t.problem.id).status).toBe('done')
+
+    await t.press(TON, b['ไม่ใช่การอัปเดตงาน'], 'ev-dismiss')
+    const reply = lastReply(t)
+    expect(reply.type).toBe('flex')
+    expect(json(reply)).toContain('อัปเดต “ทำสไลด์ปัญหา” เป็นเสร็จไปแล้ว')
+    expect(json(reply)).not.toContain('โอเค ไม่ใช่การอัปเดตงาน') // nothing claims it was undone
+    expect(json(reply)).toContain(`https://liff.line.me/${TEST_LIFF_ID}?view=task&id=${t.problem.id}`)
+    expect(t.task(t.problem.id).status).toBe('done')
+
+    // The rest of the picker is closed now.
+    await t.press(BIW, b['ทำสไลด์คู่แข่ง'], 'ev-pick-2')
+    expect(json(lastReply(t))).toContain('รายการนี้ปิดไปแล้ว')
+    expect(t.task(t.slides.id).status).toBe('in_process')
+  })
+
+  it('a second "ไม่ใช่การอัปเดตงาน" changes nothing, in either order', async () => {
+    const t = setup()
+    t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t.say(TON, 'สไลด์เสร็จแล้วนะ')
+    const b = buttons(lastReply(t))
+    await t.press(TON, b['ไม่ใช่การอัปเดตงาน'], 'ev-d1')
+    const firstAt = t.store.tables.messages[0].progressDismissedAt
+    t.setNow(new Date(LATER.getTime() + 60_000))
+    await t.press(TON, b['ไม่ใช่การอัปเดตงาน'], 'ev-d2')
+    expect(json(lastReply(t))).toContain('ไม่ใช่การอัปเดตงาน')
+    expect(t.store.tables.messages[0].progressDismissedAt).toEqual(firstAt)
+    expect(t.store.tables.task_prompts).toHaveLength(0)
+    expect(t.task(t.slides.id).status).toBe('in_process')
+    expect(t.task(t.problem.id).status).toBe('in_process')
+
+    // After a pick: the repeat gives the same "already updated" answer and changes nothing.
+    const t2 = setup()
+    t2.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t2.say(TON, 'สไลด์เสร็จแล้วนะ')
+    const b2 = buttons(lastReply(t2))
+    await t2.press(TON, b2['ทำสไลด์ปัญหา'], 'ev-p')
+    await t2.press(TON, b2['ไม่ใช่การอัปเดตงาน'], 'ev-d1')
+    await t2.press(TON, b2['ไม่ใช่การอัปเดตงาน'], 'ev-d2')
+    expect(json(lastReply(t2))).toContain('อัปเดต “ทำสไลด์ปัญหา” เป็นเสร็จไปแล้ว')
+    expect(t2.task(t2.problem.id).status).toBe('done')
+    expect(t2.store.tables.task_prompts.filter((p) => p.answer === 'yes')).toHaveLength(1)
+  })
+
+  it('a Yes that reaches the database after "ไม่ใช่การอัปเดตงาน" is refused there', async () => {
+    const t = setup()
+    t.answer({ kind: 'ambiguous', tasks: [1, 3], status: 'done' })
+    await t.say(TON, 'สไลด์เสร็จแล้วนะ')
+    const b = buttons(lastReply(t))
+    // The pick passed the app's check, then the dismissal committed before its write.
+    const msgId = t.store.tables.messages[0].id
+    const { prompt } = await t.store.createProgressPrompt({
+      groupId: t.group.id, taskId: t.problem.id, targetStatus: 'done', subjectLineUserId: TON,
+      triggerMessageId: msgId, askedAt: TEST_NOW,
+    })
+    await t.press(TON, b['ไม่ใช่การอัปเดตงาน'], 'ev-d')
+    const { outcome } = await t.store.confirmProgressYes({
+      promptId: prompt!.id, taskId: t.problem.id, fromStatus: 'in_process', toStatus: 'done',
+      byLineUserId: TON, assignTo: null, at: LATER,
+    })
+    expect(outcome).toBe('dismissed')
+    expect(t.task(t.problem.id).status).toBe('in_process')
+  })
+
   it('ignores postbacks of other features', async () => {
     const t = setup()
     await t.press(BIW, 'a=assign&t=x')

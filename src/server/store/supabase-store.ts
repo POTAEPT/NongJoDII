@@ -785,6 +785,18 @@ export class SupabaseStore implements StorePort {
     return { prompt: toPromptRow(data as DbPrompt) }
   }
 
+  async listYesProgressPrompts(messageId: string): Promise<ProgressPromptRow[]> {
+    const { data, error } = await this.db
+      .from('task_prompts')
+      .select(PROMPT_COLS)
+      .eq('trigger_message_id', messageId)
+      .eq('kind', 'mark_done')
+      .eq('answer', 'yes')
+      .order('answered_at', { ascending: true })
+    check('listYesProgressPrompts', error)
+    return ((data ?? []) as DbPrompt[]).map(toPromptRow)
+  }
+
   async getProgressPrompt(promptId: string): Promise<ProgressPromptRow | null> {
     const { data, error } = await this.db
       .from('task_prompts')
@@ -816,7 +828,7 @@ export class SupabaseStore implements StorePort {
       p_by: y.byLineUserId, p_assign_to: y.assignTo, p_at: y.at.toISOString(),
     })
     check('confirmProgressYes', error)
-    if (data !== 'updated' && data !== 'already_answered' && data !== 'task_changed') {
+    if (data !== 'updated' && data !== 'already_answered' && data !== 'task_changed' && data !== 'dismissed') {
       throw new Error('confirmProgressYes: unexpected result from answer_progress_yes')
     }
     return { outcome: data }

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { failedReasonOf } from '@/server/ports'
 import type {
   AiUsageActual,
+  ImageSetCount,
   AiUsageCap,
   AnnounceClaim,
   CandidateRow,
@@ -666,16 +668,18 @@ export class FakeStore implements StorePort {
     return c ? { id: c.id, googleAccountId: c.googleAccountId } : null
   }
 
-  async countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number; failed: number }> {
+  async countImageSet(groupId: string, imageSetId: string): Promise<ImageSetCount> {
     this.fault('countImageSet')
     const keys = this.tables.messages
       .filter((m) => m.groupId === groupId && m.imageSetId === imageSetId)
       .map((m) => `file:${m.lineMessageId}`)
     const rows = this.tables.webhook_events.filter((w) => keys.includes(w.webhookEventId))
+    const failedReasons = rows.map((r) => failedReasonOf(r.eventType)).filter((r): r is string => r !== null)
     return {
       messages: keys.length,
       saved: rows.filter((r) => r.eventType === 'file_saved').length,
-      failed: rows.filter((r) => r.eventType === 'file_save_failed').length,
+      failed: failedReasons.length,
+      failedReasons,
     }
   }
 

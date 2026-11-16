@@ -4,7 +4,7 @@ Shared contract between the demo server (`src/server/demo/*`, `src/app/demo/api/
 
 ## Gate
 
-Every `/demo` page and `/demo/api/**` route answers 404 unless `process.env.DEMO_MODE === '1'`, and also when `process.env.VERCEL_ENV === 'production'`. Helper: `src/server/demo/gate.ts` exports `demoEnabled(): boolean`.
+Every `/demo` page and `/demo/api/**` route answers 404 unless `process.env.DEMO_MODE === '1'`, and also on any Vercel deployment: `process.env.VERCEL === '1'`, or `VERCEL_ENV` is `production` or `preview`. The simulator runs on a developer's machine only. Helper: `src/server/demo/gate.ts` exports `demoEnabled(): boolean`.
 
 ## Constants
 

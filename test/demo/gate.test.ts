@@ -31,6 +31,17 @@ describe('/demo gate', () => {
     expect((await contentGet(new Request('http://localhost/x'), params({ messageId: 'm1' }))).status).toBe(404)
   })
 
+  it('is off on a Vercel preview deployment too, even with DEMO_MODE=1', async () => {
+    vi.stubEnv('DEMO_MODE', '1')
+    vi.stubEnv('VERCEL', '1')
+    expect(demoEnabled()).toBe(false)
+    vi.unstubAllEnvs()
+    vi.stubEnv('DEMO_MODE', '1')
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    expect(demoEnabled()).toBe(false)
+    expect((await simGet(new Request('http://localhost/demo/api/sim/state'), params({ action: 'state' }))).status).toBe(404)
+  })
+
   it('answers 404 on Vercel production even with DEMO_MODE=1', async () => {
     vi.stubEnv('DEMO_MODE', '1')
     vi.stubEnv('VERCEL_ENV', 'production')

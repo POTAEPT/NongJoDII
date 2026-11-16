@@ -136,6 +136,8 @@ export type NewSummary = {
 }
 export type NewCandidate = {
   title: string; details: string | null; suggestedAssigneeLineUserId: string | null; suggestedDueAt: Date | null
+  /** #109: the model's tags for it (tasks/tags.ts rules), empty when none. */
+  suggestedTags: string[]
 }
 export type CandidateState = 'proposed' | 'confirmed' | 'declined'
 export type CandidateRow = NewCandidate & { id: string; summaryId: string; state: CandidateState }
@@ -144,16 +146,20 @@ export type TaskStatus = 'not_assigned' | 'in_process' | 'done'
 export type NewTask = {
   groupId: string; candidateId: string; title: string; details: string | null; status: TaskStatus
   assigneeLineUserId: string | null; createdByLineUserId: string; dueAt: Date | null
+  /** #109: the tags the person confirmed. */
+  tags: string[]
 }
 export type TaskRow = {
   id: string; groupId: string; lineGroupId: string; candidateId: string | null; title: string
   details: string | null; status: TaskStatus; assigneeLineUserId: string | null
   createdByLineUserId: string; dueAt: Date | null; deletedAt: Date | null
   announcedAt: Date | null   // when the group was told about it (null = not yet)
+  tags: string[]             // #109
 }
 export type TaskPatch = {
   title: string; details: string | null; assigneeLineUserId: string | null; status: TaskStatus
   dueAt: Date | null; lastEditedByLineUserId: string; lastActivityAt: Date
+  tags: string[]             // #109
 }
 // #17 Dashboard read. Names are LINE names (line_users.display_name), never nicknames.
 /** One of the requester's group_members rows, for a group that is in a Project and still
@@ -170,6 +176,7 @@ export type DashboardMemberRow = { groupId: string; lineUserId: string; displayN
 export type DashboardTaskRow = {
   id: string; groupId: string; title: string; status: TaskStatus
   assigneeLineUserId: string | null; assigneeName: string | null; dueAt: Date | null
+  tags: string[]             // #109
 }
 export type DashboardFileRow = {
   id: string; groupId: string; fileName: string; driveLink: string; sizeBytes: number | null

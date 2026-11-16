@@ -8,12 +8,13 @@ export type ReviewView = {
   candidates: {
     id: string; state: CandidateState; title: string; details: string | null
     suggestedAssigneeLineUserId: string | null; suggestedDueAt: string | null   // ISO
+    suggestedTags: string[]                                                     // #109
   }[]
   members: { lineUserId: string; displayName: string }[]                         // LINE names
 }
 
 export type Decision =
-  | { candidateId: string; action: 'confirm'; title: string; details: string | null; assigneeLineUserId: string | null; dueAt: string | null }
+  | { candidateId: string; action: 'confirm'; title: string; details: string | null; assigneeLineUserId: string | null; dueAt: string | null; tags?: string[] }
   | { candidateId: string; action: 'decline' }
 
 export type SubmitResult = {

@@ -56,13 +56,13 @@ describe('SUMMARY_SCHEMA and parseSummaryOutput', () => {
     const answer = {
       summary: 'สรุป',
       tasks: [
-        { title: 'ทำสไลด์', details: 'd', assignee: 'm1', due: '2026-11-20T17:00:00+07:00', source: 'msg2' },
-        { title: 'จองห้อง', details: null, assignee: null, due: null, source: null },
+        { title: 'ทำสไลด์', details: 'd', assignee: 'm1', due: '2026-11-20T17:00:00+07:00', source: 'msg2', tags: ['ออกแบบ', '#สไลด์'] },
+        { title: 'จองห้อง', details: null, assignee: null, due: null, source: null, tags: [] },
       ],
     }
     expect(valid(SUMMARY_SCHEMA.schema, answer)).toBe(true)
     const parsed = parseSummaryOutput(JSON.stringify(answer))
-    expect(parsed.tasks[0]).toMatchObject({ title: 'ทำสไลด์', details: 'd', assigneeRef: 'm1', sourceRef: 'msg2' })
+    expect(parsed.tasks[0]).toMatchObject({ title: 'ทำสไลด์', details: 'd', assigneeRef: 'm1', sourceRef: 'msg2', tags: ['ออกแบบ', 'สไลด์'] })
     expect(parsed.tasks[0].due?.toISOString()).toBe('2026-11-20T10:00:00.000Z')
     expect(parsed.tasks[1]).toMatchObject({ details: null, assigneeRef: null, due: null, sourceRef: null })
   })

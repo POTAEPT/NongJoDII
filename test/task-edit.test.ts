@@ -86,7 +86,7 @@ describe('updateTaskFromLiff', () => {
 
   it('FakeStore.updateTask skips a soft-deleted task', async () => {
     const d = setup({ deleted: true })
-    const patch = { title: 'x', details: null, assigneeLineUserId: null, status: 'not_assigned' as const, dueAt: null, lastEditedByLineUserId: 'Ubank', lastActivityAt: TEST_NOW }
+    const patch = { title: 'x', details: null, assigneeLineUserId: null, status: 'not_assigned' as const, dueAt: null, lastEditedByLineUserId: 'Ubank', lastActivityAt: TEST_NOW, tags: [] }
     expect(await d.store.updateTask(d.row.id, patch)).toEqual({ updated: false })
     expect(d.stored().title).toBe('ทำสไลด์')
   })

@@ -98,7 +98,7 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   const members = await store.listLiveMembers(groupId)
   const doneSince = new Date(deps.now().getTime() - SUMMARY_DONE_DAYS * 86_400_000)
   const existingTasks = (await store.listTasksForSummary(groupId, doneSince, SUMMARY_TASKS_LIMIT))
-    .map((t) => ({ title: t.title, status: t.status }))
+    .map((t) => ({ title: t.title, status: t.status, tags: t.tags }))
   const prompt = buildSummaryPrompt({
     now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks,
   })
@@ -158,6 +158,8 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
       const source = task.sourceRef ? messageByRef.get(task.sourceRef) : undefined
       candidates.push({
         title, details, suggestedAssigneeLineUserId: assignee?.lineUserId ?? null, suggestedDueAt: task.due,
+        // #109: a tag that carries a member or message ref is dropped (people are never tags).
+        suggestedTags: task.tags.filter((tag) => !/\{m\d+\}|\bmsg\d+\b/i.test(tag)),
       })
       replyCandidates.push({
         title,

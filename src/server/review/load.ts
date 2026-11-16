@@ -49,6 +49,7 @@ export async function loadReview(deps: Deps, body: unknown): Promise<ApiResult> 
       id: c.id, state: c.state, title: c.title, details: c.details,
       suggestedAssigneeLineUserId: c.suggestedAssigneeLineUserId,
       suggestedDueAt: c.suggestedDueAt ? c.suggestedDueAt.toISOString() : null,
+      suggestedTags: c.suggestedTags,
     })),
     // LINE names only; nicknames never leave the AI prompt.
     members: members.map((m) => ({ lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME })),

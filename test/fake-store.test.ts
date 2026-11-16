@@ -112,7 +112,7 @@ describe('FakeStore', () => {
         lastMessageAt: null,
         createdAt: SENT_AT,
       },
-      [{ title: 't', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null }],
+      [{ title: 't', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] }],
     )
     const task = {
       groupId: group.id,
@@ -123,6 +123,7 @@ describe('FakeStore', () => {
       assigneeLineUserId: null,
       createdByLineUserId: 'Uowner1',
       dueAt: null,
+      tags: [],
     }
     const first = await store.confirmCandidate(task, SENT_AT)
     expect(first.outcome).toBe('created')
@@ -139,12 +140,12 @@ describe('FakeStore', () => {
     await store.upsertLineUser({ lineUserId: 'Uowner1', displayName: 'Owner' })
     const { candidateIds } = await store.createSummary(
       { groupId: group.id, requestedByLineUserId: null, summaryText: 's', firstMessageAt: null, lastMessageAt: null, createdAt: SENT_AT },
-      [{ title: 't', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null }],
+      [{ title: 't', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] }],
     )
     await store.decideCandidate(candidateIds[0], 'declined', 'Uowner1', SENT_AT)
     const res = await store.confirmCandidate({
       groupId: group.id, candidateId: candidateIds[0], title: 't', details: null, status: 'not_assigned',
-      assigneeLineUserId: null, createdByLineUserId: 'Uowner1', dueAt: null,
+      assigneeLineUserId: null, createdByLineUserId: 'Uowner1', dueAt: null, tags: [],
     }, SENT_AT)
     expect(res).toEqual({ outcome: 'already_decided', taskId: null })
     expect(store.tables.tasks).toHaveLength(0)
@@ -164,7 +165,7 @@ describe('FakeStore', () => {
         lastMessageAt: null,
         createdAt: SENT_AT,
       },
-      [{ title: 't', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null }],
+      [{ title: 't', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] }],
     )
     expect(await store.decideCandidate(candidateIds[0], 'confirmed', 'Uowner1', SENT_AT)).toEqual({ updated: true })
     expect(await store.decideCandidate(candidateIds[0], 'declined', 'Uowner1', SENT_AT)).toEqual({ updated: false })
@@ -302,6 +303,7 @@ describe('FakeStore', () => {
         details: null,
         suggestedAssigneeLineUserId: null,
         suggestedDueAt: null,
+        suggestedTags: [],
       })),
     )
     const listed = await store.listCandidates(created.summaryId)

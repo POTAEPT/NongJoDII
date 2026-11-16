@@ -10,7 +10,7 @@ import { readLiffParams } from '@/app/liff/params'
 // Wed 11 Nov 2026 10:00 Bangkok.
 const NOW = new Date('2026-11-11T10:00:00+07:00')
 const task = (id: string, status: DashboardTask['status'], assignee: string | null, dueAt: string | null): DashboardTask => ({
-  taskId: id, title: `งาน ${id}`, status, assigneeLineUserId: assignee, assigneeName: null, dueAt,
+  taskId: id, title: `งาน ${id}`, status, assigneeLineUserId: assignee, assigneeName: null, dueAt, tags: [],
 })
 const dii: DashboardGroup = {
   groupId: 'g1', name: 'กลุ่มโปรเจกต์ DII',

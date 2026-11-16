@@ -21,6 +21,11 @@ import { OWNER_NEEDED_PUSH_RESERVE, ownerNeededCard, postOwnerNeededCard } from 
 //      the quota, or refused by LINE) is pushed again under its own retry key, only on the
 //      retry ticks of line/card-retry.ts (15 min, 2 h and 24 h after it opened).
 // Every step is idempotent.
+// Known gap (review of PR #95): a detach re-posts the card on the group's card that is
+// still open (postOwnerNeededCard with renewedAt). Step 3 reads "pushed" and the retry
+// ticks from when that card first opened, so if the first push went out days ago, a
+// renewed push skipped near the quota or refused by LINE is not tried again. The group
+// still reaches the Owner page through the Summary command's reply.
 
 /** LINE steps of one card, as checkTime counts them: member count and quota, then the push. */
 const OWNER_CARD_CALLS = 2

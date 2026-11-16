@@ -3,8 +3,14 @@
 -- 20261115150000 stores the dismissal on messages.progress_dismissed_at, and the app
 -- checks it before a pick. That check and the write were two steps, so a pick and a
 -- "ไม่ใช่การอัปเดตงาน" pressed at the same moment could both win. Now the rule is also
--- inside answer_progress_yes: after locking the card, it takes a share lock on the card's
--- chat message (trigger_message_id) and refuses with 'dismissed' when it is dismissed.
+-- inside answer_progress_yes: it takes a share lock on the card's chat message
+-- (trigger_message_id) and refuses with 'dismissed' when it is dismissed.
+--
+-- Lock order: message first, then the card. Other writers take them in that order (an
+-- unsend deletes the message row, whose ON DELETE SET NULL then updates the card), so
+-- locking the card first could deadlock with them. The function therefore reads the
+-- card's trigger without a lock, locks that message (share), then locks the card (for
+-- update) and re-checks it, including that its trigger is still the message it locked.
 --   * the dismissal (UPDATE messages ... where progress_dismissed_at is null) commits
 --     first: the Yes waits for the row, then sees it and answers 'dismissed';
 --   * the Yes commits first: the dismissal waits for the share lock, then commits, and
@@ -31,7 +37,8 @@ as $$
 declare
   v_answer     text;
   v_subject    text;
-  v_trigger    uuid;
+  v_trigger    uuid;   -- read without a lock, then locked (message first)
+  v_locked     uuid;   -- the card's trigger once the card itself is locked
   v_dismissed  timestamptz;
   v_task       uuid;
 begin
@@ -39,7 +46,29 @@ begin
     raise exception 'bad target status %', p_to_status using errcode = 'check_violation';
   end if;
 
-  select p.answer, p.subject_line_user_id, p.trigger_message_id into v_answer, v_subject, v_trigger
+  -- 1. Read the card's chat message without a lock.
+  select p.trigger_message_id into v_trigger
+    from public.task_prompts p
+   where p.id = p_prompt_id and p.task_id = p_task_id and p.kind = 'mark_done';
+  if not found then
+    return 'task_changed';
+  end if;
+
+  -- 2. Lock the message first (share): a dismissal (an UPDATE of that row) waits for this
+  --    transaction, or has committed and is seen here.
+  if v_trigger is not null then
+    select m.progress_dismissed_at into v_dismissed
+      from public.messages m
+     where m.id = v_trigger
+     for share;
+    if v_dismissed is not null then
+      return 'dismissed';
+    end if;
+  end if;
+
+  -- 3. Then lock the card and re-check it as before. Its trigger must still be the message
+  --    locked above (an unsend sets it to null meanwhile).
+  select p.answer, p.subject_line_user_id, p.trigger_message_id into v_answer, v_subject, v_locked
     from public.task_prompts p
    where p.id = p_prompt_id and p.task_id = p_task_id and p.kind = 'mark_done'
    for update;
@@ -49,15 +78,8 @@ begin
   if v_answer is not null then
     return 'already_answered';
   end if;
-
-  if v_trigger is not null then
-    select m.progress_dismissed_at into v_dismissed
-      from public.messages m
-     where m.id = v_trigger
-     for share;
-    if v_dismissed is not null then
-      return 'dismissed';
-    end if;
+  if v_locked is distinct from v_trigger then
+    return 'task_changed';
   end if;
 
   update public.tasks t

@@ -754,10 +754,11 @@ export class FakeStore implements StorePort {
     this.fault('confirmProgressYes')
     const p = this.tables.task_prompts.find((row) => row.id === y.promptId && row.taskId === y.taskId)
     if (!p) return { outcome: 'task_changed' }
-    if (p.answer !== null) return { outcome: 'already_answered' }
-    // #87: a card whose chat message was marked "ไม่ใช่การอัปเดตงาน" takes no Yes.
+    // #87: a card whose chat message was marked "ไม่ใช่การอัปเดตงาน" takes no Yes. Checked
+    // before the card's own answer, in the function's lock order (message first, then card).
     const trigger = p.triggerMessageId === null ? undefined : this.tables.messages.find((m) => m.id === p.triggerMessageId)
     if (trigger?.progressDismissedAt) return { outcome: 'dismissed' }
+    if (p.answer !== null) return { outcome: 'already_answered' }
     // The presser must still be the Task's assignee or the card's subject at write time.
     const t = this.tables.tasks.find((row) => row.id === y.taskId && row.deletedAt === null && row.status === y.fromStatus
       && (row.assigneeLineUserId === y.byLineUserId || p.subjectLineUserId === y.byLineUserId))

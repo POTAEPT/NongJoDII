@@ -396,6 +396,13 @@ export interface StorePort {
   listRecentTextMessages(groupId: string, limit: number): Promise<StoredMessage[]>  // newest `limit`, returned oldest first
   listLiveMembers(groupId: string): Promise<Member[]>                               // left_at is null
   createSummary(s: NewSummary, candidates: NewCandidate[]): Promise<{ summaryId: string; candidateIds: string[] }>
+  /** #108: where the group's latest Summary ended (summaries.last_message_at of the newest
+   *  row by created_at); null when the group has none. */
+  getLatestSummaryEnd(groupId: string): Promise<Date | null>
+  /** #108: the group's live Tasks a Summary must not propose again: every open one, and the
+   *  Done ones with done_at or last_activity_at at or after `doneSince`. Newest first, at
+   *  most `limit`. */
+  listTasksForSummary(groupId: string, doneSince: Date, limit: number): Promise<TaskRow[]>
   // #16 confirm / edit
   getSummary(summaryId: string): Promise<SummaryRow | null>
   listCandidates(summaryId: string): Promise<CandidateRow[]>                         // ordered by created_at, then id

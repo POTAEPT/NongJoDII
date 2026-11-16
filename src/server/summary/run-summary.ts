@@ -17,6 +17,12 @@ import { summaryFailedText, summaryFailure } from './failure'
 export type SummaryJob = { groupId: string; lineGroupId: string; replyToken: string | null; requesterLineUserId: string | null }
 
 export const SUMMARY_MESSAGE_LIMIT = 100
+/** #108: chat an earlier Summary already covered, sent as context only. */
+export const SUMMARY_CONTEXT_LIMIT = 20
+/** #108: the existing Tasks the model is told not to repeat: open ones, and Done ones from
+ *  this many days back, at most SUMMARY_TASKS_LIMIT. */
+export const SUMMARY_DONE_DAYS = 30
+export const SUMMARY_TASKS_LIMIT = 50
 const SUMMARY_MAX_TOKENS = 4000
 const TITLE_MAX = 200
 const DETAILS_MAX = 2000
@@ -24,6 +30,7 @@ const DETAILS_MAX = 2000
 const REPLY_FEATURE_OFF = 'ฟีเจอร์สรุปแชตปิดอยู่ในกลุ่มนี้ เปิดได้ที่การตั้งค่า'
 const REPLY_NO_OWNER = 'กลุ่มนี้ยังไม่มีเจ้าของกลุ่มที่ยืนยันแล้ว จึงยังสรุปแชตไม่ได้ กรุณาตั้งค่ากลุ่มให้เสร็จก่อน'
 const REPLY_NO_MESSAGES = 'ยังไม่มีข้อความให้สรุป'
+export const REPLY_NOTHING_NEW = 'ยังไม่มีข้อความใหม่ตั้งแต่สรุปครั้งก่อน คุยต่อแล้วค่อยสั่งสรุปอีกครั้งนะ'
 
 /** "NongJoDII summarize": summarizes recent chat into a Summary with Task candidates
  *  (proposals only; a Task exists only after confirm) and replies in the group that asked. */
@@ -72,15 +79,29 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   const before = await getFairUseStatus(store, ownerLineUserId, deps.now())
   if (before.level === 'capped') return reply(deps, replyToken, groupId, [capMessage(before)], sent)
 
+  // #108: a Summary covers only the chat since the group's last one (summaries.last_message_at);
+  // up to SUMMARY_CONTEXT_LIMIT earlier messages go along as context only. The first Summary
+  // of a group covers the last SUMMARY_MESSAGE_LIMIT messages, as before.
+  const lastEnd = await store.getLatestSummaryEnd(groupId)
   // The command message itself is already stored and takes one slot (M1).
-  const messages = (await store.listRecentTextMessages(groupId, SUMMARY_MESSAGE_LIMIT + 1))
+  const recent = (await store.listRecentTextMessages(groupId, SUMMARY_MESSAGE_LIMIT + SUMMARY_CONTEXT_LIMIT + 1))
     // Commands and the "Tasks created" messages a LIFF page posted are not chat to summarize.
     .filter((m) => parseGroupCommand(m.text) === null && !isTaskFeedback(m.text))
-    .slice(-SUMMARY_MESSAGE_LIMIT)
-  if (messages.length === 0) return replyText(deps, replyToken, groupId, REPLY_NO_MESSAGES, sent)
+  const isNew = (m: { sentAt: Date }) => lastEnd === null || m.sentAt.getTime() > lastEnd.getTime()
+  const messages = recent.filter(isNew).slice(-SUMMARY_MESSAGE_LIMIT)
+  const context = lastEnd === null ? [] : recent.filter((m) => !isNew(m)).slice(-SUMMARY_CONTEXT_LIMIT)
+  if (messages.length === 0) {
+    // Nothing since the last Summary: no AI call, no Summary.
+    return replyText(deps, replyToken, groupId, lastEnd === null ? REPLY_NO_MESSAGES : REPLY_NOTHING_NEW, sent)
+  }
 
   const members = await store.listLiveMembers(groupId)
-  const prompt = buildSummaryPrompt({ now: deps.now(), workDescription: group.workDescription, members, messages })
+  const doneSince = new Date(deps.now().getTime() - SUMMARY_DONE_DAYS * 86_400_000)
+  const existingTasks = (await store.listTasksForSummary(groupId, doneSince, SUMMARY_TASKS_LIMIT))
+    .map((t) => ({ title: t.title, status: t.status }))
+  const prompt = buildSummaryPrompt({
+    now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks,
+  })
 
   let parsed: { summary: string; tasks: ParsedTask[] }
   try {

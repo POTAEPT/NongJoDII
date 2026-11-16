@@ -715,6 +715,35 @@ export class SupabaseStore implements StorePort {
   }
 
   // ---- #7 Track progress ----
+  async getLatestSummaryEnd(groupId: string): Promise<Date | null> {
+    const { data, error } = await this.db
+      .from('summaries')
+      .select('last_message_at')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    check('getLatestSummaryEnd', error)
+    return toDate((data as { last_message_at: string | null } | null)?.last_message_at ?? null)
+  }
+
+  async listTasksForSummary(groupId: string, doneSince: Date, limit: number): Promise<TaskRow[]> {
+    const since = doneSince.toISOString()
+    const { data, error } = await this.db
+      .from('tasks')
+      .select(TASK_COLS)
+      .eq('group_id', groupId)
+      .is('deleted_at', null)
+      // Open, or Done recently (a Task closed from the Task page may have no done_at).
+      .or(`status.neq.done,done_at.gte.${since},last_activity_at.gte.${since}`)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(limit)
+    check('listTasksForSummary', error)
+    return ((data ?? []) as unknown as DbTask[]).map(toTaskRow)
+  }
+
   async listOpenTasks(groupId: string): Promise<TaskRow[]> {
     const { data, error } = await this.db
       .from('tasks')

@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { OpenRouterClient } from '@/server/llm/openrouter'
-import type { LlmPort, LlmRequest, LlmResult } from '@/server/ports'
+import { OpenRouterDecisionsClient } from '@/server/llm/openrouter-decisions'
+import type {
+  DecisionAnswer, DecisionsPort, DecisionsRequest, DecisionsResult, LlmPort, LlmRequest, LlmResult, LlmUsage,
+} from '@/server/ports'
+import { CHAT_LINE_LABEL } from '@/server/progress/decide'
+import { looksLikeProgress } from '@/server/progress/keywords'
 import { priceTokens } from '@/server/usage/pricing'
 import type { AiCall, AiCallKind } from './types'
 
@@ -10,10 +15,11 @@ export const CANNED_MODEL = 'demo/canned'
 /** Calls kept for the presenter (newest last). */
 export const AI_CALLS_MAX = 50
 
-/** The demo's AI: the real OpenRouter model, and a canned answer in the shape the caller
- *  expects (summary or progress decision) when there is no key, the call fails or it takes
- *  longer than DEMO_LLM_TIMEOUT_MS. The stage demo always gets an answer. */
-export class DemoLlm implements LlmPort {
+/** The demo's AI: the real OpenRouter models (chat completions for the text model, the
+ *  Decisions API for the progress decision model), and a canned answer in the shape the caller
+ *  expects when there is no key, the call fails or it takes longer than DEMO_LLM_TIMEOUT_MS.
+ *  The stage demo always gets an answer. Both kinds of call land in one list for the toasts. */
+export class DemoLlm implements LlmPort, DecisionsPort {
   lastCallFallback = false
   model: string | null = null
   /** Finished calls since the last reset, newest last (at most AI_CALLS_MAX). */
@@ -24,15 +30,18 @@ export class DemoLlm implements LlmPort {
   clock: () => Date = () => new Date()
   private inFlight = 0
   private readonly inner: LlmPort | null
+  private readonly decisionsInner: DecisionsPort | null
   private readonly timeoutMs: number
 
-  /** `inner` undefined = OpenRouter with OPENROUTER_API_KEY (null when the key is missing). */
-  constructor(opts?: { inner?: LlmPort | null; timeoutMs?: number }) {
-    if (opts?.inner !== undefined) this.inner = opts.inner
-    else {
-      const apiKey = process.env.OPENROUTER_API_KEY
-      this.inner = apiKey ? new OpenRouterClient({ apiKey }) : null
-    }
+  /** Both undefined = OpenRouter with OPENROUTER_API_KEY (null when the key is missing). A
+   *  caller that passes `inner` (tests) gets no real decisions adapter unless it passes one. */
+  constructor(opts?: { inner?: LlmPort | null; decisions?: DecisionsPort | null; timeoutMs?: number }) {
+    const apiKey = process.env.OPENROUTER_API_KEY
+    const fromEnv = opts?.inner === undefined && opts?.decisions === undefined
+    this.inner = opts?.inner !== undefined ? opts.inner : fromEnv && apiKey ? new OpenRouterClient({ apiKey }) : null
+    this.decisionsInner = opts?.decisions !== undefined
+      ? opts.decisions
+      : fromEnv && apiKey ? new OpenRouterDecisionsClient({ apiKey }) : null
     this.timeoutMs = opts?.timeoutMs ?? DEMO_LLM_TIMEOUT_MS
   }
 
@@ -65,20 +74,50 @@ export class DemoLlm implements LlmPort {
     }
   }
 
+  /** The progress decision (TypeSafe Jev). On failure: a canned answer from the chat line's
+   *  keywords, recorded as a fallback that costs 0. */
+  async decide(req: DecisionsRequest): Promise<DecisionsResult> {
+    this.inFlight += 1
+    this.model = req.model
+    try {
+      if (!this.decisionsInner) throw new Error('no OPENROUTER_API_KEY')
+      const timeoutMs = Math.min(this.timeoutMs, req.timeoutMs ?? this.timeoutMs)
+      const result = await withTimeout(this.decisionsInner.decide({ ...req, timeoutMs }), timeoutMs)
+      this.lastCallFallback = false
+      this.model = result.model
+      this.recordUsage('progress', result.model, result.usage, false)
+      return result
+    } catch {
+      this.lastCallFallback = true
+      this.model = CANNED_MODEL
+      const canned: DecisionsResult = {
+        model: CANNED_MODEL, answers: cannedDecisions(req), usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      }
+      this.recordUsage('progress', CANNED_MODEL, canned.usage, true)
+      return canned
+    } finally {
+      this.inFlight -= 1
+    }
+  }
+
   /** Forgets the calls and the total (a reset). */
   clearCalls(): void {
     this.calls = []
     this.totalUsd = 0
   }
 
-  /** The cost OpenRouter reported; else the tokens at the app's price (estimated); else null. */
   private record(req: LlmRequest, result: LlmResult, fallback: boolean): void {
-    const u = result.usage
+    this.recordUsage(callKind(req), result.model, result.usage, fallback, req.model)
+  }
+
+  /** The cost OpenRouter reported; else the tokens at the app's price for the model asked
+   *  (estimated); else null. */
+  private recordUsage(kind: AiCallKind, model: string, u: LlmUsage | null, fallback: boolean, pricedModel = model): void {
     const reported = u?.costUsd ?? null
     const estimated = !fallback && reported === null && u !== null
-    const costUsd = fallback ? 0 : reported ?? (u ? priceTokens(u.inputTokens, u.outputTokens) : null)
+    const costUsd = fallback ? 0 : reported ?? (u ? priceTokens(pricedModel, u.inputTokens, u.outputTokens) : null)
     const call: AiCall = {
-      id: randomUUID(), at: this.clock().toISOString(), kind: callKind(req), model: result.model,
+      id: randomUUID(), at: this.clock().toISOString(), kind, model,
       inputTokens: u?.inputTokens ?? 0, outputTokens: u?.outputTokens ?? 0, costUsd, estimated, fallback,
     }
     this.calls.push(call)
@@ -87,10 +126,10 @@ export class DemoLlm implements LlmPort {
   }
 }
 
-/** What the call was for, from its schema (Summary, progress decision) or its prompt. */
+/** What a chat call was for, from its schema (Summary) or its prompt. Progress decisions go
+ *  through decide() and are always 'progress'. */
 export function callKind(req: LlmRequest): AiCallKind {
   if (req.schema?.name === 'summary') return 'summary'
-  if (req.schema?.name === 'progress_decision') return 'progress'
   if (/\btags?\b|แท็ก/i.test(req.system)) return 'tags'
   return 'other'
 }
@@ -116,8 +155,30 @@ function usable(req: LlmRequest, content: string): boolean {
 /** A valid answer for the request's schema, built from the prompt alone. */
 export function cannedAnswer(req: LlmRequest): string {
   if (req.schema?.name === 'summary') return JSON.stringify(cannedSummary(req.system, req.user))
-  if (req.schema?.name === 'progress_decision') return JSON.stringify({ kind: 'none', task: null, tasks: null, status: null })
   return '{}'
+}
+
+/** Canned decision answers from the request alone: the chat line's keywords say whether it is
+ *  progress (0.9, else 0.1) and its status; a choice picks the keyword status when offered,
+ *  else the first key (the first Task); a score picks the lowest level. */
+export function cannedDecisions(req: DecisionsRequest): Record<string, DecisionAnswer | null> {
+  const at = req.state.lastIndexOf(`${CHAT_LINE_LABEL}\n`)
+  const line = at >= 0 ? req.state.slice(at + CHAT_LINE_LABEL.length + 1) : ''
+  const keyword = looksLikeProgress(line)
+  const out: Record<string, DecisionAnswer | null> = {}
+  for (const [key, q] of Object.entries(req.questions)) {
+    if (q.type === 'noul') {
+      const noul = keyword ? 0.9 : 0.1
+      out[key] = { type: 'noul', noul, confidence: Math.max(noul, 1 - noul) }
+    } else if (q.type === 'choice') {
+      const keys = Object.keys(q.criteria)
+      const choice = keyword && keys.includes(keyword) ? keyword : keys[0]
+      out[key] = choice === undefined ? null : { type: 'choice', choice, probabilities: { [choice]: 0.9 }, confidence: 0.9 }
+    } else {
+      out[key] = { type: 'score', score: 0, probabilities: { 0: 0.9 }, confidence: 0.9 }
+    }
+  }
+  return out
 }
 
 // ---- canned Summary ----

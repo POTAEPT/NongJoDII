@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto'
 import type { LineEvent, LineMention } from '@/server/line/types'
 import type { Defer, Deps, GroupRow } from '@/server/ports'
+import { FakeDecisions } from './fakes/fake-decisions'
 import { FakeGoogle } from './fakes/fake-google'
 import { FakeLine } from './fakes/fake-line'
 import { FakeLlm } from './fakes/fake-llm'
@@ -18,12 +19,13 @@ const DEFAULT_USER = 'Uuser1'
 const DEFAULT_OWNER = 'Uowner1'
 
 export function makeTestDeps(opts?: { now?: Date }): {
-  deps: Deps; line: FakeLine; llm: FakeLlm; google: FakeGoogle; store: FakeStore
+  deps: Deps; line: FakeLine; llm: FakeLlm; decisions: FakeDecisions; google: FakeGoogle; store: FakeStore
   setNow(d: Date): void
   defer: Defer; deferred: Array<() => Promise<void>>; runDeferred(): Promise<void>
 } {
   const line = new FakeLine()
   const llm = new FakeLlm()
+  const decisions = new FakeDecisions()
   const google = new FakeGoogle()
   const store = new FakeStore()
   let current = new Date((opts?.now ?? TEST_NOW).getTime())
@@ -39,7 +41,7 @@ export function makeTestDeps(opts?: { now?: Date }): {
   store.clock = () => new Date(current.getTime())
   const deferred: Array<() => Promise<void>> = []
   const deps: Deps = {
-    line, llm, google, store,
+    line, llm, decisions, google, store,
     now: () => new Date(current.getTime()),
     // #4 batch wait: moves the test clock instead of waiting.
     sleep: async (ms) => {
@@ -48,7 +50,7 @@ export function makeTestDeps(opts?: { now?: Date }): {
     config: { lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET },
   }
   return {
-    deps, line, llm, google, store,
+    deps, line, llm, decisions, google, store,
     setNow(d: Date) {
       current = new Date(d.getTime())
     },

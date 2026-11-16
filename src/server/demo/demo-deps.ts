@@ -99,7 +99,7 @@ function buildDemo(s: Shared, opts: DemoOptions): Demo {
   llm.clearCalls()
   llm.clock = world.now
   const deps: Deps = {
-    line, llm, google: s.google, store,
+    line, llm, decisions: llm, google: s.google, store,
     now: world.now,
     // The photo batch's quiet wait moves the demo clock instead of waiting.
     sleep: async (ms) => world.advance(ms),

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LineEvent, LineMessage } from '@/server/line/types'
-import type { LlmUsage } from '@/server/ports'
-import { DECIDE_CALL_MAX_MS, DECISION_SCHEMA, decide } from '@/server/progress/decide'
+import type { DecisionAnswer, DecisionsResult, LlmUsage } from '@/server/ports'
+import { DECIDE_TIMEOUT_MS, PROGRESS_MIN, TASK_CONFIDENCE_MIN } from '@/server/progress/decide'
 import { looksLikeProgress } from '@/server/progress/keywords'
 import { answerProgressFromLiff } from '@/server/progress/liff'
-import { DECISION_MODEL, TEXT_MODEL } from '@/server/usage/pricing'
+import { DECISION_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, TEST_LIFF_ID, TEST_NOW, webhookBody } from './harness'
 import { buttonActions } from './flex-text'
@@ -12,6 +12,8 @@ import { buttonActions } from './flex-text'
 // #7 Track progress through the event seam: group text lines and button presses go in
 // as signed webhooks; replies, task_prompts rows, Task rows and AI usage come out.
 // #132: only a line that passes the keyword gate reaches the model.
+// The decision model is TypeSafe Jev on OpenRouter's Decisions API (FakeDecisions here):
+// typed answers is_progress (noul), status (choice) and task (choice, t1..tN or none).
 
 const OWNER = 'Uowner1'
 const BIW = 'Ubiw'
@@ -22,7 +24,29 @@ const MEMBERS = [
   { lineUserId: TON, displayName: 'ต้น', nicknames: [] },
   { lineUserId: JEFF, displayName: 'เจฟ', nicknames: [] },
 ]
-const USAGE: LlmUsage = { inputTokens: 300, outputTokens: 20, costUsd: null }
+const USAGE: LlmUsage = { inputTokens: 300, outputTokens: 0, costUsd: null }
+
+type JevAnswers = {
+  isProgress: number | null                // null = refused
+  status?: 'done' | 'in_process' | null
+  task?: string | null                     // 't1'..'tN' or 'none'; null = refused
+  taskConfidence?: number
+  probabilities?: Record<string, number>
+}
+/** A Decisions API result as the adapter returns it (refusals as null). */
+function jev(a: JevAnswers, usage: LlmUsage = USAGE): DecisionsResult {
+  const choice = (c: string, confidence: number, probabilities?: Record<string, number>): DecisionAnswer =>
+    ({ type: 'choice', choice: c, probabilities: probabilities ?? { [c]: confidence }, confidence })
+  return {
+    model: DECISION_MODEL,
+    answers: {
+      is_progress: a.isProgress === null ? null : { type: 'noul', noul: a.isProgress, confidence: Math.max(a.isProgress, 1 - a.isProgress) },
+      status: a.status === null ? null : choice(a.status ?? 'done', 0.9),
+      task: a.task === null ? null : choice(a.task ?? 'none', a.taskConfidence ?? 0.9, a.probabilities),
+    },
+    usage,
+  }
+}
 const LATER = new Date(TEST_NOW.getTime() + 60_000) // 10:01 Bangkok
 
 beforeEach(() => {
@@ -58,7 +82,16 @@ function setup(opts?: { owned?: boolean }) {
     h.setNow(LATER)
     return send(ev.groupPostback({ data, userId, eventId, replyToken: 'rt-press' }))
   }
-  const answer = (obj: unknown) => h.llm.respond({ content: JSON.stringify(obj), model: TEXT_MODEL, usage: USAGE })
+  // A decision in the old three-way shape, as Jev would answer it: match = progress and a
+  // confident Task; ambiguous = progress, the Task unsure among those listed; none = not progress.
+  const answer = (o: { kind: 'none' } | { kind: 'match'; task: number; status: 'done' | 'in_process' }
+    | { kind: 'ambiguous'; tasks: number[]; status: 'done' | 'in_process' }) => {
+    if (o.kind === 'none') return h.decisions.respond(jev({ isProgress: 0.1 }))
+    if (o.kind === 'match') return h.decisions.respond(jev({ isProgress: 0.95, status: o.status, task: `t${o.task}`, taskConfidence: 0.9 }))
+    const probabilities: Record<string, number> = { none: 0.1 }
+    for (const n of o.tasks) probabilities[`t${n}`] = 0.9 / o.tasks.length
+    return h.decisions.respond(jev({ isProgress: 0.9, status: o.status, task: `t${o.tasks[0]}`, taskConfidence: 0.9 / o.tasks.length, probabilities }))
+  }
   const task = (id: string) => h.store.tables.tasks.find((t) => t.id === id)!
   return { ...h, group, slides, logo, problem, send, say, press, answer, task }
 }
@@ -120,10 +153,8 @@ describe('a progress line that matches an open Task', () => {
   it('matches a line that names someone by nickname, and the card shows the LINE name', async () => {
     const t = setup()
     // A model that can only tie "บิวตี้" to a Task when the nickname reached it.
-    t.llm.respond((req) => ({
-      content: JSON.stringify(req.user.includes('บิวตี้') ? { kind: 'match', task: 1, status: 'done' } : { kind: 'none' }),
-      model: TEXT_MODEL, usage: USAGE,
-    }))
+    t.decisions.respond((req) =>
+      jev(req.state.includes('บิวตี้') ? { isProgress: 0.95, status: 'done', task: 't1' } : { isProgress: 0.1 }))
     await t.say(TON, 'งานของบิวตี้เสร็จแล้วนะ')
     const card = lastReply(t)
     expect(json(card)).toContain('ทำสไลด์คู่แข่ง')
@@ -132,19 +163,47 @@ describe('a progress line that matches an open Task', () => {
     expect(t.store.tables.task_prompts[0]).toMatchObject({ taskId: t.slides.id, subjectLineUserId: TON })
   })
 
-  it('uses the decision model, inside the time budget, and records usage against the Owner', async () => {
+  it('makes exactly one decisions call and no chat call, and settles its usage against the Owner', async () => {
     const t = setup()
     t.answer({ kind: 'none' })
     await t.say(BIW, 'สไลด์เสร็จแล้ว')
-    expect(t.llm.requests).toHaveLength(1)
-    expect(t.llm.requests[0].model).toBe(DECISION_MODEL)
-    expect(t.llm.requests[0].schema).toBe(DECISION_SCHEMA) // #111
-    expect(t.llm.requests[0].timeoutMs).toBeLessThanOrEqual(DECIDE_CALL_MAX_MS)
+    expect(t.decisions.requests).toHaveLength(1)
+    expect(t.llm.requests).toHaveLength(0)
+    expect(t.decisions.requests[0].model).toBe(DECISION_MODEL)
+    expect(t.decisions.requests[0].timeoutMs).toBeLessThanOrEqual(DECIDE_TIMEOUT_MS)
     expect(t.store.tables.ai_usage).toHaveLength(1)
     expect(t.store.tables.ai_usage[0]).toMatchObject({
-      ownerLineUserId: OWNER, groupId: t.group.id, purpose: 'progress_decision', inputTokens: 300, outputTokens: 20,
+      ownerLineUserId: OWNER, groupId: t.group.id, purpose: 'progress_decision', model: DECISION_MODEL,
+      inputTokens: 300, outputTokens: 0,
     })
     expect(t.store.tables.ai_usage[0].settledAt).not.toBeNull()
+  })
+
+  it('settles the cost OpenRouter reported (usage.cost); without it, the tokens at Jev\'s price', async () => {
+    const t = setup()
+    t.decisions.respond(jev({ isProgress: 0.1 }, { inputTokens: 500, outputTokens: 0, costUsd: 0.000021 }))
+    t.decisions.respond(jev({ isProgress: 0.1 }, { inputTokens: 500, outputTokens: 0, costUsd: null }))
+    await t.say(BIW, 'สไลด์เสร็จแล้ว')
+    await t.say(BIW, 'สไลด์เสร็จแล้วนะ')
+    // 500 input tokens at $0.042 per 1M = $0.000021; the text model's price would be $0.0000225.
+    expect(t.store.tables.ai_usage.map((r) => r.costUsd)).toEqual([0.000021, 0.000021])
+  })
+
+  it('sends the chat line, the sender and the numbered open Tasks as state, with one Task key each', async () => {
+    const t = setup()
+    t.answer({ kind: 'none' })
+    await t.say(BIW, 'สไลด์เสร็จแล้ว')
+    const req = t.decisions.requests[0]
+    // Structure, not wording: the facts the model needs are in the state.
+    expect(req.state).toContain('สไลด์เสร็จแล้ว')
+    expect(req.state).toContain('Sender: บิว (nicknames: บิวตี้)')
+    expect(req.state).toMatch(/1\. ทำสไลด์คู่แข่ง .*บิว.*in_process/)
+    expect(req.state).toMatch(/2\. ทำโลโก้ .*nobody.*not_assigned/)
+    expect(req.questions.is_progress.type).toBe('noul')
+    expect(req.questions.status).toMatchObject({ type: 'choice', criteria: { done: expect.any(String), in_process: expect.any(String) } })
+    expect(req.questions.task.type).toBe('choice')
+    expect(Object.keys((req.questions.task as { criteria: Record<string, string> }).criteria)).toEqual(['t1', 't2', 't3', 'none'])
+    for (const q of Object.values(req.questions)) expect(q.instructions).toContain('user-written data')
   })
 
   it('does not ask again while the Task has an open card', async () => {
@@ -186,24 +245,6 @@ describe('a progress line that matches an open Task', () => {
     await t.send(ev.groupPostback({ data: oldYes, userId: BIW, replyToken: 'rt-old' }))
     expect(json(lastReply(t))).toContain('หมดอายุ')
     expect(t.task(t.slides.id).status).toBe('in_process')
-  })
-
-  it('skips the fallback model when the time budget is used up, and the keyword picker answers', async () => {
-    const t = setup()
-    // The decision model times out after 31 s of the 35 s budget: 4 s are left, too few for a call.
-    let elapsed = 0
-    t.llm.respond(() => {
-      elapsed = 31_000
-      throw new Error('openrouter timeout')
-    })
-    const decision = await decide(
-      t.deps, { ownerLineUserId: OWNER, projectId: t.group.projectId, groupId: t.group.id },
-      { text: 'สไลด์เสร็จแล้ว', senderLineUserId: BIW, members: [], tasks: await t.store.listOpenTasks(t.group.id), workDescription: null },
-      () => 1_000_000 + elapsed,
-    )
-    expect(decision).toEqual({ kind: 'failed' })
-    expect(t.llm.requests).toHaveLength(1)
-    expect(t.llm.requests[0].timeoutMs).toBe(DECIDE_CALL_MAX_MS)
   })
 
   it('shows the picker when the line could mean several Tasks', async () => {
@@ -679,9 +720,9 @@ describe('the keyword gate (#132)', () => {
 
   it('ten lines without a progress word make no model call and get no reply', async () => {
     const t = setup()
-    const complete = vi.spyOn(t.llm, 'complete')
+    const decideSpy = vi.spyOn(t.decisions, 'decide')
     for (const line of NOT_PROGRESS) await t.say(BIW, line)
-    expect(complete).not.toHaveBeenCalled()
+    expect(decideSpy).not.toHaveBeenCalled()
     expect(t.store.tables.ai_usage).toHaveLength(0)
     expect(t.line.replies).toHaveLength(0)
     expect(t.store.tables.messages).toHaveLength(NOT_PROGRESS.length)
@@ -690,16 +731,16 @@ describe('the keyword gate (#132)', () => {
   it('"ยังไม่เสร็จ" makes no model call and gets no reply', async () => {
     const t = setup()
     await t.say(BIW, 'สไลด์ยังไม่เสร็จเลย')
-    expect(t.llm.requests).toHaveLength(0)
+    expect(t.decisions.requests).toHaveLength(0)
     expect(t.line.replies).toHaveLength(0)
   })
 
   it('"เสร็จแล้ว" makes exactly one model call, and the card follows its answer', async () => {
     const t = setup()
-    const complete = vi.spyOn(t.llm, 'complete')
     t.answer({ kind: 'match', task: 1, status: 'done' })
     await t.say(BIW, 'สไลด์คู่แข่งเสร็จแล้ว')
-    expect(complete).toHaveBeenCalledTimes(1)
+    expect(t.decisions.requests).toHaveLength(1)
+    expect(t.llm.requests).toHaveLength(0)
     expect(json(lastReply(t))).toContain('อัปเดตงานนี้ไหม?')
     expect(t.store.tables.task_prompts[0]).toMatchObject({ taskId: t.slides.id, targetStatus: 'done' })
   })
@@ -708,7 +749,7 @@ describe('the keyword gate (#132)', () => {
     const t = setup()
     t.answer({ kind: 'none' })
     await t.say(BIW, 'เสร็จแล้วค่อยไปกินข้าวกัน')
-    expect(t.llm.requests).toHaveLength(1)
+    expect(t.decisions.requests).toHaveLength(1)
     expect(t.line.replies).toHaveLength(0)
     expect(t.store.tables.task_prompts).toHaveLength(0)
   })
@@ -718,7 +759,7 @@ describe('noise', () => {
   it('gets no reply and no model call', async () => {
     const t = setup()
     await t.say(BIW, 'ใครว่างไปกินข้าวบ้าง')
-    expect(t.llm.requests).toHaveLength(0)
+    expect(t.decisions.requests).toHaveLength(0)
     expect(t.line.replies).toHaveLength(0)
     expect(t.store.tables.task_prompts).toHaveLength(0)
   })
@@ -735,39 +776,77 @@ describe('noise', () => {
     t.store.tables.groups[0].featureTrackRemind = true
     for (const task of t.store.tables.tasks) task.status = 'done'
     await t.say(BIW, 'สไลด์เสร็จแล้ว')
+    expect(t.decisions.requests).toHaveLength(0)
     expect(t.llm.requests).toHaveLength(0)
     expect(t.line.replies).toHaveLength(0)
   })
 })
 
-describe('when the decision model fails', () => {
-  it('falls back to the text model; the failed call is not charged', async () => {
+describe('mapping Jev\'s answers (thresholds: is_progress ' + PROGRESS_MIN + ', task confidence ' + TASK_CONFIDENCE_MIN + ')', () => {
+  it('match: progress and a confident Task give the "Mark as Done?" card for that Task', async () => {
     const t = setup()
-    t.llm.fail(new Error('503'))
-    t.answer({ kind: 'match', task: 1, status: 'done' })
-    await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
-    expect(t.llm.requests.map((r) => r.model)).toEqual([DECISION_MODEL, TEXT_MODEL])
+    t.decisions.respond(jev({ isProgress: 0.8, status: 'done', task: 't3', taskConfidence: TASK_CONFIDENCE_MIN }))
+    await t.say(TON, 'สไลด์ปัญหาเสร็จแล้ว')
     expect(json(lastReply(t))).toContain('อัปเดตงานนี้ไหม?')
-    expect(t.store.tables.ai_usage).toHaveLength(1)
+    expect(t.store.tables.task_prompts[0]).toMatchObject({ taskId: t.problem.id, targetStatus: 'done' })
   })
 
-  it('falls back to the text model when the decision model answers junk', async () => {
+  it('unsure: a Task below the confidence line gives the picker of the likely Tasks', async () => {
     const t = setup()
-    t.llm.respond({ content: 'sorry, I cannot', model: TEXT_MODEL, usage: USAGE })
-    t.answer({ kind: 'none' })
-    await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
-    expect(t.llm.requests).toHaveLength(2)
+    t.decisions.respond(jev({
+      isProgress: 0.9, status: 'done', task: 't1', taskConfidence: 0.55,
+      probabilities: { t1: 0.55, t3: 0.4, t2: 0.03, none: 0.02 },
+    }))
+    await t.say(TON, 'สไลด์เสร็จแล้วนะ')
+    expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
+    expect(Object.keys(buttons(lastReply(t)))).toEqual(['ทำสไลด์ปัญหา', 'ทำสไลด์คู่แข่ง', 'ไม่ใช่การอัปเดตงาน'])
+    expect(t.store.tables.task_prompts).toHaveLength(0)
+  })
+
+  it('unsure: progress that fits no listed Task gives the picker, never a card', async () => {
+    const t = setup()
+    t.decisions.respond(jev({ isProgress: 0.9, status: 'done', task: 'none', taskConfidence: 0.95 }))
+    await t.say(BIW, 'สไลด์เสร็จแล้ว')
+    expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
+    expect(t.store.tables.task_prompts).toHaveLength(0)
+  })
+
+  it('none: is_progress below the line gets no reply, even when the other answers were refused', async () => {
+    const t = setup()
+    t.decisions.respond(jev({ isProgress: PROGRESS_MIN - 0.01, status: null, task: null }))
+    await t.say(BIW, 'สไลด์เสร็จแล้ว')
     expect(t.line.replies).toHaveLength(0)
-    expect(t.store.tables.ai_usage).toHaveLength(2)
+    expect(t.store.tables.task_prompts).toHaveLength(0)
+  })
+})
+
+describe('when the decision model does not answer (F3.4: fail, then picker)', () => {
+  it('a refused is_progress gives the free picker, never a "not progress" verdict', async () => {
+    const t = setup()
+    t.decisions.respond(jev({ isProgress: null, status: 'done', task: 't1' }))
+    await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
+    expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
+    expect(t.llm.requests).toHaveLength(0)
   })
 
-  it('asks the group which Task when both models fail on a progress-looking line, keeping the message', async () => {
+  it('a refused or missing task answer gives the picker', async () => {
     const t = setup()
-    t.llm.fail(new Error('503'))
-    t.llm.fail(new Error('timeout'))
+    t.decisions.respond(jev({ isProgress: 0.9, status: 'done', task: null }))
+    t.decisions.respond({ model: DECISION_MODEL, answers: { is_progress: { type: 'noul', noul: 0.9, confidence: 0.9 } }, usage: USAGE })
+    await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ', 'rt-a')
+    await t.say(BIW, 'สไลด์คู่แข่งเสร็จละนะ', 'rt-b')
+    expect(t.line.replies.map((r) => json(r.messages[0]))).toEqual([
+      expect.stringContaining('อัปเดตนี้หมายถึงงานไหน?'), expect.stringContaining('อัปเดตนี้หมายถึงงานไหน?'),
+    ])
+  })
+
+  it('an adapter error gives the picker, makes no chat-model call, and is not charged; the message is kept', async () => {
+    const t = setup()
+    t.decisions.fail(new Error('openrouter decisions 503'))
     await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
-    // decide() tries the decision model, then the text model; the picker makes no further call.
-    expect(t.llm.requests.map((r) => r.model)).toEqual([DECISION_MODEL, TEXT_MODEL])
+    expect(t.decisions.requests).toHaveLength(1)
+    expect(t.llm.requests).toHaveLength(0)
+    expect(t.store.tables.ai_usage).toHaveLength(0)
     const picker = buttons(lastReply(t))
     expect(Object.keys(picker)[0]).toBe('ทำสไลด์คู่แข่ง') // the sender's own Task first
     expect(t.store.tables.messages).toHaveLength(1)
@@ -778,11 +857,10 @@ describe('when the decision model fails', () => {
 
   it('uses the keyword status for the picker: a started word offers the Tasks nobody owns', async () => {
     const t = setup()
-    t.llm.fail(new Error('503'))
-    t.llm.fail(new Error('timeout'))
+    t.decisions.fail(new Error('openrouter decisions timeout'))
     await t.say(TON, 'โลโก้เดี๋ยวทำเองนะ')
     expect(Object.keys(buttons(lastReply(t)))).toEqual(['ทำโลโก้', 'ไม่ใช่การอัปเดตงาน'])
-    expect(t.llm.requests).toHaveLength(2)
+    expect(t.decisions.requests).toHaveLength(1)
   })
 })
 
@@ -791,16 +869,16 @@ describe('without AI', () => {
     const t = setup()
     t.store.seedAiUsage({ ownerLineUserId: OWNER, groupId: t.group.id, inputTokens: 6_000_000, costUsd: 0.5 })
     await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
-    expect(t.llm.requests).toHaveLength(0)
+    expect(t.decisions.requests).toHaveLength(0)
     expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
   })
 
   it('in a group without a confirmed Owner, a keyword line gets the picker with no model call', async () => {
     const t = setup({ owned: false })
-    const complete = vi.spyOn(t.llm, 'complete')
+    const decideSpy = vi.spyOn(t.decisions, 'decide')
     await t.say(BIW, 'สไลด์คู่แข่งเสร็จละ')
-    expect(complete).not.toHaveBeenCalled()
-    expect(t.llm.requests).toHaveLength(0)
+    expect(decideSpy).not.toHaveBeenCalled()
+    expect(t.decisions.requests).toHaveLength(0)
     expect(t.store.tables.ai_usage).toHaveLength(0)
     expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
   })

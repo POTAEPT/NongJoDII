@@ -51,6 +51,28 @@ export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: num
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }
 
+// ---- OpenRouter Decisions API (TypeSafe Jev, openrouter.ai/docs/guides/features/decisions) ----
+/** One typed question. noul: probability a statement is true (criteria optionally define
+ *  true and false). choice: one key of `criteria`. score: a position on the ordered `criteria`. */
+export type DecisionQuestion =
+  | { type: 'noul'; instructions: string; criteria?: { true: string; false: string } }
+  | { type: 'choice'; instructions: string; criteria: Record<string, string> }
+  | { type: 'score'; instructions: string; criteria: string[] }
+/** timeoutMs (optional) shortens the adapter's own timeout for this call. */
+export type DecisionsRequest = {
+  model: string; state: string; questions: Record<string, DecisionQuestion>
+  user?: string; sessionId?: string; timeoutMs?: number
+}
+/** confidence is null when the provider left it out. */
+export type DecisionAnswer =
+  | { type: 'noul'; noul: number; confidence: number | null }
+  | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number | null }
+  | { type: 'score'; score: number; probabilities: Record<string, number>; confidence: number | null }
+/** One entry per question asked. null = not answered (a refusal, a missing key, or a shape
+ *  that does not match the question): never a negative verdict. */
+export type DecisionsResult = { model: string; answers: Record<string, DecisionAnswer | null>; usage: LlmUsage | null }
+export interface DecisionsPort { decide(req: DecisionsRequest): Promise<DecisionsResult> }
+
 // ---- Google (OAuth #12, Drive folders #13) ----
 export type GoogleTokenResult = {
   refreshToken: string | null; scopes: string[]; subject: string | null; email: string | null
@@ -775,6 +797,8 @@ export interface StorePort {
 export type HandlerConfig = { lineChannelSecret: string; liffId: string; tokenEncryptionKey: Buffer; tickSecret: string }
 export type Deps = {
   line: LinePort; llm: LlmPort; google: GooglePort; store: StorePort
+  /** The decision model (progress, #7): OpenRouter's Decisions API, not chat completions. */
+  decisions: DecisionsPort
   now: () => Date; config: HandlerConfig
   /** Waits `ms` (#4: the quiet wait of a photo batch without a total). Absent = setTimeout.
    *  The test harness moves its clock instead. */

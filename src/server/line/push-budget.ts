@@ -27,6 +27,9 @@ export type GroupPush = {
   /** Same key for the same logical post: LINE then sends it once even if it is retried
    *  within 24 h (see retryKeyFrom). */
   retryKey: string
+  /** #120: a 1:1 push (lineGroupId is then a LINE user ID) counts this many messages
+   *  instead of the group's members. */
+  recipients?: number
 }
 
 /** A stable UUID (the format LINE's X-Line-Retry-Key needs) from any text, e.g.
@@ -43,12 +46,12 @@ export async function pushToGroupWithinBudget(deps: Deps, p: GroupPush): Promise
   let pushLogId: string | null = null
   try {
     const [members, lineCount, quota] = await Promise.all([
-      deps.store.listLiveMembers(p.groupId),
-      deps.line.getGroupMemberCount(p.lineGroupId),
+      p.recipients !== undefined ? Promise.resolve([]) : deps.store.listLiveMembers(p.groupId),
+      p.recipients !== undefined ? Promise.resolve(0) : deps.line.getGroupMemberCount(p.lineGroupId),
       deps.line.getMessageQuota(),
     ])
     // The larger number errs toward skipping, never toward spending the reserve.
-    const recipients = Math.max(lineCount, members.length, 1)
+    const recipients = p.recipients ?? Math.max(lineCount, members.length, 1)
     ;({ pushLogId } = await deps.store.claimPushBudget({
       purpose: p.purpose, lineTargetId: p.lineGroupId, messageCount: recipients,
       lineUsed: quota.limit !== null ? quota.used : 0,

@@ -194,6 +194,7 @@ export type AiUsageActual = { model: string; inputTokens: number; outputTokens: 
 export type PushPurpose =
   | 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
   | 'owner_takeover' | 'subgroup_detached'   // #31
+  | 'owner_insight'                          // #120: the Owner's 1:1 weekly card
   | 'owner_needed'                           // #30
   | 'file_saved' | 'file_failed' | 'drive_share_refused'   // #4
   | 'drive_disconnected'                     // #82

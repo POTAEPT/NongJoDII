@@ -32,9 +32,12 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, 'th'))
   const ownerId = group.ownerConfirmedAt !== null ? group.nominatedOwnerLineUserId : null
-  // #80: a nominee who has not confirmed yet. Not after an Owner left (#30): the nominee
-  // column then still names the old Owner.
-  const pendingId = group.ownerConfirmedAt === null && group.ownerLeftAt === null ? group.nominatedOwnerLineUserId : null
+  // #80: a nominee who has not confirmed yet, only before the group has a Project (the only
+  // time the setup form's Owner confirm applies). In two other states the nominee column
+  // still names a previous Owner, so nobody is "pending": after an Owner left (#30), and a
+  // Sub group waiting on the take-over question (#31: a Project, no confirmed Owner).
+  const pendingId = setupState(group) === 'pending_owner' && group.ownerLeftAt === null
+    ? group.nominatedOwnerLineUserId : null
   const view: SettingsLoad = {
     groupId: group.groupId,
     groupName: group.name,

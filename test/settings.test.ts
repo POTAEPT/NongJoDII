@@ -84,8 +84,10 @@ describe('loadSettings (#28)', () => {
   // #80: the setup-done card links Settings while the named Owner has not confirmed yet.
   it('names the Owner it waits for, and tells the nominee it is them', async () => {
     const t = setup()
+    // Sent setup form, no Project yet: the only time the form's Owner confirm applies.
     const g = t.store.tables.groups.find((row) => row.id === t.group.id)!
     g.ownerConfirmedAt = null
+    g.projectId = null
     g.nominatedOwnerLineUserId = BIW
     const byOwner = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
     expect(byOwner).toMatchObject({ state: 'not_set_up', owner: null })
@@ -105,6 +107,21 @@ describe('loadSettings (#28)', () => {
     g.ownerLeftAt = new Date('2026-11-15T03:00:00Z')
     const left = (await loadSettings(t.deps, { idToken: 'tok-biw', groupId: t.group.id })).body as SettingsLoad
     expect(left).toMatchObject({ state: 'not_set_up', pendingOwner: null })
+  })
+
+  // Review of #107: a Sub group waiting on the take-over question (#31) has a Project and no
+  // confirmed Owner, and its nominee column still names the previous Owner. Nobody is pending.
+  it('names no pending Owner for a Sub group waiting on the take-over question (#31)', async () => {
+    const t = setup()
+    const g = t.store.tables.groups.find((row) => row.id === t.group.id)!
+    g.ownerConfirmedAt = null // change_project_owner cleared it; projectId stays
+    t.store.tables.group_setups.push({
+      groupId: t.group.id, isMain: false, featureSaveFiles: true, ownerNominatedByLineUserId: OWNER,
+      ownerNominatedAt: null, takeoverAskedAt: new Date('2026-11-15T03:00:00Z'),
+    })
+    expect(g.projectId).not.toBeNull()
+    const view = (await loadSettings(t.deps, { idToken: 'tok-owner', groupId: t.group.id })).body as SettingsLoad
+    expect(view).toMatchObject({ state: 'not_set_up', pendingOwner: null })
   })
 })
 

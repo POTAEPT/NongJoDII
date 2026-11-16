@@ -7,6 +7,7 @@ import { liffUrl } from '@/server/liff-links'
 import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { ERR_401, post } from './api'
+import { track } from './analytics'
 import type { LiffViewProps } from './liff-sdk'
 import { FEATURES, TimeSelect } from './setup-parts'
 import {
@@ -97,7 +98,10 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
       const { status, json } = await post('/api/setup/submit', { idToken, groupId: id, ...toSubmitBody(form) })
       const view = submitView(status, json)
       if (view === 'needs_drive' || view === 'owner_needed') setOwnerFlow(view)
-      else if (view === 'done') setDone(json as SetupSubmitResult)
+      else if (view === 'done') {
+        setDone(json as SetupSubmitResult)
+        track('setup_submitted') // #19
+      }
       else {
         // A 400 names the refused field: its message goes on the step that owns it.
         const problem = status === 400 ? stepForField((json as { field?: unknown } | null)?.field) : null

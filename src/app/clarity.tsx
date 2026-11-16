@@ -10,8 +10,9 @@ export function Clarity() {
   // NEXT_PUBLIC_* is inlined at build time; without it the tag would load ".../tag/undefined".
   if (!CLARITY_ID) return null;
 
-  // The LIFF URL carries access_token (and code/state after liff.login); LINE says never send it to logging
-  // tools, so the snippet below skips every /liff page.
+  // The LIFF URL carries access_token (and code/state after liff.login) until liff.init()
+  // resolves; LINE says never send it to logging tools. So this early snippet skips every
+  // /liff page, and those pages load Clarity themselves after init (#19, liff/analytics.ts).
   return (
     <Script id="ms-clarity" strategy="beforeInteractive">
       {`(function(c,l,a,r,i,t,y){

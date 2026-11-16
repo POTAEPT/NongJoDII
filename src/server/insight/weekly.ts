@@ -4,6 +4,7 @@ import type { Deps, TaskCounts, UnownedTask, WeeklySummaryGroup } from '@/server
 import { bangkokIsoWeekday, bangkokTodayLabel, bangkokWeekStartLabel, isWeeklyDue } from '@/server/time/bangkok'
 import type { TickJob } from '@/server/tick/run-tick'
 import { shouldPostWeeklyInsight, weeklyInsightCard } from './card'
+import { postOwnerInsight } from './owner'
 
 // Weekly insight (#10). #20: on the group's chosen weekday and time, count its Tasks in
 // code (no AI call, decided 2026-11-11) and keep the result in weekly_insights. #21: post
@@ -111,6 +112,7 @@ export async function runWeeklyInsightForGroup(deps: Deps, group: WeeklySummaryG
     if (!insight) return 'already_this_week'
     // After the save and outside the claim: a failed post never undoes the insight.
     await postWeeklyInsight(deps, insight, now)
+    await postOwnerInsight(deps, group.groupId, now) // #120: main groups only; never throws
     return 'saved'
   }
 
@@ -121,6 +123,7 @@ export async function runWeeklyInsightForGroup(deps: Deps, group: WeeklySummaryG
     const insight = await buildAndSave(deps, group, now)
     if (!insight) return 'already_this_week'
     await postWeeklyInsight(deps, insight, now)
+    await postOwnerInsight(deps, group.groupId, now) // #120
     return 'recovered'
   }
   return 'not_due'

@@ -1,4 +1,4 @@
-import { AdapterError, GoogleTokenRevoked } from '../log'
+import { AdapterError, DriveShareRefused, GoogleTokenRevoked } from '../log'
 import type { DriveFolderState, DriveUpload, GooglePort, GoogleTokenResult } from '../ports'
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
@@ -141,7 +141,28 @@ export class GoogleHttpClient implements GooglePort {
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ role: 'reader', type: 'anyone' }),
     })
-    if (!res.ok) throw new AdapterError(`google drive share ${res.status}`)
+    if (res.ok) return
+    // #4 follow-up: only an explicit sharing-policy reason is a refusal (Drive's "Resolve
+    // errors" guide and error reasons): 400 invalidSharingRequest ("ACL change not allowed"),
+    // and the domain and sharing policy reasons below. Everything else (rate limits, which
+    // are 403 too, an empty body, a bare "forbidden", a 5xx) is unknown: retrying may help,
+    // and no Owner card is sent. Only the reason is read; the body is never logged.
+    const reasons = await errorReasons(res)
+    if (reasons.some((r) => SHARE_POLICY_REASONS.has(r))) throw new DriveShareRefused(res.status)
+    throw new AdapterError(`google drive share ${res.status}`)
+  }
+
+  /** permissions.list: whether the folder has an "anyone" permission (link sharing).
+   *  Permission IDs are opaque (Permission resource), so the type is read instead. */
+  async folderShared(accessToken: string, folderId: string): Promise<boolean> {
+    const res = await this.call(`${DRIVE_FILES}/${encodeURIComponent(folderId)}/permissions?fields=permissions(type,role)`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) throw new AdapterError(`google drive permissions ${res.status}`)
+    const json = (await res.json()) as { permissions?: unknown }
+    return Array.isArray(json.permissions) &&
+      json.permissions.some((p) => (p as { type?: unknown } | null)?.type === 'anyone')
   }
 
   /** #4 (developers.google.com/drive/api/guides/manage-uploads). Up to 5 MB one multipart
@@ -204,4 +225,28 @@ function decodeJwtPayload(token: string): { sub?: unknown; email?: unknown } | n
   } catch {
     return null
   }
+}
+
+/** Drive error reasons that mean a sharing policy forbids the "anyone with the link"
+ *  permission: the Workspace admin's settings, not a passing condition. Matched by reason
+ *  whatever the status: Drive answers some of them with 400 and some with 403. The list is
+ *  partly drawn from community reports, not only Google's docs: invalidSharingRequest and
+ *  domainPolicy are in the "Resolve errors" guide; shareOutNotPermittedForContent (a 400,
+ *  rclone forum) and publishOutNotPermitted (a 400 when a Workspace blocks public sharing,
+ *  gogcli issue 675) come from reports of real answers. */
+const SHARE_POLICY_REASONS = new Set([
+  'invalidSharingRequest', 'domainPolicy', 'shareOutNotPermitted', 'shareOutNotPermittedForContent',
+  'shareInNotPermitted', 'publishOutNotPermitted', 'teamDriveDomainUsersOnlyRestriction',
+  'cannotShareTeamDriveWithNonGoogleAccounts',
+])
+
+/** The `reason` of each entry in a Google API error body (error.errors[]). */
+async function errorReasons(res: Response): Promise<string[]> {
+  const body = (await res.json().catch(() => null)) as { error?: { errors?: unknown } } | null
+  const errors = body?.error?.errors
+  if (!Array.isArray(errors)) return []
+  return errors.map((e) => {
+    const r = (e as { reason?: unknown } | null)?.reason
+    return typeof r === 'string' ? r : ''
+  })
 }

@@ -1,6 +1,6 @@
 import type { LineMessage } from '@/server/line/types'
 import type { LinePort, LinePushResult } from '@/server/ports'
-import { AdapterError, LinePushRejected } from '@/server/log'
+import { AdapterError, ContentTooLarge, LinePushRejected } from '@/server/log'
 import type { FakeClock } from './fake-google'
 
 export class FakeLine implements LinePort {
@@ -50,8 +50,17 @@ export class FakeLine implements LinePort {
   /** `${lineGroupId}:${lineUserId}` keys whose getGroupMemberProfile rejects, as on a LINE 5xx. */
   failProfileFor = new Set<string>()
 
+  /** Makes reply reject as LINE does for an expired or used token (a 4xx). */
+  rejectReply = false
+  /** How long these calls take on `clock` (#4 time budget); 0 = instant. */
+  replyMs = 0
+  pushMs = 0
+  quotaMs = 0
+
   async reply(replyToken: string, messages: LineMessage[]): Promise<void> {
     this.replies.push({ replyToken, messages })
+    if (this.replyMs > 0) this.clock?.advance(this.replyMs)
+    if (this.rejectReply) throw new AdapterError('line reply 400')
     if (this.failReply) throw new AdapterError('line reply 500')
   }
 
@@ -65,6 +74,7 @@ export class FakeLine implements LinePort {
 
   async push(to: string, messages: LineMessage[], opts?: { retryKey?: string }): Promise<LinePushResult> {
     this.pushes.push({ to, messages, retryKey: opts?.retryKey })
+    if (this.pushMs > 0) this.clock?.advance(this.pushMs)
     if (this.rejectPush) throw new LinePushRejected(400)
     if (this.failPush) throw new AdapterError('line push 500')
     const key = opts?.retryKey
@@ -103,6 +113,7 @@ export class FakeLine implements LinePort {
   }
 
   async getMessageQuota(): Promise<{ limit: number | null; used: number }> {
+    if (this.quotaMs > 0) this.clock?.advance(this.quotaMs)
     if (this.failQuota) throw new AdapterError('line quota 500')
     return { ...this.quota }
   }
@@ -111,14 +122,16 @@ export class FakeLine implements LinePort {
   /** LINE message id -> its content. A missing id answers null (LINE 404). */
   contents = new Map<string, { data: Uint8Array; contentType: string | null }>()
   /** Every content download, with the timeout it was given. */
-  contentCalls: { messageId: string; timeoutMs: number }[] = []
+  contentCalls: { messageId: string; timeoutMs: number; maxBytes: number }[] = []
   /** How long a download takes on `clock`; 0 = instant. A download longer than its
    *  timeout rejects at the timeout, as the real adapter does. */
   contentMs = 0
   failContent = false
 
-  async getMessageContent(messageId: string, opts: { timeoutMs: number }): Promise<{ data: Uint8Array; contentType: string | null } | null> {
-    this.contentCalls.push({ messageId, timeoutMs: opts.timeoutMs })
+  async getMessageContent(
+    messageId: string, opts: { timeoutMs: number; maxBytes: number },
+  ): Promise<{ data: Uint8Array; contentType: string | null } | null> {
+    this.contentCalls.push({ messageId, timeoutMs: opts.timeoutMs, maxBytes: opts.maxBytes })
     if (this.contentMs > opts.timeoutMs) {
       this.clock?.advance(opts.timeoutMs)
       throw new AdapterError('line timeout')
@@ -126,6 +139,7 @@ export class FakeLine implements LinePort {
     if (this.contentMs > 0) this.clock?.advance(this.contentMs)
     if (this.failContent) throw new AdapterError('line content 500')
     const c = this.contents.get(messageId)
+    if (c && c.data.byteLength > opts.maxBytes) throw new ContentTooLarge()
     return c ? { data: c.data, contentType: c.contentType } : null
   }
 

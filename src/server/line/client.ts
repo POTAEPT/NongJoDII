@@ -1,4 +1,4 @@
-import { AdapterError, LinePushRejected } from '../log'
+import { AdapterError, ContentTooLarge, LinePushRejected } from '../log'
 import type { LinePort, LinePushResult } from '../ports'
 import type { LineMessage } from './types'
 
@@ -114,7 +114,9 @@ export class LineHttpClient implements LinePort {
    *  slow transfer stops by the caller's deadline. 404: the content is gone (LINE keeps it
    *  only for a while). Any other non-200 (202 while a video is still being prepared, a 5xx)
    *  throws. */
-  async getMessageContent(messageId: string, opts: { timeoutMs: number }): Promise<{ data: Uint8Array; contentType: string | null } | null> {
+  async getMessageContent(
+    messageId: string, opts: { timeoutMs: number; maxBytes: number },
+  ): Promise<{ data: Uint8Array; contentType: string | null } | null> {
     const signal = AbortSignal.timeout(Math.max(1, opts.timeoutMs))
     try {
       const res = await this.rawFetch(`${DATA_API}/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
@@ -122,7 +124,14 @@ export class LineHttpClient implements LinePort {
       })
       if (res.status === 404) return null
       if (res.status !== 200) throw new AdapterError(`line content ${res.status}`)
-      const data = new Uint8Array(await res.arrayBuffer())
+      // An image message carries no fileSize, so the cap is checked here: first by the
+      // announced length, then while reading, so an oversize body is never held whole.
+      const announced = Number(res.headers.get('content-length'))
+      if (Number.isFinite(announced) && announced > opts.maxBytes) {
+        await res.body?.cancel().catch(() => {})
+        throw new ContentTooLarge()
+      }
+      const data = await readCapped(res, opts.maxBytes)
       return { data, contentType: res.headers.get('content-type') }
     } catch (err) {
       const name = (err as { name?: unknown } | null)?.name
@@ -157,4 +166,29 @@ export class LineHttpClient implements LinePort {
     if (typeof body.sub !== 'string' || body.sub === '') return null
     return { lineUserId: body.sub, displayName: typeof body.name === 'string' ? body.name : null }
   }
+}
+
+/** The response body, stopping with ContentTooLarge once it passes `maxBytes`. */
+async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!res.body) return new Uint8Array()
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {})
+      throw new ContentTooLarge()
+    }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const c of chunks) {
+    out.set(c, at)
+    at += c.byteLength
+  }
+  return out
 }

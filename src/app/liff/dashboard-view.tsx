@@ -292,8 +292,9 @@ function InsightCard({ insight }: { insight: DashboardInsight | null }) {
   )
 }
 
-/** #4: the group's saved files, newest first. Each link opens in Drive without a Google
- *  account. A card skipped near the LINE quota leaves the file here only. */
+/** #4: the group's saved files, newest first. Each link opens in Drive (without a Google
+ *  account when the Project folder is shared by link). A card skipped near the LINE quota
+ *  leaves the file here only. */
 export function FilesCard({ files }: { files: DashboardFile[] }) {
   return (
     <section className="flex flex-col gap-2 rounded-2xl bg-white p-3 ring-1 ring-[#E6EAF0]">

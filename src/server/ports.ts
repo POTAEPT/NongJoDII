@@ -26,8 +26,11 @@ export interface LinePort {
   /** #4: the bytes of an image or file a user sent (GET api-data.line.me/v2/bot/message/{id}/content).
    *  null when LINE answers 404 (the content is gone). `timeoutMs` cuts the whole call, body
    *  included, so a big file cannot run past the route's limit. contentType: LINE's
-   *  Content-Type header, null when absent. */
-  getMessageContent(messageId: string, opts: { timeoutMs: number }): Promise<{ data: Uint8Array; contentType: string | null } | null>
+   *  Content-Type header, null when absent. Rejects with ContentTooLarge when the content
+   *  is bigger than `maxBytes` (by Content-Length, or while reading). */
+  getMessageContent(
+    messageId: string, opts: { timeoutMs: number; maxBytes: number },
+  ): Promise<{ data: Uint8Array; contentType: string | null } | null>
   /** The bot leaves the group (POST /v2/bot/group/{id}/leave, #11). 'left': LINE answered
    *  200. 'not_in_group': LINE answered 404, so the bot is not in the group (it was removed,
    *  or an earlier leave went through and its answer was lost). Rejects on anything else
@@ -61,6 +64,9 @@ export interface GooglePort {
   getFolder(accessToken: string, folderId: string): Promise<DriveFolderState>
   /** "Anyone with the link can view" (permissions.create role reader, type anyone). */
   shareAnyoneReader(accessToken: string, fileId: string): Promise<void>
+  /** #4: whether the folder has the "anyone with the link" permission (Drive gives it the
+   *  permission ID 'anyoneWithLink'). */
+  folderShared(accessToken: string, folderId: string): Promise<boolean>
   /** #4: uploads a file into `parentId` (files.create with media); it inherits the folder's
    *  sharing. `timeoutMs` cuts the whole upload. Returns Drive's id and webViewLink. */
   uploadFile(accessToken: string, f: DriveUpload, opts: { timeoutMs: number }): Promise<{ id: string; webViewLink: string }>
@@ -173,7 +179,7 @@ export type PushPurpose =
   | 'task_created' | 'weekly_insight' | 'reminder' | 'setup_done' | 'drive_revoked' | 'member_left'
   | 'owner_takeover' | 'subgroup_detached'   // #31
   | 'owner_needed'                           // #30
-  | 'file_saved'                             // #4
+  | 'file_saved' | 'file_failed' | 'drive_share_refused'   // #4
 export type PushBudgetClaim = {
   purpose: PushPurpose; lineTargetId: string; messageCount: number
   lineUsed: number   // LINE's figure for this month
@@ -371,9 +377,10 @@ export interface StorePort {
   linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }>
   /** The Project's active drive_connections row, or null. */
   findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null>
-  /** A photo batch (#4): how many messages of the group carry this imageSet ID, and how
-   *  many of those have a files row pointing at them. */
-  countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number }>
+  /** A photo batch (#4): how many messages of the group carry this imageSet ID, and how many
+   *  of those are settled, by their webhook_events row `file:<LINE message ID>`: event type
+   *  file_saved or file_save_failed (files/save.ts). */
+  countImageSet(groupId: string, imageSetId: string): Promise<{ messages: number; saved: number; failed: number }>
   /** INSERT INTO image_set_cards ... ON CONFLICT DO NOTHING: claimed true for the one caller
    *  that inserted the row, so one batch gets one "saved N photos" card. */
   claimImageSetCard(groupId: string, imageSetId: string): Promise<{ claimed: boolean }>

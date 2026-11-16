@@ -84,8 +84,10 @@ async function ingestEvent(deps: Deps, event: LineEvent, receivedAt: Date): Prom
       imageSetId: imageSet?.id ?? null, imageSetIndex: imageSet?.index ?? null, imageSetTotal: imageSet?.total ?? null,
       mentions: text === null ? null : readMentions((message as { mention?: unknown }).mention),
     })
-    // Gate on the message row, not the ledger row: a half-failed first delivery is
-    // retried, and a redelivery never runs twice.
+    // Gate on the message row, not the ledger row: a delivery that failed before the row
+    // was stored is retried, and a redelivery never runs twice. A file or photo save (#4)
+    // runs after the 200 answer, so a redelivery never retries a save that failed then: the
+    // save posts its own "couldn't save" card instead (files/save.ts).
     if (!inserted || storedMessageId === null) return null
     const file = readFileMessage(message)
     if (file) {

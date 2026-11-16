@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DRIVE_FILE_SCOPE, GoogleHttpClient } from '@/server/google/client'
-import { AdapterError, GoogleTokenRevoked } from '@/server/log'
+import { AdapterError, DriveShareRefused, GoogleTokenRevoked } from '@/server/log'
 
 type Call = { url: string; init: RequestInit }
 
@@ -237,5 +237,43 @@ describe('GoogleHttpClient.uploadFile (#4)', () => {
     const err = await client.uploadFile('at', file(1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
     expect((err as Error).message).toBe('google drive upload 403')
     expect(calls.some((c) => c.url.includes('/permissions'))).toBe(false)
+  })
+})
+
+describe('GoogleHttpClient link share (#4 follow-up)', () => {
+  const reason = (r: string, domain = 'global') => ({ error: { errors: [{ domain, reason: r, message: 'secret detail' }] } })
+
+  it('only an explicit sharing-policy reason is DriveShareRefused', async () => {
+    for (const [status, body] of [
+      [400, reason('invalidSharingRequest')], [403, reason('shareOutNotPermitted')], [403, reason('domainPolicy')],
+      [403, reason('publishOutNotPermitted')], [400, reason('publishOutNotPermitted')],
+      [400, reason('shareOutNotPermittedForContent')], [403, reason('shareOutNotPermittedForContent')],
+    ] as const) {
+      const err = await stubFetch(status, body).client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(DriveShareRefused)
+      expect((err as Error).message).toBe(`google drive share ${status}`)
+    }
+  })
+
+  it('a rate limit, an empty or bare 403, another 400 or a 5xx is unknown: a plain AdapterError', async () => {
+    for (const [status, body] of [
+      [403, reason('rateLimitExceeded', 'usageLimits')], [403, reason('sharingRateLimitExceeded')],
+      [403, reason('userRateLimitExceeded', 'usageLimits')], [403, {}], [403, reason('forbidden')],
+      [400, reason('badRequest')], [500, {}],
+    ] as const) {
+      const err = await stubFetch(status, body).client.shareAnyoneReader('at', 'folder-1').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(AdapterError)
+      expect(err).not.toBeInstanceOf(DriveShareRefused)
+      expect((err as Error).message).toBe(`google drive share ${status}`)
+    }
+  })
+
+  it('folderShared lists the permissions and looks for type anyone', async () => {
+    const shared = stubFetch(200, { permissions: [{ type: 'user', role: 'owner' }, { type: 'anyone', role: 'reader' }] })
+    expect(await shared.client.folderShared('at', 'f/1')).toBe(true)
+    expect(shared.calls[0].url).toBe('https://www.googleapis.com/drive/v3/files/f%2F1/permissions?fields=permissions(type,role)')
+    expect(await stubFetch(200, { permissions: [{ type: 'user', role: 'owner' }] }).client.folderShared('at', 'f1')).toBe(false)
+    const err = await stubFetch(404).client.folderShared('at', 'f1').catch((e: unknown) => e)
+    expect((err as Error).message).toBe('google drive permissions 404')
   })
 })

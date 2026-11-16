@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { seal } from '@/server/crypto/secretbox'
+import { SHARE_REFUSED_TEXT } from '@/server/google/share-refused'
+import { AdapterError, DriveShareRefused } from '@/server/log'
 import { loadDashboard, type DashboardData } from '@/server/dashboard/load'
-import { BATCH_QUIET_MS, MAX_FILE_BYTES } from '@/server/files/save'
+import { BATCH_QUIET_MS, MAX_FILE_BYTES, POST_SAVE_RESERVE_MS, PUSH_WORST_MS, SAVE_HARD_STOP_MS } from '@/server/files/save'
 import { driveDeadline, ensureDriveFolders, MAIN_GROUP_FOLDER } from '@/server/google/drive-folders'
 import type { LineEvent } from '@/server/line/types'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -31,7 +33,8 @@ const bytes = (s: string) => new Uint8Array(Buffer.from(s))
 const sha = (s: string) => createHash('sha256').update(Buffer.from(s)).digest('hex')
 
 /** A Project (main group + one Sub group), Owner confirmed, signed in to Google, folders laid out. */
-async function setup(): Promise<H & { mainId: string; subId: string; projectId: string }> {
+/** layOut false: the Owner signed in but no folder exists yet (the first save makes them). */
+async function setup(opts?: { layOut?: boolean }): Promise<H & { mainId: string; subId: string; projectId: string }> {
   const h = makeTestDeps()
   const main = h.store.seedGroup({ lineGroupId: MAIN, name: 'ทีมหลัก', nominatedOwnerLineUserId: OWNER })
   h.store.seedMember({ groupId: main.id, lineUserId: OWNER, displayName: 'Owner Name' })
@@ -48,7 +51,7 @@ async function setup(): Promise<H & { mainId: string; subId: string; projectId: 
     grantedScopes: ['https://www.googleapis.com/auth/drive.file'], refreshTokenCiphertext: seal('rt-1', TEST_KEY),
     signedInAt: TEST_NOW,
   })
-  await ensureDriveFolders(h.deps, projectId, driveDeadline(h.deps.now()))
+  if (opts?.layOut !== false) await ensureDriveFolders(h.deps, projectId, driveDeadline(h.deps.now()))
   h.google.driveCalls = []
   h.google.refreshCalls = []
   return { ...h, mainId: main.id, subId: sub.id, projectId }
@@ -91,6 +94,79 @@ describe('file saver (#4)', () => {
     expect(JSON.stringify(h.line.replies[0].messages[0])).toContain(up.webViewLink)
   })
 
+  it('a refused share (Workspace policy, 403): one folder kept, one Owner card, files still saved with Owner-only links', async () => {
+    const h = await setup({ layOut: false })
+    h.google.shareError = new DriveShareRefused()
+    h.line.contents.set('m-s1', { data: bytes('one'), contentType: 'application/pdf' })
+    h.line.contents.set('m-s2', { data: bytes('two'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-s1', fileName: 'one.pdf', fileSize: 3 }))
+    await h.runDeferred()
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-s2', fileName: 'two.pdf', fileSize: 3 }))
+    await h.runDeferred()
+
+    // One Project folder, its ID stored though the share failed: no empty folder left behind.
+    expect(h.google.foldersNamed('ทีมหลัก')).toHaveLength(1)
+    const project = h.store.tables.projects.find((p) => p.id === h.projectId)!
+    expect(project.driveProjectFolderId).toBe(h.google.foldersNamed('ทีมหลัก')[0].id)
+    expect(h.google.shares).toEqual([])
+    // Both files saved, under that folder.
+    expect(h.store.tables.files).toHaveLength(2)
+    expect(h.google.uploads.map((u) => h.google.folders.get(u.parentId)!.parentId)).toEqual([project.driveProjectFolderId, project.driveProjectFolderId])
+    // One Owner card in the main group, though the second save met the refusal again.
+    const ownerCards = h.line.pushes.filter((p) => flexText(p.messages[0]).includes(SHARE_REFUSED_TEXT.title))
+    expect(ownerCards).toHaveLength(1)
+    expect(ownerCards[0].to).toBe(MAIN)
+    // The saved cards never say the link opens without a Google account.
+    const saved = h.line.replies.map((r) => flexText(r.messages[0]))
+    expect(saved).toHaveLength(2)
+    for (const t of saved) {
+      expect(t).not.toContain('ไม่ต้องมีบัญชี Google')
+      expect(t).toContain('เฉพาะเจ้าของ Drive')
+    }
+  })
+
+  it('a stored Project folder without the link share is shared on the next save once the policy allows it', async () => {
+    const h = await setup({ layOut: false })
+    h.google.shareError = new DriveShareRefused()
+    h.line.contents.set('m-h1', { data: bytes('h1'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-h1', fileName: 'h1.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    h.google.shareError = null
+    // The refusal is remembered for the Bangkok day: the next day checks again.
+    h.setNow(new Date(h.deps.now().getTime() + 24 * 3600_000))
+    h.line.contents.set('m-h2', { data: bytes('h2'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-h2', fileName: 'h2.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    const projectFolder = h.store.tables.projects.find((p) => p.id === h.projectId)!.driveProjectFolderId
+    expect(h.google.shares).toEqual([{ fileId: projectFolder, role: 'reader', type: 'anyone' }])
+    expect(flexText(h.line.replies[1].messages[0])).toContain('ไม่ต้องมีบัญชี Google')
+  })
+
+  it('a share that failed for another reason (5xx) keeps the folder and sends no Owner card', async () => {
+    const h = await setup({ layOut: false })
+    h.google.shareError = new AdapterError('google drive share 500')
+    h.line.contents.set('m-e', { data: bytes('e'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-e', fileName: 'e.pdf', fileSize: 1 }))
+    await h.runDeferred()
+    expect(h.google.foldersNamed('ทีมหลัก')).toHaveLength(1)
+    expect(h.store.tables.files).toHaveLength(1)
+    expect(h.line.pushes).toEqual([])
+    expect(flexText(h.line.replies[0].messages[0])).not.toContain('ไม่ต้องมีบัญชี Google')
+    expect(flexText(h.line.replies[0].messages[0])).not.toContain('เฉพาะเจ้าของ Drive')
+  })
+
+  it('a failed share check does not fail the save; the card then says nothing about access', async () => {
+    const h = await setup()
+    h.google.permsError = new AdapterError('google drive permissions 500')
+    h.line.contents.set('m-p', { data: bytes('p'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-p', fileName: 'p.pdf', fileSize: 1 }))
+    await h.runDeferred()
+    expect(h.store.tables.files).toHaveLength(1)
+    const t = flexText(h.line.replies[0].messages[0])
+    expect(t).not.toContain('ไม่ต้องมีบัญชี Google')
+    expect(t).not.toContain('เฉพาะเจ้าของ Drive')
+  })
+
   it('saves a main group photo into "Main group files"', async () => {
     const h = await setup()
     h.line.contents.set('m-img', { data: bytes('jpeg'), contentType: 'image/jpeg' })
@@ -119,7 +195,7 @@ describe('file saver (#4)', () => {
   it('a slow save gets the card as a push, counted against the monthly quota', async () => {
     const h = await setup()
     h.line.contents.set('m-big', { data: bytes('big'), contentType: 'video/mp4' })
-    h.google.uploadMs = 52_000
+    h.google.uploadMs = 26_000 // past the 25 s reply window, inside the 28 s save budget
     await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-big', fileName: 'big.mp4', fileSize: 3 }))
     await h.runDeferred()
     expect(h.store.tables.files).toHaveLength(1)
@@ -129,10 +205,10 @@ describe('file saver (#4)', () => {
     expect(h.store.tables.push_log).toEqual([expect.objectContaining({ purpose: 'file_saved', lineTargetId: SUB })])
   })
 
-  it('a save just inside 50 seconds is still a reply', async () => {
+  it('a save inside 25 seconds is still a reply', async () => {
     const h = await setup()
     h.line.contents.set('m-mid', { data: bytes('mid'), contentType: 'application/zip' })
-    h.google.uploadMs = 45_000
+    h.google.uploadMs = 20_000
     await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-mid', fileName: 'mid.zip', fileSize: 3 }))
     await h.runDeferred()
     expect(h.line.replies).toHaveLength(1)
@@ -144,7 +220,7 @@ describe('file saver (#4)', () => {
     const h = await setup()
     h.line.quota = { limit: 300, used: 290 }
     h.line.contents.set('m-big', { data: bytes('big'), contentType: 'application/pdf' })
-    h.google.uploadMs = 52_000
+    h.google.uploadMs = 26_000
     await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-big', fileName: 'big.pdf', fileSize: 3 }))
     await h.runDeferred()
     expect(h.line.pushes).toEqual([])
@@ -160,16 +236,32 @@ describe('file saver (#4)', () => {
     })])
   })
 
-  it('a save that cannot finish by the hard stop writes nothing and sends nothing', async () => {
+  it('an upload that would end past the deadline is cut, records nothing, and posts one "couldn\'t save" card in time', async () => {
     const h = await setup()
     h.line.contents.set('m-huge', { data: bytes('huge'), contentType: 'application/pdf' })
-    h.google.uploadMs = 70_000
+    h.google.uploadMs = 50_000
+    const start = h.deps.now().getTime()
     await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-huge', fileName: 'huge.pdf', fileSize: 4 }))
     await h.runDeferred()
-    expect(h.google.uploadTimeouts[0]).toBeLessThanOrEqual(55_000)
+    // The upload keeps POST_SAVE_RESERVE_MS back for the row and the card.
+    expect(h.google.uploadTimeouts[0]).toBeLessThanOrEqual(SAVE_HARD_STOP_MS - POST_SAVE_RESERVE_MS)
     expect(h.store.tables.files).toEqual([])
-    expect(h.line.replies).toEqual([])
-    expect(h.line.pushes).toEqual([])
+    expect(h.line.replies).toEqual([]) // 45 s after the webhook: past the reply window
+    expect(h.line.pushes).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('บันทึกไฟล์นี้ไม่ได้')
+    expect(h.store.tables.push_log).toEqual([expect.objectContaining({ purpose: 'file_failed' })])
+    expect(h.deps.now().getTime() - start).toBeLessThanOrEqual(SAVE_HARD_STOP_MS)
+  })
+
+  it('an upload with too little time left is not started', async () => {
+    const h = await setup()
+    h.line.contents.set('m-late', { data: bytes('late'), contentType: 'application/pdf' })
+    h.line.contentMs = 27_500 // the download leaves under a second of the 28 s save budget
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-late', fileName: 'late.pdf', fileSize: 4 }))
+    await h.runDeferred()
+    expect(h.google.uploadTimeouts).toEqual([])
+    expect(h.store.tables.files).toEqual([])
+    expect(cardTexts(h)).toHaveLength(1)
   })
 
   it('photos of one imageSet arriving out of order, in separate webhooks, get exactly one card', async () => {
@@ -208,6 +300,100 @@ describe('file saver (#4)', () => {
     const start = h.deps.now().getTime()
     await h.runDeferred()
     expect(h.deps.now().getTime() - start).toBeGreaterThanOrEqual(BATCH_QUIET_MS)
+    expect(cardTexts(h)).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('2 รูป')
+  })
+
+  it('a batch without total whose photos arrive 5 s apart still gets one card for all of them', async () => {
+    const h = await setup()
+    for (const i of [1, 2]) h.line.contents.set(`m-t${i}`, { data: bytes(`t ${i}`), contentType: 'image/jpeg' })
+    // The second photo's webhook comes 5 s after the first; with a wait shorter than that,
+    // the first job would claim the batch alone.
+    const arriveAt = h.deps.now().getTime() + 5_000
+    let arrived = false
+    const second = () => send(h, ev.groupImage({ groupId: SUB, messageId: 'm-t2', imageSet: { id: 'set-T' } }))
+    h.deps.sleep = async (ms) => {
+      const end = h.deps.now().getTime() + ms
+      if (!arrived && end >= arriveAt) {
+        arrived = true
+        h.setNow(new Date(Math.max(arriveAt, h.deps.now().getTime())))
+        await second()
+      }
+      h.setNow(new Date(Math.max(end, h.deps.now().getTime())))
+    }
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-t1', imageSet: { id: 'set-T' } }))
+    await h.runDeferred()
+    if (!arrived) {
+      arrived = true
+      h.setNow(new Date(Math.max(arriveAt, h.deps.now().getTime())))
+      await second()
+      await h.runDeferred()
+    }
+    expect(arrived).toBe(true)
+    expect(h.store.tables.files).toHaveLength(2)
+    expect(cardTexts(h)).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('2 รูป')
+  })
+
+  it('a photo that arrives and settles during the first job\'s wait makes the first job step back', async () => {
+    const h = await setup()
+    for (const i of [1, 2]) h.line.contents.set(`m-k${i}`, { data: bytes(`k ${i}`), contentType: 'image/jpeg' })
+    let releaseB = () => {}
+    const gateB = new Promise<void>((r) => { releaseB = r })
+    let bParked = () => {}
+    const parkedB = new Promise<void>((r) => { bParked = r })
+    let runB: Promise<void> | null = null
+    h.deps.sleep = async (ms) => {
+      if (runB === null) {
+        // First job (photo 1) waits: photo 2 arrives, saves and starts its own wait.
+        await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-k2', imageSet: { id: 'set-K' }, replyToken: 'rt-k2' }))
+        runB = h.runDeferred()
+        await parkedB
+        h.setNow(new Date(h.deps.now().getTime() + ms))
+        return
+      }
+      bParked()
+      await gateB
+      h.setNow(new Date(h.deps.now().getTime() + ms))
+    }
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-k1', imageSet: { id: 'set-K' }, replyToken: 'rt-k1' }))
+    await h.runDeferred()
+    // Photo 1's job is done: it saw a new photo in the set and claimed nothing.
+    expect(h.store.tables.image_set_cards).toEqual([])
+    releaseB()
+    await runB
+    expect(h.line.replies.map((r) => r.replyToken)).toEqual(['rt-k2'])
+    expect(cardTexts(h)[0]).toContain('2 รูป')
+  })
+
+  it('a batch with a photo that failed still gets its card, with what was saved', async () => {
+    const h = await setup()
+    h.line.contents.set('m-u1', { data: bytes('u1'), contentType: 'image/jpeg' })
+    h.line.contents.set('m-u3', { data: bytes('u3'), contentType: 'image/jpeg' })
+    // m-u2 is gone from LINE: it settles as failed.
+    await send(h,
+      ev.groupImage({ groupId: SUB, messageId: 'm-u1', imageSet: { id: 'set-U', index: 1, total: 3 } }),
+      ev.groupImage({ groupId: SUB, messageId: 'm-u2', imageSet: { id: 'set-U', index: 2, total: 3 } }),
+      ev.groupImage({ groupId: SUB, messageId: 'm-u3', imageSet: { id: 'set-U', index: 3, total: 3 } }))
+    await h.runDeferred()
+    expect(h.store.tables.files).toHaveLength(2)
+    const cards = cardTexts(h)
+    expect(cards).toHaveLength(1)
+    expect(cards[0]).toContain('2 รูป')
+    expect(cards[0]).toContain('อีก 1 รูปบันทึกไม่ได้')
+  })
+
+  it('two identical photos in one batch (the second moves message_id) still complete the batch', async () => {
+    const h = await setup()
+    h.line.contents.set('m-w1', { data: bytes('same photo'), contentType: 'image/jpeg' })
+    h.line.contents.set('m-w2', { data: bytes('same photo'), contentType: 'image/jpeg' })
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-w1', imageSet: { id: 'set-W', index: 1, total: 2 } }))
+    await h.runDeferred()
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-w2', imageSet: { id: 'set-W', index: 2, total: 2 } }))
+    await h.runDeferred()
+    // The files row now points at m-w2; m-w1 still counts as saved through its settled row.
+    expect(h.store.tables.files[0].messageId).toBe(messageId(h, 'm-w2'))
+    expect(h.google.uploads).toHaveLength(1)
     expect(cardTexts(h)).toHaveLength(1)
     expect(cardTexts(h)[0]).toContain('2 รูป')
   })
@@ -269,11 +455,13 @@ describe('file saver (#4)', () => {
     expect(h.google.uploads).toEqual([])
     expect(h.store.tables.files).toEqual([])
     expect(h.store.tables.messages.filter((m) => m.lineMessageId.startsWith('m-v'))).toHaveLength(2)
-    // The one sign-in card goes to the main group (#14); no saved card anywhere.
+    // A pause, not a failure: the one sign-in card goes to the main group (#14), and the
+    // group gets no "couldn't save" card for each file.
     expect(h.line.pushes).toHaveLength(1)
     expect(h.line.pushes[0].to).toBe(MAIN)
     expect(h.line.pushes[0].messages[0]).toMatchObject({ type: 'template' })
     expect(h.line.replies).toEqual([])
+    expect(h.store.tables.webhook_events.filter((w) => w.webhookEventId.startsWith('file:'))).toEqual([])
   })
 
   it('pauses while the group has no confirmed Owner (the Owner left)', async () => {
@@ -322,6 +510,7 @@ describe('file saver (#4)', () => {
     await h.runDeferred()
     expect(h.line.contentCalls).toEqual([])
     expect(h.store.tables.files).toEqual([])
+    expect(cardTexts(h)[0]).toContain('100 MB')
   })
 
   it('a redelivered file webhook saves once', async () => {
@@ -335,12 +524,49 @@ describe('file saver (#4)', () => {
     expect(h.line.replies).toHaveLength(1)
   })
 
-  it('content LINE no longer has is skipped without a card', async () => {
+  it('content LINE no longer has gets one "couldn\'t save" card', async () => {
     const h = await setup()
-    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-gone', fileName: 'gone.pdf', fileSize: 1 }))
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-gone', fileName: 'gone.pdf', fileSize: 1, replyToken: 'rt-gone' }))
     await h.runDeferred()
     expect(h.store.tables.files).toEqual([])
-    expect(h.line.replies).toEqual([])
+    expect(h.line.replies.map((r) => r.replyToken)).toEqual(['rt-gone'])
+    expect(flexText(h.line.replies[0].messages[0])).toContain('บันทึกไฟล์นี้ไม่ได้')
+  })
+
+  it('a failed save and then a redelivery post one "couldn\'t save" card', async () => {
+    const h = await setup()
+    h.line.contents.set('m-f', { data: bytes('f'), contentType: 'application/pdf' })
+    h.line.failContent = true
+    const e = ev.groupFile({ groupId: SUB, messageId: 'm-f', fileName: 'f.pdf', fileSize: 1, eventId: 'ev-f' })
+    await send(h, e)
+    await h.runDeferred()
+    await send(h, { ...e, deliveryContext: { isRedelivery: true } })
+    await h.runDeferred()
+    expect(cardTexts(h)).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('บันทึกไฟล์นี้ไม่ได้')
+    expect(h.store.tables.files).toEqual([])
+  })
+
+  it('a second run of the same failed message posts no second card', async () => {
+    const h = await setup()
+    h.line.failContent = true
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-g', fileName: 'g.pdf', fileSize: 1 }))
+    const job = h.deferred[0]
+    await h.runDeferred()
+    await job() // the same jobs again, as a duplicate run would
+    expect(cardTexts(h)).toHaveLength(1)
+  })
+
+  it('an image with no fileSize that is over the cap is stopped while downloading', async () => {
+    const h = await setup()
+    // Only byteLength is read before the cap stops it: no need for 100 MB of memory.
+    h.line.contents.set('m-huge-img', { data: { byteLength: MAX_FILE_BYTES + 1 } as Uint8Array, contentType: 'image/jpeg' })
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-huge-img', replyToken: 'rt-huge' }))
+    await h.runDeferred()
+    expect(h.line.contentCalls[0].maxBytes).toBe(MAX_FILE_BYTES)
+    expect(h.google.uploads).toEqual([])
+    expect(h.store.tables.files).toEqual([])
+    expect(flexText(h.line.replies[0].messages[0])).toContain('100 MB')
   })
 
   it('an external image (no LINE content) is not downloaded', async () => {
@@ -348,5 +574,219 @@ describe('file saver (#4)', () => {
     await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-ext', external: true }))
     await h.runDeferred()
     expect(h.line.contentCalls).toEqual([])
+  })
+})
+
+
+describe('file saver review fixes (#4, PR #96)', () => {
+  const logged = (event: string) =>
+    [...vi.mocked(console.info).mock.calls, ...vi.mocked(console.error).mock.calls]
+      .map((c) => JSON.parse(String(c[0])) as Record<string, unknown>)
+      .filter((e) => e.event === event)
+
+  it('1. a store error before the upload settles the message and posts one "couldn\'t save" card', async () => {
+    const h = await setup()
+    h.line.contents.set('m-se', { data: bytes('se'), contentType: 'application/pdf' })
+    h.store.failNext('findFileByHash')
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-se', fileName: 'se.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    expect(cardTexts(h)).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('บันทึกไฟล์นี้ไม่ได้')
+    expect(h.store.tables.webhook_events.find((w) => w.webhookEventId === 'file:m-se')?.eventType).toBe('file_save_failed')
+  })
+
+  it('1. a store error after the upload logs the Drive copy and does not block the batch', async () => {
+    const h = await setup()
+    for (const i of [1, 2]) h.line.contents.set(`m-sb${i}`, { data: bytes(`sb ${i}`), contentType: 'image/jpeg' })
+    h.store.failNext('insertFile')
+    await send(h,
+      ev.groupImage({ groupId: SUB, messageId: 'm-sb1', imageSet: { id: 'set-SB', index: 1, total: 2 } }),
+      ev.groupImage({ groupId: SUB, messageId: 'm-sb2', imageSet: { id: 'set-SB', index: 2, total: 2 } }))
+    await h.runDeferred()
+    expect(h.google.uploads).toHaveLength(2)
+    expect(h.store.tables.files).toHaveLength(1)
+    const orphan = logged('file_save_orphan')
+    expect(orphan).toHaveLength(1)
+    expect(h.google.uploads.map((u) => u.id)).toContain(orphan[0].driveFileId)
+    expect(cardTexts(h)).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('1 รูป')
+    expect(cardTexts(h)[0]).toContain('อีก 1 รูปบันทึกไม่ได้')
+  })
+
+  it('1. a store error in the first read is a failure too: one card, the message not lost', async () => {
+    const h = await setup()
+    h.line.contents.set('m-g0', { data: bytes('g0'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-g0', fileName: 'g0.pdf', fileSize: 2 }))
+    h.store.failNext('getGroupById')
+    await h.runDeferred()
+    expect(cardTexts(h)).toHaveLength(1)
+    expect(h.line.contentCalls).toEqual([])
+  })
+
+  it('3. the worst case (save at the budget end, then a push with slow LINE calls) ends before 60 s', async () => {
+    const h = await setup()
+    h.line.contents.set('m-wc', { data: bytes('wc'), contentType: 'application/pdf' })
+    h.google.uploadMs = SAVE_HARD_STOP_MS - POST_SAVE_RESERVE_MS - 1_000 // ends just inside the save budget
+    h.line.quotaMs = 10_000 // the quota read (beside the member count), as slow as the client allows
+    h.line.pushMs = 10_000
+    const start = h.deps.now().getTime()
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-wc', fileName: 'wc.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    expect(h.line.pushes).toHaveLength(1)
+    expect(h.store.tables.files).toHaveLength(1)
+    expect(h.deps.now().getTime() - start).toBeLessThan(60_000)
+    expect(POST_SAVE_RESERVE_MS).toBeGreaterThanOrEqual(PUSH_WORST_MS)
+    expect(PUSH_WORST_MS).toBeGreaterThanOrEqual(22_000)
+  })
+
+  it('3. a reply refused after a slow reply call falls back to a push only when the push still fits', async () => {
+    for (const [uploadMs, pushes] of [[20_000, 1], [24_000, 0]] as const) {
+      const h = await setup()
+      h.line.contents.set('m-r4', { data: bytes('r4'), contentType: 'application/pdf' })
+      h.line.rejectReply = true
+      h.line.replyMs = 10_000
+      h.line.quotaMs = 10_000
+      h.line.pushMs = 10_000
+      // Saved at 20 s: the refused reply ends at 30 s, 25 s are left, the 22 s push fits.
+      // Saved at 24 s: the reply ends at 34 s, 21 s are left: no push.
+      h.google.uploadMs = uploadMs
+      const start = h.deps.now().getTime()
+      await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-r4', fileName: 'r4.pdf', fileSize: 2 }))
+      await h.runDeferred()
+      expect(h.line.replies).toHaveLength(1)
+      expect(h.line.pushes).toHaveLength(pushes)
+      expect(h.deps.now().getTime() - start).toBeLessThan(60_000)
+    }
+  })
+
+  it('4. a settled-row store error still sends the saved card', async () => {
+    const h = await setup()
+    h.line.contents.set('m-st', { data: bytes('st'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-st', fileName: 'st.pdf', fileSize: 2 }))
+    h.store.failNext('recordWebhookEvent') // the settle (the webhook's own ledger row is in)
+    await h.runDeferred()
+    expect(h.store.tables.files).toHaveLength(1)
+    expect(h.line.replies).toHaveLength(1)
+  })
+
+  it('4. a settled-row store error on a failed save still sends the "couldn\'t save" card', async () => {
+    const h = await setup()
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-sf', fileName: 'sf.pdf', fileSize: 2 }))
+    h.store.failNext('recordWebhookEvent')
+    await h.runDeferred()
+    expect(cardTexts(h)).toHaveLength(1)
+    expect(cardTexts(h)[0]).toContain('บันทึกไฟล์นี้ไม่ได้')
+  })
+
+  it('5. a second run of a saved message sends no second saved card', async () => {
+    const h = await setup()
+    h.line.contents.set('m-2r', { data: bytes('2r'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-2r', fileName: '2r.pdf', fileSize: 2 }))
+    const job = h.deferred[0]
+    await h.runDeferred()
+    await job()
+    expect(h.line.replies).toHaveLength(1)
+    expect(h.google.uploads).toHaveLength(1)
+  })
+
+  it('6. a late batch without total still waits, for the time left', async () => {
+    const h = await setup()
+    h.line.contents.set('m-lw', { data: bytes('lw'), contentType: 'image/jpeg' })
+    h.google.uploadMs = 25_000
+    const waits: number[] = []
+    const sleep = h.deps.sleep!
+    h.deps.sleep = async (ms) => {
+      waits.push(ms)
+      return sleep(ms)
+    }
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-lw', imageSet: { id: 'set-LW' } }))
+    await h.runDeferred()
+    expect(waits).toHaveLength(1)
+    expect(waits[0]).toBeGreaterThan(0)
+    expect(waits[0]).toBeLessThan(BATCH_QUIET_MS)
+    expect(cardTexts(h)).toHaveLength(1)
+  })
+
+  it('7. the batch card takes the link state from the folder, not from the last photo to settle', async () => {
+    const h = await setup({ layOut: false })
+    h.google.shareError = new DriveShareRefused()
+    h.line.contents.set('m-ls1', { data: bytes('same'), contentType: 'image/jpeg' })
+    h.line.contents.set('m-ls2', { data: bytes('same'), contentType: 'image/jpeg' })
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-ls1', imageSet: { id: 'set-LS', index: 1, total: 2 } }))
+    await h.runDeferred()
+    // The last photo is a duplicate: it never asked Drive about the share.
+    await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-ls2', imageSet: { id: 'set-LS', index: 2, total: 2 } }))
+    await h.runDeferred()
+    const card = h.line.replies.map((r) => flexText(r.messages[0])).find((t) => t.includes('2 รูป'))!
+    expect(card).toContain('เฉพาะเจ้าของ Drive')
+    expect(card).not.toContain('ไม่ต้องมีบัญชี Google')
+  })
+
+  it('8. a reply that times out or gets a 5xx is not pushed again', async () => {
+    const h = await setup()
+    h.line.contents.set('m-r5', { data: bytes('r5'), contentType: 'application/pdf' })
+    h.line.failReply = true
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-r5', fileName: 'r5.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    expect(h.line.replies).toHaveLength(1)
+    expect(h.line.pushes).toEqual([])
+  })
+
+  it('8. a reply refused with a 4xx falls back to a push', async () => {
+    const h = await setup()
+    h.line.contents.set('m-r6', { data: bytes('r6'), contentType: 'application/pdf' })
+    h.line.rejectReply = true
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-r6', fileName: 'r6.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    expect(h.line.pushes).toHaveLength(1)
+    expect(h.store.tables.push_log).toEqual([expect.objectContaining({ purpose: 'file_saved' })])
+  })
+
+  it('9. no usable Drive (the Google account is revoked) is a pause: no "couldn\'t save" card', async () => {
+    const h = await setup()
+    h.store.tables.google_accounts[0].tokenStatus = 'revoked'
+    h.line.contents.set('m-nd', { data: bytes('nd'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-nd', fileName: 'nd.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    expect(h.line.replies).toEqual([])
+    expect(h.line.pushes).toEqual([])
+    expect(h.store.tables.files).toEqual([])
+  })
+
+  it('10. a refused folder costs no share checks on later saves the same day', async () => {
+    const h = await setup({ layOut: false })
+    h.google.shareError = new DriveShareRefused()
+    for (const i of [1, 2, 3]) h.line.contents.set(`m-rd${i}`, { data: bytes(`rd ${i}`), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-rd1', fileName: 'rd1.pdf', fileSize: 4 }))
+    await h.runDeferred()
+    h.google.driveCalls = []
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-rd2', fileName: 'rd2.pdf', fileSize: 4 }))
+    await h.runDeferred()
+    expect(h.google.driveCalls.filter((c) => c.startsWith('perms:') || c.startsWith('share:'))).toEqual([])
+    expect(h.store.tables.files).toHaveLength(2)
+    // The next Bangkok day checks again.
+    h.setNow(new Date(h.deps.now().getTime() + 24 * 3600_000))
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-rd3', fileName: 'rd3.pdf', fileSize: 4 }))
+    await h.runDeferred()
+    expect(h.google.driveCalls.filter((c) => c.startsWith('perms:'))).toHaveLength(1)
+  })
+
+  it('11. an Owner card skipped near the quota is not remembered, so a later refusal posts it', async () => {
+    const h = await setup({ layOut: false })
+    h.google.shareError = new DriveShareRefused()
+    h.line.quota = { limit: 300, used: 299 }
+    h.line.contents.set('m-q1', { data: bytes('q1'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-q1', fileName: 'q1.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    const ownerCards = () => h.line.pushes.filter((p) => flexText(p.messages[0]).includes(SHARE_REFUSED_TEXT.title))
+    expect(ownerCards()).toEqual([])
+    expect(h.store.tables.webhook_events.some((w) => w.webhookEventId.startsWith('drive_share_refused:'))).toBe(false)
+    h.line.quota = { limit: 300, used: 0 }
+    h.setNow(new Date(h.deps.now().getTime() + 24 * 3600_000))
+    h.line.contents.set('m-q2', { data: bytes('q2'), contentType: 'application/pdf' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-q2', fileName: 'q2.pdf', fileSize: 2 }))
+    await h.runDeferred()
+    expect(ownerCards()).toHaveLength(1)
+    expect(h.store.tables.webhook_events.some((w) => w.webhookEventId.startsWith('drive_share_refused:'))).toBe(true)
   })
 })

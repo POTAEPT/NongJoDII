@@ -102,6 +102,8 @@ describe('#5.1 both phrases trigger the Summary', () => {
     const t = await setup()
     t.respond(t.slides)
     await t.command('NongJoDII summarize')
+    // #108: a Summary covers only the chat since the last one, so there is new chat first.
+    await t.send(ev.groupText({ text: 'ทำสไลด์ถึงไหนแล้ว', userId: 'Upim', timestamp: T0 + 11 * MIN + 30_000 }))
     t.respond(t.slides)
     await t.command('NongJoDII สรุปหน่อย')
     expect(t.store.tables.summaries).toHaveLength(2)

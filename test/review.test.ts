@@ -620,12 +620,15 @@ describe('Tasks created feedback', () => {
     const t = await setup()
     const feedback = (await t.submit([t.confirm(t.c1)])).body as SubmitResult
     await t.send(ev.groupText({ text: feedback.feedback!.text, userId: 'Upim', timestamp: T0 + 3 * MIN }))
+    // #108: the next Summary reads only the chat since the last one; one new line follows.
+    await t.send(ev.groupText({ text: 'พรุ่งนี้ประชุมกันนะ', userId: 'Ubank', timestamp: T0 + 3 * MIN + 30_000 }))
     let read: string[] = []
     t.llm.respond((req: LlmRequest) => {
       read = chatLines(req).map((c) => c.text)
       return { content: JSON.stringify({ summary: 'x', tasks: [] }), model: TEXT_MODEL, usage: null }
     })
     await t.send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', timestamp: T0 + 4 * MIN }))
-    expect(read).toEqual(['ใครทำสไลด์ได้บ้าง', 'เดี๋ยวทำสไลด์เอง'])
+    // The feedback message is skipped; the earlier chat went to the earlier Summary.
+    expect(read).toEqual(['พรุ่งนี้ประชุมกันนะ'])
   })
 })

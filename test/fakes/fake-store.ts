@@ -574,6 +574,26 @@ export class FakeStore implements StorePort {
   }
 
   // ---- #7 Track progress ----
+  async getLatestSummaryEnd(groupId: string): Promise<Date | null> {
+    this.fault('getLatestSummaryEnd')
+    const rows = this.tables.summaries.filter((s) => s.groupId === groupId)
+    if (rows.length === 0) return null
+    const latest = rows.reduce((a, b) => (b.createdAt.getTime() >= a.createdAt.getTime() ? b : a))
+    return latest.lastMessageAt ? new Date(latest.lastMessageAt.getTime()) : null
+  }
+
+  async listTasksForSummary(groupId: string, doneSince: Date, limit: number): Promise<TaskRow[]> {
+    this.fault('listTasksForSummary')
+    const recent = (d: Date | null) => d !== null && d.getTime() >= doneSince.getTime()
+    return this.tables.tasks
+      .map((t, i) => ({ t, i }))
+      .filter(({ t }) => t.groupId === groupId && t.deletedAt === null
+        && (t.status !== 'done' || recent(t.doneAt) || recent(t.lastActivityAt)))
+      .reverse() // newest first (rows are stored in creation order)
+      .slice(0, limit)
+      .map(({ t }) => this.toTaskRow(t))
+  }
+
   async listOpenTasks(groupId: string): Promise<TaskRow[]> {
     this.fault('listOpenTasks')
     return this.tables.tasks

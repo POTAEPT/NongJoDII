@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DRIVE_FILE_SCOPE, GoogleHttpClient } from '@/server/google/client'
-import { AdapterError, DriveShareRefused, GoogleTokenRevoked } from '@/server/log'
+import { AdapterError, DriveShareRefused, DriveStorageFull, GoogleTokenRevoked } from '@/server/log'
 
 type Call = { url: string; init: RequestInit }
 
@@ -237,6 +237,30 @@ describe('GoogleHttpClient.uploadFile (#4)', () => {
     const err = await client.uploadFile('at', file(1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
     expect((err as Error).message).toBe('google drive upload 403')
     expect(calls.some((c) => c.url.includes('/permissions'))).toBe(false)
+  })
+
+  // #99: a full Drive is told apart, so the group card can say why.
+  it('a 403 storageQuotaExceeded is DriveStorageFull, on the multipart upload and on the resumable steps', async () => {
+    const full = { error: { errors: [{ domain: 'usageLimits', reason: 'storageQuotaExceeded', message: 'secret detail' }] } }
+    const multipart = await stubSeq([{ status: 403, body: full }]).client.uploadFile('at', file(1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    expect(multipart).toBeInstanceOf(DriveStorageFull)
+    expect((multipart as Error).message).toBe('google drive upload 403')
+    const session = await stubSeq([{ status: 403, body: full }]).client.uploadFile('at', file(5 * 1024 * 1024 + 1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    expect(session).toBeInstanceOf(DriveStorageFull)
+    const put = await stubSeq([
+      { status: 200, headers: { Location: 'https://upload.example/s' } }, { status: 403, body: full },
+    ]).client.uploadFile('at', file(5 * 1024 * 1024 + 1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    expect(put).toBeInstanceOf(DriveStorageFull)
+  })
+
+  it('any other refusal stays a plain AdapterError, and the body is never in the message', async () => {
+    const other = { error: { errors: [{ reason: 'userRateLimitExceeded', message: 'secret detail' }] } }
+    const err = await stubSeq([{ status: 403, body: other }]).client.uploadFile('at', file(1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AdapterError)
+    expect(err).not.toBeInstanceOf(DriveStorageFull)
+    expect((err as Error).message).toBe('google drive upload 403')
+    const session = await stubSeq([{ status: 500 }]).client.uploadFile('at', file(5 * 1024 * 1024 + 1), { timeoutMs: 5_000 }).catch((e: unknown) => e)
+    expect((session as Error).message).toBe('google drive upload session 500')
   })
 })
 

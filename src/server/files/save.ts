@@ -3,12 +3,14 @@ import { DRIVE_HARD_STOP_MS, DriveTimeUp, openGroupDrive } from '../google/drive
 import { shareRefusedKey } from '../google/share-refused'
 import { pushToGroupWithinBudget, retryKeyFrom, type GroupPushResult } from '../line/push-budget'
 import type { LineMessage } from '../line/types'
-import { AdapterError, ContentTooLarge, log, logError } from '../log'
+import { AdapterError, ContentTooLarge, DriveStorageFull, log, logError } from '../log'
 import { ownerBackedOn } from '../members/owner-left'
 import type { Deps, SavedFile } from '../ports'
-import { bangkokParts } from '../time/bangkok'
+import { bangkokParts, bangkokTodayLabel } from '../time/bangkok'
 import type { Job } from '../webhook/ingest'
-import { driveFolderLink, fileFailedCard, fileSavedCard, photosFailedCard, photosSavedCard } from './card'
+import {
+  driveFolderLink, FILE_NOTICE_TEXT, fileFailedCard, fileSavedCard, photosFailedCard, photosSavedCard, sharedReason,
+} from './card'
 
 // #4 Feature 1, file saver. A file or image sent in a group of a Project is downloaded from
 // LINE at once (the webhook carries only its ID), hashed, and uploaded to that group's Drive
@@ -35,14 +37,21 @@ import { driveFolderLink, fileFailedCard, fileSavedCard, photosFailedCard, photo
 // be settled and no new one may arrive within BATCH_QUIET_MS. A complete batch is claimed in
 // image_set_cards, so exactly one job posts the one "saved N photos" card.
 //
-// Failures (download, Drive call, upload, time, content gone, too large, a store error):
-// no retry. The group gets one "couldn't save" card per message, or the batch card counts
-// the photo.
+// Failures (download, Drive call, upload, time, content gone, too large, Drive full, a store
+// error): no retry. The group gets one "couldn't save" card per message that says why (#99),
+// or the batch card counts the photo. The reason is kept in the settled row's event type
+// (`file_save_failed:<reason>`), so the batch card can name the reason its photos share.
 //
 // Pauses (no card, nothing settled): the group has no confirmed Owner (owner_confirmed_at is
 // cleared when the Owner leaves, #30), the setup form turned file saving off, or no Drive can
 // be used (no valid Google account, or Drive access was lost: the #14 path marks the account
 // and asks the Owner once to sign in again). No files row is written; the message row stays.
+// Except for "file saving off", the sender gets a short text reply that saving is paused and
+// why, at most once per group per Bangkok day (#99, ledger row `file_paused:<group>:<day>`).
+//
+// Large files (#99): a file LINE says is over SAVING_NOTICE_BYTES gets "saving…" as a reply at
+// once, sent alongside the download. Its result card then goes out as a push through the
+// budget; skipped near the monthly quota, the file still shows on the Dashboard.
 
 export const SAVE_HARD_STOP_MS = DRIVE_HARD_STOP_MS
 /** The LINE client cuts each call at 10 s; a store step is given about 1 s. */
@@ -68,13 +77,15 @@ export const MAX_FILE_BYTES = 100 * 1024 * 1024
 export const BATCH_QUIET_MS = 10_000
 /** Share of the monthly quota a saved or failed card leaves unspent: as the Tasks-created post. */
 export const FILE_SAVED_PUSH_RESERVE = 0.1
+/** #99: a file above this gets an immediate "saving…" reply (photos carry no size up front). */
+export const SAVING_NOTICE_BYTES = 10 * 1024 * 1024
 /** A step needs at least this much time left to start. */
 const MIN_STEP_MS = 1_000
 
 type FileJob = Extract<Job, { kind: 'group_file' }>
 
 export type FileSaveOutcome =
-  | 'saved' | 'duplicate' | 'paused' | 'too_large' | 'gone' | 'no_drive' | 'failed' | 'timeout'
+  | 'saved' | 'duplicate' | 'paused' | 'too_large' | 'gone' | 'no_drive' | 'failed' | 'timeout' | 'drive_full'
 
 /** A failed save, as the "couldn't save" card and the logs name it. */
 type FailReason = Exclude<FileSaveOutcome, 'saved' | 'duplicate' | 'paused'>
@@ -87,20 +98,35 @@ export function fileOutcomeKey(lineMessageId: string): string {
 }
 export const FILE_SAVED_EVENT = 'file_saved'
 export const FILE_FAILED_EVENT = 'file_save_failed'
+/** #99: a failed message's settled event type, carrying its reason. */
+export function failedEventType(reason: string): string {
+  return `${FILE_FAILED_EVENT}:${reason}`
+}
+
+/** #99: the pause notice's once-per-group-per-day ledger row. */
+export function pausedNoticeKey(groupId: string, now: Date): string {
+  return `file_paused:${groupId}:${bangkokTodayLabel(now)}`
+}
+
+/** Per-job state shared by the steps. driveFileId: the Drive file once the upload succeeded,
+ *  so a later failure can name it. saving: the "saving…" reply, resolving true when it went
+ *  out (the reply token is then used, so later messages are pushes). */
+type JobState = { driveFileId: string | null; saving: Promise<boolean> | null }
+
+type PauseReason = 'no_owner' | 'feature_off' | 'no_drive' | 'other_account'
 
 export async function handleGroupFile(deps: Deps, job: FileJob): Promise<FileSaveOutcome> {
   const ids = { groupId: job.groupId, messageType: job.messageType }
-  // The Drive file ID once the upload succeeded, so a later failure can name it.
-  const progress: { driveFileId: string | null } = { driveFileId: null }
+  const state: JobState = { driveFileId: null, saving: null }
   let saved: Saved | FileSaveOutcome
   try {
-    saved = await save(deps, job, progress)
+    saved = await save(deps, job, state)
   } catch (err) {
     // A store error (or any other throw) is a failure like the others: it settles the
     // message and sends the card, so a batch never waits on it. An uploaded copy is named
     // in the log (IDs only) so it can be found in the Owner's Drive.
-    if (progress.driveFileId !== null) log('file_save_orphan', { ...ids, driveFileId: progress.driveFileId })
-    return failed(deps, job, 'failed', err)
+    if (state.driveFileId !== null) log('file_save_orphan', { ...ids, driveFileId: state.driveFileId })
+    return failed(deps, job, state, 'failed', err)
   }
   if (typeof saved === 'string') return saved
   const { file, duplicate, linkShared } = saved
@@ -114,7 +140,7 @@ export async function handleGroupFile(deps: Deps, job: FileJob): Promise<FileSav
       const card = fileSavedCard({
         kind: job.messageType, fileName: file.fileName, sizeBytes: file.sizeBytes, driveLink: file.driveLink, duplicate, linkShared,
       })
-      await sendCard(deps, job, card, `file_saved:${job.storedMessageId}`)
+      await sendCard(deps, job, state, card, `file_saved:${job.storedMessageId}`)
     }
   } catch (err) {
     logError('file_card_failed', ids, err)
@@ -126,20 +152,24 @@ type Saved = { file: SavedFile; duplicate: boolean; linkShared: boolean | null }
 
 /** The save itself, up to the files row. Answers a FileSaveOutcome when it stopped (a pause,
  *  or a failure it already reported). Throws on a store error. */
-async function save(deps: Deps, job: FileJob, progress: { driveFileId: string | null }): Promise<Saved | FileSaveOutcome> {
+async function save(deps: Deps, job: FileJob, state: JobState): Promise<Saved | FileSaveOutcome> {
   const deadline = job.receivedAt.getTime() + SAVE_HARD_STOP_MS
   // Time for the slow steps: the reserve stays for the rows, the claim and the card.
   const workLeft = () => deadline - POST_SAVE_RESERVE_MS - deps.now().getTime()
-  const ids = { groupId: job.groupId, messageType: job.messageType }
-
   const group = await deps.store.getGroupById(job.groupId)
   // Paused while the Owner left (#30) or a Sub group waits for the take-over answer (#31):
   // both clear owner_confirmed_at. A paused save is not a failure: no card.
-  if (!group?.projectId || !ownerBackedOn(group)) return skipped(ids, 'no_owner')
+  const pause = (reason: PauseReason) => paused(deps, job, state, reason)
+  if (!group?.projectId || !ownerBackedOn(group)) return pause('no_owner')
   const setup = await deps.store.getGroupSetup(job.groupId)
-  if (!setup?.features.saveFiles) return skipped(ids, 'feature_off')
-  const fail = (reason: FailReason, err?: unknown) => failed(deps, job, reason, err)
+  if (!setup?.features.saveFiles) return pause('feature_off')
+  const fail = (reason: FailReason, err?: unknown) => failed(deps, job, state, reason, err)
   if (job.fileSize !== null && job.fileSize > MAX_FILE_BYTES) return fail('too_large')
+  // #99: a large file says "saving…" at once. Sent alongside the download, so it costs the
+  // save no time; sendCard waits for it before it picks reply or push.
+  if (job.messageType === 'file' && job.fileSize !== null && job.fileSize > SAVING_NOTICE_BYTES) {
+    state.saving = sayingSaving(deps, job)
+  }
 
   if (workLeft() < MIN_STEP_MS) return fail('timeout')
   let content: { data: Uint8Array; contentType: string | null } | null
@@ -167,9 +197,9 @@ async function save(deps: Deps, job: FileJob, progress: { driveFileId: string | 
   // No usable Drive is a pause, not a failure: no account, the token was revoked (the #14
   // card already asks the Owner to sign in again), or another Google account holds the
   // Project. Logged inside.
-  if (!drive) return skipped(ids, 'no_drive')
+  if (!drive) return pause('no_drive')
   const connection = await deps.store.findActiveDriveConnection(drive.projectId)
-  if (!connection || connection.googleAccountId !== drive.googleAccountId) return skipped(ids, 'other_account')
+  if (!connection || connection.googleAccountId !== drive.googleAccountId) return pause('other_account')
   if (workLeft() < MIN_STEP_MS) return fail('timeout')
   const mimeType = mimeOf(job, content.contentType)
   const fileName = nameOf(job, mimeType)
@@ -179,9 +209,10 @@ async function save(deps: Deps, job: FileJob, progress: { driveFileId: string | 
       drive.accessToken, { name: fileName, parentId: drive.folderId, mimeType, data: content.data }, { timeoutMs: workLeft() },
     )
   } catch (err) {
+    if (err instanceof DriveStorageFull) return fail('drive_full', err)
     return fail(isTimeout(err) ? 'timeout' : 'failed', err)
   }
-  progress.driveFileId = uploaded.id
+  state.driveFileId = uploaded.id
   const result = await deps.store.insertFile({
     groupId: job.groupId, messageId: job.storedMessageId, senderLineUserId: job.senderLineUserId,
     driveConnectionId: connection.id, fileName, contentSha256: sha256, driveFileId: uploaded.id,
@@ -197,9 +228,53 @@ async function save(deps: Deps, job: FileJob, progress: { driveFileId: string | 
   return { file: result.file, duplicate: false, linkShared: drive.linkShared }
 }
 
-function skipped(ids: { groupId: string; messageType: string }, reason: string): FileSaveOutcome {
-  log('file_save_skipped', { ...ids, reason })
+/** A paused save: nothing settled, no card. The sender is told why (#99) once per group per
+ *  Bangkok day, except when the Owner turned file saving off. Never throws. */
+async function paused(deps: Deps, job: FileJob, state: JobState, reason: PauseReason): Promise<FileSaveOutcome> {
+  log('file_save_skipped', { groupId: job.groupId, messageType: job.messageType, reason })
+  if (reason === 'feature_off') return 'paused'
+  const text = reason === 'no_owner' ? FILE_NOTICE_TEXT.noOwner : FILE_NOTICE_TEXT.noDrive
+  try {
+    // After a "saving…" reply the sender waits for an answer: tell them every time, by push.
+    if (await state.saving) {
+      await sendCard(deps, job, state, { type: 'text', text }, `file_failed:paused:${job.storedMessageId}`)
+      return 'paused'
+    }
+    const { inserted } = await deps.store.recordWebhookEvent({
+      webhookEventId: pausedNoticeKey(job.groupId, deps.now()), eventType: 'file_paused_notice', lineGroupId: job.lineGroupId,
+      eventTimestamp: deps.now(), isRedelivery: false,
+    })
+    if (!inserted) return 'paused' // told already today
+    // A reply only: free, and the notice is not worth a push.
+    if (!job.replyToken || !replyFits(deps, job)) {
+      log('file_paused_notice', { groupId: job.groupId, via: 'none' })
+      return 'paused'
+    }
+    await deps.line.reply(job.replyToken, [{ type: 'text', text }])
+    log('file_paused_notice', { groupId: job.groupId, via: 'reply', reason })
+  } catch (err) {
+    logError('file_paused_notice_failed', { groupId: job.groupId }, err)
+  }
   return 'paused'
+}
+
+/** The "saving…" reply. Resolves true when it went out. Never rejects. */
+async function sayingSaving(deps: Deps, job: FileJob): Promise<boolean> {
+  if (!job.replyToken || !replyFits(deps, job)) return false
+  try {
+    await deps.line.reply(job.replyToken, [{ type: 'text', text: FILE_NOTICE_TEXT.saving(job.fileName ?? 'ไฟล์') }])
+    log('file_saving_notice', { groupId: job.groupId })
+    return true
+  } catch (err) {
+    logError('file_saving_notice_failed', { groupId: job.groupId }, err)
+    return false
+  }
+}
+
+/** A reply still fits: inside the reply window, with its worst case before the hard stop. */
+function replyFits(deps: Deps, job: FileJob): boolean {
+  const elapsed = deps.now().getTime() - job.receivedAt.getTime()
+  return elapsed <= REPLY_WINDOW_MS && job.receivedAt.getTime() + SAVE_HARD_STOP_MS - deps.now().getTime() >= REPLY_WORST_MS
 }
 
 function isTimeout(err: unknown): boolean {
@@ -225,16 +300,16 @@ async function settle(deps: Deps, job: FileJob, eventType: string): Promise<'fir
 /** A save that failed for good. No retry (decided: option B): the group gets one "couldn't
  *  save" card for the message (the settled row makes it once-only), or, for a photo of a
  *  batch, the batch card counts it. Never throws. */
-async function failed(deps: Deps, job: FileJob, reason: FailReason, err?: unknown): Promise<FileSaveOutcome> {
+async function failed(deps: Deps, job: FileJob, state: JobState, reason: FailReason, err?: unknown): Promise<FileSaveOutcome> {
   if (err === undefined) log('file_save_failed', { groupId: job.groupId, messageType: job.messageType, reason })
   else logError('file_save_failed', { groupId: job.groupId, messageType: job.messageType, reason }, err)
   try {
-    const settledAs = await settle(deps, job, FILE_FAILED_EVENT)
+    const settledAs = await settle(deps, job, failedEventType(reason))
     if (job.imageSet) {
       await announceBatch(deps, job)
     } else if (settledAs !== 'repeat') {
       const card = fileFailedCard({ kind: job.messageType, fileName: job.fileName, reason })
-      await sendCard(deps, job, card, `file_failed:${job.storedMessageId}`)
+      await sendCard(deps, job, state, card, `file_failed:${job.storedMessageId}`)
     }
   } catch (e) {
     logError('file_card_failed', { groupId: job.groupId, messageType: job.messageType }, e)
@@ -270,16 +345,17 @@ async function announceBatch(deps: Deps, job: FileJob): Promise<void> {
   if (!claimed) return
   let card: LineMessage
   if (c.saved === 0) {
-    card = photosFailedCard({ count: c.failed })
+    card = photosFailedCard({ count: c.failed, reason: sharedReason(c.failedReasons) })
   } else {
     // The folder's own state, not this job's: any photo of the batch may be the last to settle.
     const folder = await groupFolderState(deps, job.groupId)
     card = photosSavedCard({
       count: c.saved, failed: c.failed, link: folder.folderId ? driveFolderLink(folder.folderId) : null,
-      isFolder: true, linkShared: folder.linkShared,
+      isFolder: true, linkShared: folder.linkShared, failedReason: sharedReason(c.failedReasons),
     })
   }
-  await sendCard(deps, job, card, `photos_saved:${job.groupId}:${imageSetId}`)
+  // Photos never get "saving…" (no size up front), so no job state is needed here.
+  await sendCard(deps, job, { driveFileId: null, saving: null }, card, `photos_saved:${job.groupId}:${imageSetId}`)
 }
 
 /** The group's stored Drive folder ID, and whether its Project folder's link share is known
@@ -303,11 +379,12 @@ async function groupFolderState(deps: Deps, groupId: string): Promise<{ folderId
  *  Each is sent only if its worst case still ends by the hard stop. A reply LINE refused
  *  (a 4xx: the token expired or was used) falls back to a push; a reply that timed out or
  *  got a 5xx may have reached the group, so it is not pushed again. */
-async function sendCard(deps: Deps, job: FileJob, card: LineMessage, key: string): Promise<void> {
+async function sendCard(deps: Deps, job: FileJob, state: JobState, card: LineMessage, key: string): Promise<void> {
   const hardStop = job.receivedAt.getTime() + SAVE_HARD_STOP_MS
-  const elapsed = () => deps.now().getTime() - job.receivedAt.getTime()
   const left = () => hardStop - deps.now().getTime()
-  if (job.replyToken && elapsed() <= REPLY_WINDOW_MS && left() >= REPLY_WORST_MS) {
+  // #99: after a "saving…" reply the token is used: the result goes out as a push.
+  const tokenUsed = (await state.saving) === true
+  if (job.replyToken && !tokenUsed && replyFits(deps, job)) {
     try {
       await deps.line.reply(job.replyToken, [card])
       log('file_card', { groupId: job.groupId, via: 'reply' })

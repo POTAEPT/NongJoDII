@@ -1,3 +1,4 @@
+import { lineMemberCount } from '../members/line-count'
 import { log, logError } from '../log'
 import type { ApiResult, Deps, GroupSetup } from '../ports'
 import { botLeaveGroup } from '../removal/leave'
@@ -24,7 +25,9 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
   if (!gate.ok) return gate.result
   const { group, requester } = gate
   const canEdit = isConfirmedOwner(group, requester)
-  const live = await deps.store.listLiveMembers(group.groupId)
+  const [live, lineCount] = await Promise.all([
+    deps.store.listLiveMembers(group.groupId), lineMemberCount(deps, { groupId: group.groupId, lineGroupId: group.lineGroupId }),
+  ])
   // #81: every live Member sees everyone's nicknames and role here; the Owner edits every
   // row, a Member only their own. Nicknames still never show outside Settings and the form.
   const members: SettingsMember[] = live
@@ -61,6 +64,7 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
       weeklySummaryTime: group.weeklySummaryTime,
     },
     members,
+    lineMemberCount: lineCount,
   }
   return { status: 200, body: view }
 }

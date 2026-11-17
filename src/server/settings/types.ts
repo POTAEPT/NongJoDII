@@ -34,6 +34,8 @@ export type SettingsLoad = {
   pendingOwner: { lineUserId: string; displayName: string; isRequester: boolean } | null
   values: SettingsValues
   members: SettingsMember[]
+  /** #142: LINE's member count of the group (null when LINE did not answer). */
+  lineMemberCount: number | null
 }
 
 /** #147: what the Owner types to delete the group's data at once, with Stop using. */

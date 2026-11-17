@@ -34,6 +34,8 @@ export type SetupLoad = {
   values: SetupValues
   /** Live Members by LINE name; the requester is always one of them. */
   members: SetupMember[]
+  /** #142: LINE's member count of the group (null when LINE did not answer). */
+  lineMemberCount: number | null
   nominee: { lineUserId: string; displayName: string } | null
   /** #30: the Owner left this group; a live Member can take the role over. */
   ownerNeeded: boolean

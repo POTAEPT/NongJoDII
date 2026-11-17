@@ -11,7 +11,7 @@ import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { nextStepCard, uri } from '../line/flex-ui'
 import { liffUrl } from '../liff-links'
 import { isSetupOpen, setupState } from '../setup/rules'
-import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
+import { buildSummaryPrompt, COUNT_IS_PROJECT_WORK, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
 import { summaryFailedCard, summaryFailure } from './failure'
 import { COUNT_HINT, COUNT_MIN, precheckSummary } from './precheck'
@@ -322,7 +322,7 @@ export function retryUser(user: string, first: ParsedTask[], countHint: string):
     '',
     `Your first answer listed ${first.length} task(s):`,
     listed,
-    `A first reading found ${countHint} separate pieces of work. Re-read the Chat and answer the complete JSON again, with every separate piece of work as its own task. Keep the tasks above and add any missing ones. Do not split one job into parts and never invent work.`,
+    `A first reading found ${countHint} separate pieces of work. Re-read the Chat and answer the complete JSON again, with every separate piece of work as its own task. Keep the tasks above and add any missing ones. Do not split one job into parts and never invent work. ${COUNT_IS_PROJECT_WORK}`,
   ].join('\n')
 }
 

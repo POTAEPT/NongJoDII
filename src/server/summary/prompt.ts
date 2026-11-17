@@ -6,6 +6,11 @@ export type MessageRef = { ref: string; message: StoredMessage }     // 'msg1', 
 
 const MESSAGE_TEXT_MAX = 500
 
+/** Only project work is a Task: casual chat never becomes one, nor unassigned work in the summary. */
+export const PROJECT_WORK_ONLY = 'List as tasks ONLY work toward the group\'s project or study goals. Never a snack, drink or food order (such as ordering milk tea), a joke or a line said for a laugh (such as a line with 555), a social plan, or a member\'s personal errand. Booking a meeting room, printing or sending a file for the project is work. In summary, never call such casual items unassigned or open work.'
+/** #157: the count hint and the retry never justify adding casual chat to reach the number. */
+export const COUNT_IS_PROJECT_WORK = 'The count is of project work only: never add a snack, drink, food order, joke or personal errand to reach it.'
+
 /** #108: a Task the group already has, which the Summary must not propose again. */
 export type ExistingTask = { title: string; status: TaskStatus; tags?: string[] }
 
@@ -84,7 +89,7 @@ export function buildSummaryPrompt(p: {
     ...(p.precheck?.noTask === true
       ? ['A first reading found no work to do in this chat: return "tasks": [] and write the summary only.']
       : p.precheck && p.precheck.noTask === false
-        ? [`A first reading found ${p.precheck.countHint} separate pieces of work in the Chat. List each separate piece of work as its own task.`]
+        ? [`A first reading found ${p.precheck.countHint} separate pieces of work in the Chat. List each separate piece of work as its own task. ${COUNT_IS_PROJECT_WORK}`]
         : []),
   ].join('\n')
 
@@ -94,7 +99,9 @@ export function buildSummaryPrompt(p: {
     '{"summary": string, "tasks": [{"title": string, "details": string|null, "assignee": string|null, "due": string|null, "source": string|null, "tags": string[]}]}',
     'Rules:',
     '- Write summary, title and details in Thai. summary: at most 800 characters.',
-    '- A task is concrete work that someone should still do according to the chat. Skip work the chat marks as finished. At most 10 tasks. Never invent tasks.',
+    '- A task is concrete work toward the group\'s project or study goals (see "Group context") that someone should still do according to the chat. Skip work the chat marks as finished. At most 10 tasks. Never invent tasks.',
+    // Live run 2026-11-17: "555 เดี๋ยวสั่งชานมด้วย" became a Task and the summary called it unassigned work.
+    `- ${PROJECT_WORK_ONLY}`,
     '- Summarize and take tasks ONLY from the "Chat" section. "Earlier chat" was summarized before: use it only to understand the new chat, and never take a task from it.',
     '- Never propose a task that is already in "Existing tasks", whatever its status and even if the chat words it differently.',
     '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname in those fields.',

@@ -49,7 +49,9 @@ function setup(opts: { draftTasks?: boolean } = {}) {
   })
   const replyText = () => JSON.stringify(h.line.replies.find((r) => r.replyToken === 'rt-cmd')?.messages ?? [])
   const userOf = (i: number) => (h.llm.requests[i] as LlmRequest).user
-  return { ...h, chat, summarize, answer, jev, replyText, userOf }
+  /** A model answer the Summary parser cannot read. */
+  const unreadable = () => h.llm.respond(() => ({ content: 'not json {', model: TEXT_MODEL, usage: USAGE }))
+  return { ...h, chat, summarize, answer, jev, replyText, userOf, unreadable }
 }
 
 describe('the Summary pre-check (#157)', () => {
@@ -103,6 +105,29 @@ describe('the Summary pre-check (#157)', () => {
     expect(s.llm.requests).toHaveLength(2)
     expect(s.store.tables.task_candidates).toHaveLength(2)
     expect(s.replyText()).toContain(SUMMARY_TEXT.mayHaveMore)
+  })
+
+  it('an unreadable answer to the hinted prompt: the second call is the old prompt, and no third call', async () => {
+    const s = setup()
+    await s.chat()
+    s.decisions.respond(s.jev(0.9, 'many'))
+    s.unreadable()
+    s.answer(['ทำสไลด์', 'เขียนรายงาน'])
+    await s.summarize()
+    expect(s.llm.requests).toHaveLength(2)
+    expect(s.userOf(0)).toContain('A first reading found')
+    expect(s.userOf(1)).not.toContain('A first reading found')
+    expect(s.store.tables.task_candidates).toHaveLength(2)
+  })
+
+  it('an unreadable answer with no hint fails as before (one call)', async () => {
+    const s = setup()
+    await s.chat()
+    s.decisions.fail(new Error('down'))
+    s.unreadable()
+    await s.summarize()
+    expect(s.llm.requests).toHaveLength(1)
+    expect(s.store.tables.summaries).toEqual([])
   })
 
   it('a failed retry keeps the first answer', async () => {

@@ -5,7 +5,7 @@ import type { Deps, NewCandidate } from '../ports'
 import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
-import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask } from './parse-output'
+import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask, ModelOutputError } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
 import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { nextStepCard, uri } from '../line/flex-ui'
@@ -138,12 +138,24 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
 
   let parsed: { summary: string; tasks: ParsedTask[] }
   let mayHaveMore = false
+  // The prompt without Jev's line: the old Summary prompt (the same refs, so the same answer shape).
+  const plainUser = buildSummaryPrompt(promptInput).user
   try {
-    parsed = await askModel(prompt.user)
+    let secondUsed = false
+    try {
+      parsed = await askModel(prompt.user)
+    } catch (err) {
+      // #157: an unreadable answer to the prompt with Jev's line: the second (last) text call
+      // goes out as the old prompt, so the hint never costs the group its Summary.
+      if (!(err instanceof ModelOutputError) || plainUser === prompt.user) throw err
+      log('summary_hint_unreadable', { groupId })
+      parsed = await askModel(plainUser)
+      secondUsed = true
+    }
     // #157: fewer Tasks than Jev counted: one retry for the missing ones (at most 2 text calls).
     const count = check?.hasTask === true ? check.count : null
     const wanted = count !== null ? COUNT_MIN[count] : 0
-    if (count !== null && parsed.tasks.length < wanted) {
+    if (!secondUsed && count !== null && parsed.tasks.length < wanted) {
       try {
         const again = await askModel(retryUser(prompt.user, parsed.tasks, COUNT_HINT[count]))
         if (again.tasks.length > parsed.tasks.length) parsed = again

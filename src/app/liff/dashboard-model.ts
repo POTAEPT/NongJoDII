@@ -27,6 +27,12 @@ export const INSIGHT_TEXT = {
   title: (weekStart: string) => `สรุปรายสัปดาห์ · ${formatThaiWeekRange(weekStart)}`,
   notPosted: 'สรุปนี้ไม่ได้โพสต์ในกลุ่ม ดูได้ที่นี่',
   none: 'ยังไม่มีสรุปรายสัปดาห์ของกลุ่มนี้',
+  /** The PM overview's live counts (the weekly insight is a snapshot of its weekly day). */
+  liveTitle: 'งานตอนนี้',
+  /** The saved weekly insight under the live counts, in one line. */
+  weeklyLine: (i: DashboardInsight) =>
+    `สรุปรายสัปดาห์ ${formatThaiWeekRange(i.weekStart)}: ยังไม่มีผู้รับ ${i.awaitingOwner} · กำลังทำ ${i.inProcess} · เสร็จ ${i.done}`
+    + (i.posted ? '' : ' (ไม่ได้โพสต์ในกลุ่ม)'),
 } as const
 
 /** #4: files saved to Drive from the group. */
@@ -52,6 +58,11 @@ export function insightTiles(i: DashboardInsight): { status: TaskStatus; count: 
     { status: 'in_process', count: i.inProcess },
     { status: 'done', count: i.done },
   ]
+}
+/** The live counts in the same order, from the group's Tasks as loaded. */
+export function liveTiles(tasks: Pick<DashboardTask, 'status'>[]): { status: TaskStatus; count: number }[] {
+  const c = countByStatus(tasks)
+  return STATUS_ORDER.map((status) => ({ status, count: c[status] }))
 }
 export const FALLBACK_MEMBER = 'สมาชิก LINE'
 export const FALLBACK_GROUP = 'กลุ่ม LINE'

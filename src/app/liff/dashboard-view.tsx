@@ -7,7 +7,7 @@ import { post } from './api'
 import { track } from './analytics'
 import {
   FALLBACK_MEMBER, FILES_TEXT, FILTERS, INSIGHT_TEXT, fileLine, STATUS_LABEL, STATUS_ORDER, TABS, calendarWeek, canCompare, countByStatus, dayHeading, dueLabel,
-  errorCopy, filterTasks, groupName, guideHref, hhmm, initialOf, initialScope, insightTiles, isNoGroups, isOverdue, memberCards, memberName,
+  errorCopy, filterTasks, groupName, guideHref, hhmm, initialOf, initialScope, insightTiles, isNoGroups, liveTiles, isOverdue, memberCards, memberName,
   overviewGroups, overviewLine, scopeAfterRefresh, summarizeGroups, tasksDueOn, tasksOf, unownedTasks,
   type DashboardData, type DashboardFile, type DashboardGroup, type DashboardInsight, type DashboardTab, type DashboardTask, type GroupSummary,
   type Scope, type StatusCounts, type TaskFilter, WELCOME_TEXT,
@@ -310,19 +310,38 @@ function InsightCard({ insight }: { insight: DashboardInsight | null }) {
   return (
     <section className="flex flex-col gap-2 rounded-2xl bg-white p-3 ring-1 ring-[#E6EAF0]">
       <h2 className="text-sm font-bold">{INSIGHT_TEXT.title(insight.weekStart)}</h2>
-      <div className="grid grid-cols-3 gap-2">
-        {insightTiles(insight).map((t) => (
-          <div key={t.status} className="flex flex-col gap-1 rounded-xl p-2 ring-1 ring-[#E6EAF0]">
-            <span className="flex items-center gap-1 text-[11px] text-[#6B7690]">
-              <span className={`h-1.5 w-1.5 rounded-full ${DOT[t.status]}`} />
-              {STATUS_LABEL[t.status]}
-            </span>
-            <span className="text-xl font-bold">{t.count}</span>
-          </div>
-        ))}
-      </div>
+      <StatusTiles tiles={insightTiles(insight)} />
       {!insight.posted && <p className="text-xs text-[#8A94A6]">{INSIGHT_TEXT.notPosted}</p>}
     </section>
+  )
+}
+
+/** The PM overview's top card: counts of the group's Tasks right now (the payload holds every
+ *  Task for an 'overview' group), with the last weekly insight as one line under them. A
+ *  Member's payload holds only some Tasks, so their overview keeps InsightCard. */
+export function LiveCountsCard({ tasks, insight }: { tasks: DashboardTask[]; insight: DashboardInsight | null }) {
+  return (
+    <section className="flex flex-col gap-2 rounded-2xl bg-white p-3 ring-1 ring-[#E6EAF0]">
+      <h2 className="text-sm font-bold">{INSIGHT_TEXT.liveTitle}</h2>
+      <StatusTiles tiles={liveTiles(tasks)} />
+      <p className="text-xs text-[#8A94A6]">{insight ? INSIGHT_TEXT.weeklyLine(insight) : INSIGHT_TEXT.none}</p>
+    </section>
+  )
+}
+
+function StatusTiles({ tiles }: { tiles: { status: TaskStatus; count: number }[] }) {
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {tiles.map((t) => (
+        <div key={t.status} className="flex flex-col gap-1 rounded-xl p-2 ring-1 ring-[#E6EAF0]">
+          <span className="flex items-center gap-1 text-[11px] text-[#6B7690]">
+            <span className={`h-1.5 w-1.5 rounded-full ${DOT[t.status]}`} />
+            {STATUS_LABEL[t.status]}
+          </span>
+          <span className="text-xl font-bold">{t.count}</span>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -460,7 +479,7 @@ function Overview({ group, now, onMember, onOpen }: {
   const unowned = unownedTasks(group.tasks)
   return (
     <>
-      <InsightCard insight={group.insight} />
+      <LiveCountsCard tasks={group.tasks} insight={group.insight} />
       <FilesCard files={group.files} />
       <div>
         <h2 className="text-base font-bold">สมาชิก {cards.length} คน</h2>

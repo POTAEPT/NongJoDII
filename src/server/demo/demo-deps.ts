@@ -41,17 +41,54 @@ export type DemoOptions = {
   offsetMs?: number
 }
 
-type Shared = { config: HandlerConfig; google: GooglePort; demo: Demo | null; generation: number }
+type Shared = {
+  config: HandlerConfig; google: GooglePort; demo: Demo | null; generation: number
+  /** The origin the Google client and the card links use; follows the requests (noteDemoOrigin). */
+  base: string
+}
+
+/** The real Google client for the demo's current origin: Google sends the browser back to
+ *  the redirect URI, so it must be the origin the presenter is on. One client per origin,
+ *  so the sign-in link and the code exchange carry the same URI. */
+class OriginGoogle implements GooglePort {
+  private readonly clients = new Map<string, GoogleHttpClient>()
+  constructor(private readonly base: () => string) {}
+
+  private c(): GoogleHttpClient {
+    const base = this.base()
+    let client = this.clients.get(base)
+    if (!client) {
+      client = new GoogleHttpClient({
+        clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+        redirectUri: `${base}/demo/api/google/callback`,
+      })
+      this.clients.set(base, client)
+    }
+    return client
+  }
+
+  buildAuthUrl: GooglePort['buildAuthUrl'] = (...a) => this.c().buildAuthUrl(...a)
+  exchangeCode: GooglePort['exchangeCode'] = (...a) => this.c().exchangeCode(...a)
+  accessToken: GooglePort['accessToken'] = (...a) => this.c().accessToken(...a)
+  createFolder: GooglePort['createFolder'] = (...a) => this.c().createFolder(...a)
+  getFolder: GooglePort['getFolder'] = (...a) => this.c().getFolder(...a)
+  shareAnyoneReader: GooglePort['shareAnyoneReader'] = (...a) => this.c().shareAnyoneReader(...a)
+  folderShared: GooglePort['folderShared'] = (...a) => this.c().folderShared(...a)
+  uploadFile: GooglePort['uploadFile'] = (...a) => this.c().uploadFile(...a)
+  revokeToken: GooglePort['revokeToken'] = (...a) => this.c().revokeToken(...a)
+}
 
 const KEY = Symbol.for('nongjodii.demo')
 
 /** Per process, kept across hot reloads and resets: the demo channel secret, the token
- *  key and the Google client. */
+ *  key, the Google client and the origin. */
 function shared(): Shared {
   const g = globalThis as unknown as Record<symbol, Shared | undefined>
   let s = g[KEY]
-  if (!s) {
-    const base = (process.env.DEMO_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '')
+  // A Shared kept from older code across a hot reload has no base.
+  if (!s || typeof s.base !== 'string') {
+    const base = fixedBase() ?? `http://localhost:${process.env.PORT?.trim() || '3000'}`
     s = {
       config: {
         lineChannelSecret: randomBytes(16).toString('hex'),
@@ -61,17 +98,32 @@ function shared(): Shared {
         tickSecret: randomBytes(16).toString('hex'),
         appBaseUrl: base,
       },
-      google: new GoogleHttpClient({
-        clientId: process.env.GOOGLE_CLIENT_ID ?? '',
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
-        redirectUri: `${base}/demo/api/google/callback`,
-      }),
+      google: new OriginGoogle(() => (g[KEY] as Shared).base),
+      base,
       demo: null,
       generation: 0,
     }
     g[KEY] = s
   }
   return s
+}
+
+/** DEMO_BASE_URL, when set, wins over the request origin (e.g. a tunnel URL). */
+function fixedBase(): string | null {
+  const v = process.env.DEMO_BASE_URL?.trim()
+  return v ? v.replace(/\/+$/, '') : null
+}
+
+/** Every /demo/api request calls this first: the Google callback and the card links follow
+ *  the port the demo server runs on (`next dev -p 3001`), with nothing hard-coded. Before
+ *  the first request the base is localhost on PORT, or 3000. */
+export function noteDemoOrigin(request: Request): void {
+  if (fixedBase()) return
+  const s = shared()
+  const origin = new URL(request.url).origin
+  if (s.base === origin) return
+  s.base = origin
+  s.config.appBaseUrl = origin
 }
 
 export function getDemo(): Demo {

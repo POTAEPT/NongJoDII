@@ -47,7 +47,7 @@ Any speaker who is not in the target group joins it before the first message (a 
 
 ## Verify
 
-The demo server must be running: `DEMO_MODE=1 infisical run --env=dev -- npm run dev` in the repo root.
+The demo server must be running: `DEMO_MODE=1 infisical run --env=dev -- npm run dev` in the repo root. For another port run `npm run dev -- -p 3001`; the examples below use 3000.
 
 1. `curl -s localhost:3000/demo/api/sim/scripts`. Your `name` is listed. If it is missing, the file is not valid JSON or has no `messages`: the Log tab shows the reason.
 2. In `/demo`, press Reset (the set-up groups of `src/app/demo/groups/`), pick the group in the presenter panel's group picker, then press Play on your scenario. The same can be done by API: `POST /demo/api/sim/load-script {"name":"<NN>-<short-name>", "group":"<lineGroupId>"}` (without `group` it plays into the selected group).

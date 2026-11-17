@@ -1,8 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { FILES_TEXT, INSIGHT_TEXT } from '@/app/liff/dashboard-model'
-import { EmptyGroup, FilesCard } from '@/app/liff/dashboard-view'
+import { FILES_TEXT, INSIGHT_TEXT, type DashboardTask } from '@/app/liff/dashboard-model'
+import { EmptyGroup, FilesCard, LiveCountsCard } from '@/app/liff/dashboard-view'
 
 // #22 on the Dashboard screen, rendered to HTML in Node (no browser): a group with no Tasks
 // and no known Members still shows its saved weekly insight on the overview.
@@ -42,5 +42,30 @@ describe('saved files on the Dashboard (#4)', () => {
 
   it('says so when the group has no saved file', () => {
     expect(filesHtml([])).toContain(FILES_TEXT.none)
+  })
+})
+
+describe('live counts on the PM overview', () => {
+  let n = 0
+  const task = (status: DashboardTask['status']): DashboardTask => ({
+    taskId: `t${++n}`, title: 'x', status, assigneeLineUserId: null, assigneeName: null, dueAt: null, tags: [],
+  })
+  const live = (p: Parameters<typeof LiveCountsCard>[0]) => renderToStaticMarkup(createElement(LiveCountsCard, p))
+  const counts = (out: string) => [...out.matchAll(/text-xl font-bold">(\d+)</g)].map((m) => Number(m[1]))
+
+  it('counts the group\'s Tasks now, not the weekly snapshot, and shows the snapshot as one line', () => {
+    // The production report of 2026-11-17: the week's insight was saved at 0/0/0 before the Tasks existed.
+    const empty = { weekStart: '2026-11-16', done: 0, inProcess: 0, awaitingOwner: 0, posted: false }
+    const out = live({ tasks: [task('in_process'), task('done'), task('done'), task('not_assigned')], insight: empty })
+    expect(out).toContain(INSIGHT_TEXT.liveTitle)
+    expect(counts(out)).toEqual([1, 1, 2]) // ยังไม่มีผู้รับ, กำลังทำ, เสร็จ
+    expect(out).toContain(INSIGHT_TEXT.weeklyLine(empty))
+    expect(INSIGHT_TEXT.weeklyLine(empty)).toContain('ไม่ได้โพสต์ในกลุ่ม')
+  })
+
+  it('without a weekly insight it says there is none yet', () => {
+    const out = live({ tasks: [], insight: null })
+    expect(counts(out)).toEqual([0, 0, 0])
+    expect(out).toContain(INSIGHT_TEXT.none)
   })
 })

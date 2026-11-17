@@ -23,6 +23,7 @@ Apply each rule to the code a pull request adds or changes. The code is still a 
 - Progress detection is a keyword gate in code first (`src/server/progress/keywords.ts`): a chat line without a progress word makes no AI call. Only a match goes to the decision model (#132).
 - The decision model is TypeSafe Jev (`typesafe/jev-1.14`) through OpenRouter's Decisions API (`DecisionsPort`), never chat completions. A refused or missing answer means "not answered", never "not progress" (decided 2026-11-17).
 - When the decision model does not answer (refusal, missing answer, error or the Fair-use cap), the bot asks the user with the free picker, and the message is kept; there is no chat-model fallback (#7, decided 2026-11-17).
+- A Summary's AI calls share one time budget (`SUMMARY_BUDGET_MS`, 50 s from the start of the Summary's work): each call's `timeoutMs` is at most the time left, the Jev pre-check is skipped below 30 s left and the second text call below 15 s left. A Summary retry adds the missing Tasks to the first answer's and never drops one (#157).
 
 ## Google Drive and files (#3, #4, #11)
 

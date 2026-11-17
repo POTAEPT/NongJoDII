@@ -16,6 +16,22 @@ import { buildSummaryReply, type ReplyCandidate } from './reply'
 import { summaryFailedCard, summaryFailure } from './failure'
 import { COUNT_HINT, COUNT_MIN, precheckSummary } from './precheck'
 
+/** One time budget for the whole Summary, counted from the start of its work: the webhook
+ *  route's maxDuration is 60 s and the reply token must still be valid when the answer goes. */
+export const SUMMARY_BUDGET_MS = 50_000
+/** A text call's own cap (the OpenRouter client's default); each call gets min(cap, time left). */
+export const SUMMARY_TEXT_TIMEOUT_MS = 45_000
+/** Below this much time left, the Jev pre-check is skipped and the single text call runs. */
+export const SUMMARY_PRECHECK_MIN_LEFT_MS = 30_000
+/** Below this much time left, no second text call (retry or plain prompt). */
+export const SUMMARY_SECOND_CALL_MIN_LEFT_MS = 15_000
+
+/** The budget ran out before a text call could start: it fails like a timed-out call
+ *  (name TimeoutError, so summaryFailure gives ai_timeout). */
+class SummaryBudgetSpentError extends Error {
+  name = 'TimeoutError'
+}
+
 export type SummaryJob = { groupId: string; lineGroupId: string; replyToken: string | null; requesterLineUserId: string | null }
 
 export const SUMMARY_MESSAGE_LIMIT = 100
@@ -62,6 +78,9 @@ export async function runSummaryCommand(deps: Deps, job: SummaryJob): Promise<vo
 async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: { value: boolean }): Promise<void> {
   const { groupId } = job
   const { store } = deps
+  // Same clock as the other deadlines (files/save.ts): deps.now().
+  const deadline = deps.now().getTime() + SUMMARY_BUDGET_MS
+  const timeLeft = () => deadline - deps.now().getTime()
 
   const group = await store.getGroupById(groupId)
   if (!group) {
@@ -123,18 +142,29 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
   const promptInput = { now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks, groupTags }
   const meter = { ownerLineUserId, projectId: group.projectId, groupId }
   // #157: Jev reads the same chat first (null = no usable answer: as before). Skipped when
-  // Draft tasks is off, since no Task would be kept anyway.
-  const check = group.featureDraftTasks ? await precheckSummary(deps, meter, buildSummaryPrompt(promptInput).chat) : null
+  // Draft tasks is off, since no Task would be kept anyway, and when too little time is left.
+  const checkLeft = timeLeft()
+  const check = group.featureDraftTasks && checkLeft >= SUMMARY_PRECHECK_MIN_LEFT_MS
+    ? await precheckSummary(deps, meter, buildSummaryPrompt(promptInput).chat, checkLeft)
+    : null
   const prompt = buildSummaryPrompt({
     ...promptInput,
     precheck: check === null ? null
       : check.hasTask === false ? { noTask: true }
         : check.count !== null ? { noTask: false, countHint: COUNT_HINT[check.count] } : null,
   })
-  const askModel = async (user: string) => parseSummaryOutput((await runMeteredAi(
-    deps, { ...meter, purpose: 'summary' },
-    { model: TEXT_MODEL, system: prompt.system, user, maxTokens: SUMMARY_MAX_TOKENS, schema: SUMMARY_SCHEMA },
-  )).content)
+  const askModel = async (user: string) => {
+    const left = timeLeft()
+    if (left <= 0) throw new SummaryBudgetSpentError('summary time budget spent')
+    return parseSummaryOutput((await runMeteredAi(
+      deps, { ...meter, purpose: 'summary' },
+      {
+        model: TEXT_MODEL, system: prompt.system, user, maxTokens: SUMMARY_MAX_TOKENS, schema: SUMMARY_SCHEMA,
+        timeoutMs: Math.min(SUMMARY_TEXT_TIMEOUT_MS, left),
+      },
+    )).content)
+  }
+  const secondCallFits = () => timeLeft() >= SUMMARY_SECOND_CALL_MIN_LEFT_MS
 
   let parsed: { summary: string; tasks: ParsedTask[] }
   let mayHaveMore = false
@@ -147,24 +177,30 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     } catch (err) {
       // #157: an unreadable answer to the prompt with Jev's line: the second (last) text call
       // goes out as the old prompt, so the hint never costs the group its Summary.
-      if (!(err instanceof ModelOutputError) || plainUser === prompt.user) throw err
+      // Too little time left for it: the unreadable answer fails as before.
+      if (!(err instanceof ModelOutputError) || plainUser === prompt.user || !secondCallFits()) throw err
       log('summary_hint_unreadable', { groupId })
       parsed = await askModel(plainUser)
       secondUsed = true
     }
-    // #157: fewer Tasks than Jev counted: one retry for the missing ones (at most 2 text calls).
+    // #157: fewer Tasks than Jev counted: one retry for the missing ones (at most 2 text calls),
+    // when the time left allows it. The retry's new Tasks are added to the first answer's.
     const count = check?.hasTask === true ? check.count : null
     const wanted = count !== null ? COUNT_MIN[count] : 0
-    if (!secondUsed && count !== null && parsed.tasks.length < wanted) {
-      try {
-        const again = await askModel(retryUser(prompt.user, parsed.tasks, COUNT_HINT[count]))
-        if (again.tasks.length > parsed.tasks.length) parsed = again
-      } catch (err) {
-        if (err instanceof FairUseCapReachedError) throw err
-        logError('summary_retry_failed', { groupId }, err)
+    if (count !== null && parsed.tasks.length < wanted) {
+      if (!secondUsed && secondCallFits()) {
+        try {
+          const again = await askModel(retryUser(prompt.user, parsed.tasks, COUNT_HINT[count]))
+          parsed = { ...parsed, tasks: mergeTasks(parsed.tasks, again.tasks) }
+        } catch (err) {
+          if (err instanceof FairUseCapReachedError) throw err
+          logError('summary_retry_failed', { groupId }, err)
+        }
+        log('summary_retry', { groupId, wanted, got: parsed.tasks.length })
+      } else if (!secondUsed) {
+        log('summary_retry_skipped', { groupId, wanted, got: parsed.tasks.length })
       }
       mayHaveMore = parsed.tasks.length < wanted
-      log('summary_retry', { groupId, wanted, got: parsed.tasks.length })
     }
     // #157: Jev found no work: the summary only, whatever the text model listed.
     if (check?.hasTask === false) parsed = { ...parsed, tasks: [] }
@@ -283,6 +319,20 @@ export function retryUser(user: string, first: ParsedTask[], countHint: string):
     '',
     `Your first answer listed ${first.length} task(s):`,
     listed,
-    `A first reading found ${countHint} separate pieces of work. Re-read the Chat and answer the complete JSON again, with every separate piece of work as its own task. Do not split one job into parts and never invent work.`,
+    `A first reading found ${countHint} separate pieces of work. Re-read the Chat and answer the complete JSON again, with every separate piece of work as its own task. Keep the tasks above and add any missing ones. Do not split one job into parts and never invent work.`,
   ].join('\n')
+}
+
+/** #157: the retry merges: every first-answer Task stays, and a retry Task is added unless it is
+ *  already there. Two Tasks are the same when their titles match after trim, space collapse and
+ *  lowercase, and, when both name a source message, it is the same message. */
+export function mergeTasks(first: ParsedTask[], retry: ParsedTask[]): ParsedTask[] {
+  const key = (title: string) => title.trim().replace(/\s+/g, ' ').toLowerCase()
+  const merged = [...first]
+  for (const task of retry) {
+    const same = merged.some((t) =>
+      key(t.title) === key(task.title) && (t.sourceRef === null || task.sourceRef === null || t.sourceRef === task.sourceRef))
+    if (!same) merged.push(task)
+  }
+  return merged
 }

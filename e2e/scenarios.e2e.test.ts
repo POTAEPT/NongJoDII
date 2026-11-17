@@ -53,7 +53,7 @@ function checkFake(s: Scenario, r: ScenarioResult): void {
     expect(candidate, `candidate titled ${fakeTitle}`).toBeDefined()
     if (!candidate) return
     expect(candidate.title).toBe(expected.title)
-    expect(candidate.assigneeLineUserId).toBe(s.personas[expected.assignee].lineUserId)
+    expect(candidate.assigneeLineUserId).toBe(expected.assignee === null ? null : s.personas[expected.assignee].lineUserId)
     expect(candidate.dueAt?.getTime()).toBe(Date.parse(expected.due))
   })
 }
@@ -64,7 +64,7 @@ function checkReal(s: Scenario, r: ScenarioResult): void {
   expect(r.candidates).toHaveLength(s.expectedTasks.length)
   const personaOf = (lineUserId: string | null): string => {
     const hit = Object.entries(s.personas).find(([, p]) => p.lineUserId === lineUserId)
-    return hit ? hit[1].lineName : '-'
+    return hit ? hit[1].lineName : lineUserId === null ? '(none)' : '-'
   }
   const rows = Math.max(s.expectedTasks.length, r.candidates.length)
   const table = Array.from({ length: rows }, (_, i) => {
@@ -72,7 +72,7 @@ function checkReal(s: Scenario, r: ScenarioResult): void {
     const a = r.candidates[i]
     return {
       expectedTitle: e?.title ?? '-',
-      expectedAssignee: e ? s.personas[e.assignee].lineName : '-',
+      expectedAssignee: e ? (e.assignee === null ? '(none)' : s.personas[e.assignee].lineName) : '-',
       expectedDue: e?.due ?? '-',
       actualTitle: a?.title ?? '-',
       actualAssignee: personaOf(a?.assigneeLineUserId ?? null),

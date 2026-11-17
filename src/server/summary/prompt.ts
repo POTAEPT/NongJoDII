@@ -90,7 +90,11 @@ export function buildSummaryPrompt(p: {
     '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname in those fields.',
     '- Never write a message ref (such as msg14) in summary, title or details; readers never see message refs. Use message refs only in source.',
     '- In the chat, @{m2} means the sender tagged that member; trust a tag over a name, since two members can share a LINE name.',
-    '- assignee: the member ref (such as "m2") of the person who should do it. Match people by tag, LINE name or nickname. null when unclear.',
+    '- assignee: the member ref (such as "m2") of the person who will do it. Match people by tag, LINE name or nickname.',
+    // #138 (E2E round 1): the model made the person who raised a task its owner.
+    '- The assignee is someone who said they will do it ("เดี๋ยวทำ", "เราเอง", "ได้ เดี๋ยวทำให้"), or someone named or tagged for it ("ฝาก {m2} ทำ") who did not refuse.',
+    '- The person who asks for the work, reminds others ("อย่าลืม...") or asks "ใครว่าง" / "ใครทำได้" is NOT the assignee for that reason alone. A maybe ("เดี๋ยวดูอีกที", "ไม่แน่ใจ") is not taking it.',
+    '- When nobody took the task, assignee is null. Prefer null to a guess.',
     `- due: ISO 8601 date-time with +07:00 offset when the chat states a deadline, else null. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok).`,
     '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
     '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Pick from "Group tags" first, then reuse "Tags in use"; a new tag only when none fits. Never a person\'s name or nickname. [] when none fits.',

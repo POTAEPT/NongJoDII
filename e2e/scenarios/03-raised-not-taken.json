@@ -1,0 +1,47 @@
+{
+  "name": "03-raised-not-taken",
+  "feature": "Summary assignee rules (#138)",
+  "description": "From E2E round 1 (steps 2.3 and 3.7): one person raises work, reminds the group or asks who is free, and the others take some of it. Expected: the people who took a task are its assignees; the reminder (book the room) and the open question (poster) have no assignee; the milk tea line is not a task.",
+  "startAt": "2026-11-17T03:00:00Z",
+  "group": {
+    "lineGroupId": "Ce2e00000000000000000000000000003",
+    "name": "E2E ทีมโปรเจกต์",
+    "workDescription": "ทำโปรเจกต์วิชาและนำเสนอปลายภาค"
+  },
+  "personas": {
+    "ploy": { "lineName": "Ploy", "role": "leader", "owner": true, "lineUserId": "Ue2e00000000000000000000000000c01" },
+    "ton": { "lineName": "Ton", "role": "writer", "lineUserId": "Ue2e00000000000000000000000000c02" },
+    "mint": { "lineName": "Mint", "role": "designer", "lineUserId": "Ue2e00000000000000000000000000c03" }
+  },
+  "messages": [
+    { "id": "m1", "persona": "ploy", "minute": 0, "text": "ศุกร์นี้ 5 โมงเย็นต้องส่งสไลด์พรีเซนต์นะ ใครทำได้บ้าง" },
+    { "id": "m2", "persona": "mint", "minute": 1, "text": "ได้ เดี๋ยวมิ้นท์ทำสไลด์ให้" },
+    { "id": "m3", "persona": "ton", "minute": 2, "text": "รายงานสรุปผมเขียนเองนะ ส่งพฤหัส 6 โมงเย็น" },
+    { "id": "m4", "persona": "ploy", "minute": 3, "text": "อย่าลืมจองห้องประชุมสำหรับวันศุกร์ด้วยนะ" },
+    { "id": "m5", "persona": "mint", "minute": 4, "text": "โอเค เดี๋ยวแวะซื้อชานมก่อนเข้าประชุม 555" },
+    { "id": "m6", "persona": "ploy", "minute": 5, "text": "แล้วก็ต้องทำโปสเตอร์ด้วย ส่งเสาร์เที่ยง ใครว่างบ้าง" },
+    { "id": "m7", "persona": "ton", "minute": 6, "text": "เดี๋ยวดูอีกทีนะ ยังไม่แน่ใจ" }
+  ],
+  "summaryCommand": { "persona": "ploy", "minute": 7, "text": "NongJoDII สรุปหน่อย" },
+  "expectedTasks": [
+    { "title": "ทำสไลด์พรีเซนต์", "assignee": "mint", "due": "2026-11-20T17:00:00+07:00", "sourceMessage": "m2" },
+    { "title": "เขียนรายงานสรุป", "assignee": "ton", "due": "2026-11-19T18:00:00+07:00", "sourceMessage": "m3" },
+    { "title": "จองห้องประชุมสำหรับวันศุกร์", "assignee": null, "due": "2026-11-20T17:00:00+07:00", "sourceMessage": "m4" },
+    { "title": "ทำโปสเตอร์", "assignee": null, "due": "2026-11-21T12:00:00+07:00", "sourceMessage": "m6" }
+  ],
+  "fakeModelAnswer": {
+    "summary": "{ploy} แจ้งงานที่ต้องส่งสัปดาห์นี้ {mint} รับทำสไลด์ {ton} รับเขียนรายงาน ยังไม่มีผู้รับจองห้องประชุมและทำโปสเตอร์",
+    "tasks": [
+      { "title": "ทำสไลด์พรีเซนต์", "assignee": "mint", "due": "2026-11-20T17:00:00+07:00", "source": "m2" },
+      { "title": "เขียนรายงานสรุป", "assignee": "ton", "due": "2026-11-19T18:00:00+07:00", "source": "m3" },
+      { "title": "จองห้องประชุมสำหรับวันศุกร์", "assignee": null, "due": "2026-11-20T17:00:00+07:00", "source": "m4" },
+      { "title": "ทำโปสเตอร์", "assignee": null, "due": "2026-11-21T12:00:00+07:00", "source": "m6" }
+    ]
+  },
+  "expect": {
+    "storedMessages": 8,
+    "summaries": 1,
+    "candidates": 4,
+    "replyHasReviewButton": true
+  }
+}

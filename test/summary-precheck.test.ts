@@ -295,20 +295,41 @@ describe('the Summary time budget (#157)', () => {
 })
 
 describe('mergeTasks (#157)', () => {
-  const task = (title: string, sourceRef: string | null = null) =>
-    ({ title, details: null, assigneeRef: null, due: null, sourceRef, tags: [] })
+  const task = (title: string, sourceRef: string | null = null, assigneeRef: string | null = null) =>
+    ({ title, details: null, assigneeRef, due: null, sourceRef, tags: [] })
 
-  it('matches by normalised title, and by source message when both name one', () => {
-    const first = [task('Make Slides', 'msg1'), task('write report')]
+  it('keeps every first-answer Task and adds only new ones', () => {
+    const first = [task('Make Slides', 'msg1', 'm1'), task('write report')]
     const retry = [
-      task(' make   slides ', 'msg1'), // same Task
-      task('make slides', 'msg4'), // same title, another message: a separate Task
-      task('Write Report', 'msg2'), // the first has no source: same Task
+      task(' make   slides ', 'msg1', 'm1'), // same Task
+      task('Write Report', 'msg2'), // same Task, another line
       task('book room'), task('Book  Room'), // new, once
     ]
-    expect(mergeTasks(first, retry).map((t) => [t.title, t.sourceRef])).toEqual([
-      ['Make Slides', 'msg1'], ['write report', null], ['make slides', 'msg4'], ['book room', null],
-    ])
+    expect(mergeTasks(first, retry).map((t) => t.title)).toEqual(['Make Slides', 'write report', 'book room'])
+  })
+
+  // Live /demo run, 17 Nov: the retry repeated the slide Task with a non-breaking hyphen and
+  // its source on the deadline line, and the card listed it twice.
+  it('treats a look-alike dash and a later source line as the same Task', () => {
+    const first = [task('อัปเดตสไลด์พิตช์ทั้งเด็ค ใส่ตัวเลข break-even ใหม่', 'msg5', 'm3')]
+    const retry = [task('อัปเดตสไลด์พิตช์ทั้งเด็ค ใส่ตัวเลข break\u2011even ใหม่', 'msg7', 'm3')]
+    expect(mergeTasks(first, retry)).toHaveLength(1)
+  })
+
+  // Live /demo runs, 17 Nov: the retry re-worded the slide Task for the same person.
+  it('treats a re-worded Task for the same person as the same Task', () => {
+    const first = [task('อัปเดตสไลด์พิตช์พร้อมตัวเลข break-even', 'msg5', 'm3')]
+    const retry = [
+      task('อัปเดตสไลด์พิตช์แก้ดีไซน์ใหม่พร้อม break-even', 'msg7', 'm3'),
+      task('ซ้อมพูดตามสคริปต์', 'msg10', 'm4'),
+    ]
+    expect(mergeTasks(first, retry).map((t) => t.title)).toEqual(['อัปเดตสไลด์พิตช์พร้อมตัวเลข break-even', 'ซ้อมพูดตามสคริปต์'])
+  })
+
+  it('keeps two Tasks with the same title for different people', () => {
+    const first = [task('ทำสไลด์', 'msg1', 'm1')]
+    const retry = [task('ทำสไลด์', 'msg4', 'm2')]
+    expect(mergeTasks(first, retry)).toHaveLength(2)
   })
 })
 

@@ -38,6 +38,8 @@ Any speaker who is not in the target group joins it before the first message (a 
 
 ## Chat rules
 
+- **No overlap with seeded Tasks.** The Summary never proposes a Task the group already has, even worded differently (#108). Before writing a scenario, read the target group's `tasks` in `src/app/demo/groups/*.json` and pick work that is not there. Otherwise the expected Task silently disappears.
+
 - Write natural Thai group chat: short lines, the way a student team talks in LINE. Let everyone speak at least once.
 - **Deadlines in relative words** ("พรุ่งนี้ห้าโมงเย็น", "วันศุกร์นี้"), never a fixed date. The demo runs on the real clock, so a fixed date goes stale before pitch day.
 - **An asking line** for each Task names the person by Thai nickname and uses ฝาก, รบกวน, ช่วย or ขอให้ ("ฝากบอมอัปเดตสไลด์..."). Follow it with that person accepting ("ได้ครับ"). This wording lets the canned AI find the Task when OpenRouter is down. With the real model it is simply clear chat.

@@ -5,7 +5,7 @@ import type { Deps, NewCandidate } from '../ports'
 import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
-import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask, ModelOutputError } from './parse-output'
+import { parseSummaryOutput, settleMidnightDue, SUMMARY_SCHEMA, type ParsedTask, ModelOutputError } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
 import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { nextStepCard, uri } from '../line/flex-ui'
@@ -249,15 +249,18 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
       const refUser = task.assigneeRef ? userByRef.get(task.assigneeRef) : undefined
       const assignee = refUser ? liveById.get(refUser) : undefined
       const source = task.sourceRef ? messageByRef.get(task.sourceRef) : undefined
+      // A T00:00 due is 23:59 that day unless the Task's message (or, with no source, the
+      // chat) speaks of midnight.
+      const due = settleMidnightDue(task.due, source ? source.text : messages.map((m) => m.text).join('\n'))
       candidates.push({
-        title, details, suggestedAssigneeLineUserId: assignee?.lineUserId ?? null, suggestedDueAt: task.due,
+        title, details, suggestedAssigneeLineUserId: assignee?.lineUserId ?? null, suggestedDueAt: due,
         // #109: a tag that carries a member or message ref is dropped (people are never tags).
         suggestedTags: task.tags.filter((tag) => !/\{m\d+\}|\bmsg\d+\b/i.test(tag)),
       })
       replyCandidates.push({
         title,
         assignee: assignee ? { displayName: assignee.displayName } : null,
-        due: task.due,
+        due,
         source: source ? { senderName: source.senderDisplayName, sentAt: source.sentAt } : null,
       })
     }

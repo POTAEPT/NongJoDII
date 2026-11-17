@@ -89,6 +89,12 @@ export function bangkokMonthRange(now: Date): { start: Date; end: Date; monthSta
   }
 }
 
+/** 23:59 Bangkok on the Bangkok day of `d`: the due of a deadline that names a day but no
+ *  time, the same instant the LIFF form saves for a date with the time left blank. */
+export function bangkokEndOfDay(d: Date): Date {
+  return new Date(`${bangkokTodayLabel(d)}T23:59:00+07:00`)
+}
+
 /** '2026-11-12' */
 export function bangkokTodayLabel(now: Date): string {
   const p = bangkokParts(now)

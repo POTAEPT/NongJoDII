@@ -105,7 +105,7 @@ export function buildSummaryPrompt(p: {
     '- The assignee is someone who said they will do it ("เดี๋ยวทำ", "เราเอง", "ได้ เดี๋ยวทำให้"), or someone named or tagged for it ("ฝาก {m2} ทำ") who did not refuse.',
     '- The person who asks for the work, reminds others ("อย่าลืม...") or asks "ใครว่าง" / "ใครทำได้" is NOT the assignee for that reason alone. A maybe ("เดี๋ยวดูอีกที", "ไม่แน่ใจ") is not taking it.',
     '- When nobody took the task, assignee is null. Prefer null to a guess.',
-    `- due: ISO 8601 date-time with +07:00 offset when the chat states a deadline, else null. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok).`,
+    `- due: null when the chat states no deadline. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok). A deadline with a day but no time: the date only, "YYYY-MM-DD" (the day ends at 23:59). A deadline with a time: ISO 8601 date-time with +07:00 offset. Never make up a time: 00:00 only when the chat says midnight ("เที่ยงคืน").`,
     '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
     // #161: weekday deadlines came back as the wrong day.
     '- Work out dates from "Calendar" in the user message. "ศุกร์นี้" or "วันศุกร์" is the first Friday on or after today; "ศุกร์หน้า" is the Friday of the next week (weeks start on Monday); "พรุ่งนี้" is tomorrow; "มะรืน" is the day after tomorrow. A time with no day is today if it is still ahead, else tomorrow. Thai times: "5 โมงเย็น" 17:00, "6 โมงเย็น" 18:00, "เที่ยง" 12:00, "บ่าย 2" 14:00, "2 ทุ่ม" 20:00. A deadline is never before today.',

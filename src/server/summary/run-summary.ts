@@ -5,7 +5,7 @@ import type { Deps, NewCandidate } from '../ports'
 import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
-import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask } from './parse-output'
+import { parseSummaryOutput, SUMMARY_SCHEMA, type ParsedTask, ModelOutputError } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
 import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { nextStepCard, uri } from '../line/flex-ui'
@@ -14,6 +14,7 @@ import { isSetupOpen, setupState } from '../setup/rules'
 import { buildSummaryPrompt, stripMessageRefs, substituteMemberRefs } from './prompt'
 import { buildSummaryReply, type ReplyCandidate } from './reply'
 import { summaryFailedCard, summaryFailure } from './failure'
+import { COUNT_HINT, COUNT_MIN, precheckSummary } from './precheck'
 
 export type SummaryJob = { groupId: string; lineGroupId: string; replyToken: string | null; requesterLineUserId: string | null }
 
@@ -119,18 +120,54 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
     .map((t) => ({ title: t.title, status: t.status, tags: t.tags }))
   // #110: the group's starting tags (Settings), which the model picks from first.
   const groupTags = (await store.getGroupSetup(groupId))?.tagSet ?? []
+  const promptInput = { now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks, groupTags }
+  const meter = { ownerLineUserId, projectId: group.projectId, groupId }
+  // #157: Jev reads the same chat first (null = no usable answer: as before). Skipped when
+  // Draft tasks is off, since no Task would be kept anyway.
+  const check = group.featureDraftTasks ? await precheckSummary(deps, meter, buildSummaryPrompt(promptInput).chat) : null
   const prompt = buildSummaryPrompt({
-    now: deps.now(), workDescription: group.workDescription, members, messages, context, existingTasks, groupTags,
+    ...promptInput,
+    precheck: check === null ? null
+      : check.hasTask === false ? { noTask: true }
+        : check.count !== null ? { noTask: false, countHint: COUNT_HINT[check.count] } : null,
   })
+  const askModel = async (user: string) => parseSummaryOutput((await runMeteredAi(
+    deps, { ...meter, purpose: 'summary' },
+    { model: TEXT_MODEL, system: prompt.system, user, maxTokens: SUMMARY_MAX_TOKENS, schema: SUMMARY_SCHEMA },
+  )).content)
 
   let parsed: { summary: string; tasks: ParsedTask[] }
+  let mayHaveMore = false
+  // The prompt without Jev's line: the old Summary prompt (the same refs, so the same answer shape).
+  const plainUser = buildSummaryPrompt(promptInput).user
   try {
-    const result = await runMeteredAi(
-      deps,
-      { ownerLineUserId, projectId: group.projectId, groupId, purpose: 'summary' },
-      { model: TEXT_MODEL, system: prompt.system, user: prompt.user, maxTokens: SUMMARY_MAX_TOKENS, schema: SUMMARY_SCHEMA },
-    )
-    parsed = parseSummaryOutput(result.content)
+    let secondUsed = false
+    try {
+      parsed = await askModel(prompt.user)
+    } catch (err) {
+      // #157: an unreadable answer to the prompt with Jev's line: the second (last) text call
+      // goes out as the old prompt, so the hint never costs the group its Summary.
+      if (!(err instanceof ModelOutputError) || plainUser === prompt.user) throw err
+      log('summary_hint_unreadable', { groupId })
+      parsed = await askModel(plainUser)
+      secondUsed = true
+    }
+    // #157: fewer Tasks than Jev counted: one retry for the missing ones (at most 2 text calls).
+    const count = check?.hasTask === true ? check.count : null
+    const wanted = count !== null ? COUNT_MIN[count] : 0
+    if (!secondUsed && count !== null && parsed.tasks.length < wanted) {
+      try {
+        const again = await askModel(retryUser(prompt.user, parsed.tasks, COUNT_HINT[count]))
+        if (again.tasks.length > parsed.tasks.length) parsed = again
+      } catch (err) {
+        if (err instanceof FairUseCapReachedError) throw err
+        logError('summary_retry_failed', { groupId }, err)
+      }
+      mayHaveMore = parsed.tasks.length < wanted
+      log('summary_retry', { groupId, wanted, got: parsed.tasks.length })
+    }
+    // #157: Jev found no work: the summary only, whatever the text model listed.
+    if (check?.hasTask === false) parsed = { ...parsed, tasks: [] }
   } catch (err) {
     // The pre-check passed but another request for this Owner claimed the rest of the cap
     // first: same cap reply, no AI call was made, no Summary.
@@ -204,6 +241,7 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
 
   const replyMessages = buildSummaryReply({
     summaryText, candidates: replyCandidates, summaryId, liffId: deps.config.liffId, draftTasks: group.featureDraftTasks,
+    mayHaveMore,
   })
   // This call may have crossed 80% or the cap; the notice rides on the same reply (no pushes).
   try {
@@ -235,4 +273,16 @@ async function reply(
   } catch (err) {
     logError('summary_reply_failed', { groupId }, err)
   }
+}
+
+/** #157: the retry's user part: the first answer's titles and the count Jev found. */
+export function retryUser(user: string, first: ParsedTask[], countHint: string): string {
+  const listed = first.length === 0 ? 'no tasks' : first.map((t) => `- ${t.title.replace(/\s+/g, ' ').slice(0, 120)}`).join('\n')
+  return [
+    user,
+    '',
+    `Your first answer listed ${first.length} task(s):`,
+    listed,
+    `A first reading found ${countHint} separate pieces of work. Re-read the Chat and answer the complete JSON again, with every separate piece of work as its own task. Do not split one job into parts and never invent work.`,
+  ].join('\n')
 }

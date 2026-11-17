@@ -103,11 +103,11 @@ export async function handleProgressText(deps: Deps, job: ProgressTextJob): Prom
     }
 
     case 'unsure': {
-      const picked = pickerCandidates(
-        decision.taskIds.map((id) => tasks.find((t) => t.id === id)).filter((t): t is TaskRow => t !== undefined),
-        decision.status,
-        job.senderLineUserId,
-      )
+      // The model's likely Tasks, plus the sender's own open Tasks even when the model gave
+      // them little weight (E2E round 2, step 3.6): people mostly report their own work.
+      const likely = decision.taskIds.map((id) => tasks.find((t) => t.id === id)).filter((t): t is TaskRow => t !== undefined)
+      const own = tasks.filter((t) => t.assigneeLineUserId === job.senderLineUserId && !likely.includes(t))
+      const picked = pickerCandidates([...likely, ...own], decision.status, job.senderLineUserId)
       if (picked.length === 0) return 'ignored'
       await line.reply(replyToken, [pickerCard({ messageId: job.storedMessageId, tasks: picked, targetStatus: decision.status })])
       log('progress_picker', { groupId, choices: picked.length, reason: 'unsure' })

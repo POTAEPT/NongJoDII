@@ -709,7 +709,11 @@ describe('the keyword gate (#132)', () => {
     expect(looksLikeProgress(line)).toBe('done')
   })
 
-  it.each(['เดี๋ยวทำเอง', 'เริ่มทำแล้ว', 'กำลังทำอยู่', 'รับไปนะ', 'started'])('"%s" reads as started', (line) => {
+  it.each([
+    'เดี๋ยวทำเอง', 'เริ่มทำแล้ว', 'กำลังทำอยู่', 'รับไปนะ', 'started',
+    // E2E round 2, step 3.5: taking a Task without the word ทำ.
+    'เดี๋ยวเราจองห้องประชุมให้เอง', 'เรื่องห้องเดี๋ยวจัดการเอง', 'อันนี้เรารับเองนะ',
+  ])('"%s" reads as started', (line) => {
     expect(looksLikeProgress(line)).toBe('in_process')
   })
 
@@ -801,6 +805,17 @@ describe('mapping Jev\'s answers (thresholds: is_progress ' + PROGRESS_MIN + ', 
     expect(json(lastReply(t))).toContain('อัปเดตนี้หมายถึงงานไหน?')
     expect(Object.keys(buttons(lastReply(t)))).toEqual(['ทำสไลด์ปัญหา', 'ทำสไลด์คู่แข่ง', 'ไม่ใช่การอัปเดตงาน'])
     expect(t.store.tables.task_prompts).toHaveLength(0)
+  })
+
+  it('unsure: the sender\'s own open Task is offered even when the model gave it little weight (E2E 3.6)', async () => {
+    const t = setup()
+    // บิว owns ทำสไลด์คู่แข่ง (t1); the model leaned to the unowned logo and the problem slides.
+    t.decisions.respond(jev({
+      isProgress: 0.9, status: 'done', task: 't2', taskConfidence: 0.5,
+      probabilities: { t2: 0.5, t3: 0.45, t1: 0.03, none: 0.02 },
+    }))
+    await t.say(BIW, 'จองเสร็จแล้วนะ')
+    expect(Object.keys(buttons(lastReply(t)))).toEqual(['ทำสไลด์คู่แข่ง', 'ทำโลโก้', 'ทำสไลด์ปัญหา', 'ไม่ใช่การอัปเดตงาน'])
   })
 
   it('unsure: progress that fits no listed Task gives the picker, never a card', async () => {

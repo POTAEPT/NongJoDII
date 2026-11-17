@@ -12,7 +12,12 @@ const DONE_WORDS = [
   'อัปไดรฟ์แล้ว', 'อัพไดรฟ์แล้ว', 'อัปไดร์ฟแล้ว', 'อัพไดร์ฟแล้ว', 'ปิดงาน',
   'done', 'finished', 'completed', 'submitted',
 ]
-const STARTED_WORDS = ['เริ่มทำ', 'เริ่มแล้ว', 'กำลังทำ', 'เดี๋ยวทำ', 'ทำเอง', 'รับไป', 'started', 'working on', 'on it']
+// "ให้เอง" / "จัดการเอง" (E2E round 2, step 3.5): "เดี๋ยวเราจองห้องประชุมให้เอง" takes the
+// room booking without the word ทำ.
+const STARTED_WORDS = [
+  'เริ่มทำ', 'เริ่มแล้ว', 'กำลังทำ', 'เดี๋ยวทำ', 'ทำเอง', 'ให้เอง', 'จัดการเอง', 'เดี๋ยวจัดการ', 'รับไป', 'รับเอง',
+  'started', 'working on', 'on it',
+]
 // "ยังไม่เสร็จ" is not done, and neither is a question about it ("เสร็จยัง").
 const NOT_DONE = [
   'ยังไม่เสร็จ', 'ไม่เสร็จ', 'not done', 'not finished',

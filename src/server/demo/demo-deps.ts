@@ -2,10 +2,14 @@ import { randomBytes } from 'node:crypto'
 import { GoogleHttpClient } from '@/server/google/client'
 import type { Defer, Deps, GooglePort, HandlerConfig } from '@/server/ports'
 import { MemoryStore } from '@/server/store/memory-store'
+import { BKK_OFFSET_MS, bangkokIsoWeekday, bangkokParts, bangkokWeekStartLabel } from '@/server/time/bangkok'
 import { DemoLine } from './demo-line'
 import { DemoLlm } from './demo-llm'
+import {
+  FALLBACK_GROUPS, fileStem, groupsDir, readGroupFiles, type GroupFile, type GroupFileEntry, type GroupOffset,
+} from './group-files'
 import type { ChatItem, DemoPersona } from './types'
-import { DEMO_GROUP_NAME, DEMO_LIFF_ID, DEMO_WORK_DESCRIPTION, DemoWorld, type DemoGroup } from './world'
+import { DEMO_LIFF_ID, DemoWorld, type DemoGroup } from './world'
 
 // The /demo composition: the real handlers with an in-memory store, a recording LINE, the
 // demo AI and the real Google client. Never imported by src/server/deps.ts, so the
@@ -28,8 +32,8 @@ export type Demo = {
 }
 
 export type DemoOptions = {
-  /** Seed three set-up groups with Nont in all (seedSetUpWorld). false = one group the bot
-   *  has never seen (onboarding demo). */
+  /** Seed the set-up groups of the groups folder (seedSetUpWorld). false = one group the bot
+   *  has never seen (onboarding demo); the folder is not read. */
   setup?: boolean
   /** Replaces the LLM (tests). */
   llm?: DemoLlm
@@ -73,7 +77,9 @@ function shared(): Shared {
 export function getDemo(): Demo {
   const s = shared()
   // A demo built by older code (kept on globalThis across a hot reload) has another shape.
-  if (!s.demo || !Array.isArray(s.demo.world.groups) || !Array.isArray(s.demo.llm.calls)) s.demo = buildDemo(s, {})
+  if (!s.demo || !Array.isArray(s.demo.world.groups) || !Array.isArray(s.demo.llm.calls) || !s.demo.deps.decisions) {
+    s.demo = buildDemo(s, {})
+  }
   return s.demo
 }
 
@@ -96,7 +102,7 @@ function buildDemo(s: Shared, opts: DemoOptions): Demo {
   llm.clearCalls()
   llm.clock = world.now
   const deps: Deps = {
-    line, llm, google: s.google, store,
+    line, llm, decisions: llm, google: s.google, store,
     now: world.now,
     // The photo batch's quiet wait moves the demo clock instead of waiting.
     sleep: async (ms) => world.advance(ms),
@@ -130,101 +136,144 @@ function buildDemo(s: Shared, opts: DemoOptions): Demo {
 const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
 
-type SeedTask = { title: string; assignee: string | null; dueInMs: number; status: 'not_assigned' | 'in_process' | 'done' }
-type SeedSpec = {
-  name: string; members: string[]; workDescription: string
-  /** The main group of a new Project, or a Sub group of the spec at this index. */
-  subGroupOf?: number
-  tasks: SeedTask[]
-  /** Chat lines, oldest first: [persona key, text, minutes ago]. */
-  chat: Array<[string, string, number]>
-}
-
-/** The pitch's world: one PM (Nont) in three groups across two Projects. */
-const SEED: SeedSpec[] = [
-  {
-    name: DEMO_GROUP_NAME, members: ['nont', 'tae', 'bomb', 'jeff'], workDescription: DEMO_WORK_DESCRIPTION,
-    tasks: [
-      { title: 'อัปเดตสไลด์พิตช์รอบสุดท้าย', assignee: 'bomb', dueInMs: DAY_MS, status: 'in_process' },
-      { title: 'เขียนสคริปต์พูดพิตช์ 5 นาที', assignee: 'jeff', dueInMs: -DAY_MS, status: 'in_process' },
-      { title: 'ซ้อมพิตช์กับอาจารย์ที่ปรึกษา', assignee: 'nont', dueInMs: -2 * DAY_MS, status: 'done' },
-      { title: 'สรุปตัวเลข break-even ใส่สไลด์', assignee: null, dueInMs: 3 * DAY_MS, status: 'not_assigned' },
-    ],
-    chat: [
-      ['nont', 'พรุ่งนี้ซ้อมพิตช์กันกี่โมงดี', 95],
-      ['jeff', 'บ่ายสองได้ไหมครับ', 90],
-      ['bomb', 'ได้ค่ะ เดี๋ยวเอาสไลด์เวอร์ชันใหม่มาด้วย', 88],
-    ],
-  },
-  {
-    name: 'ทีม Dev', members: ['nont', 'tae'], workDescription: 'พัฒนาแอปเดโม NongJoDII ให้พร้อมพิตช์', subGroupOf: 0,
-    tasks: [
-      { title: 'ทำหน้า Dashboard ให้แสดงผลบนมือถือ', assignee: 'tae', dueInMs: 2 * DAY_MS, status: 'in_process' },
-      { title: 'แก้บั๊กปุ่มยืนยันงานไม่ตอบสนอง', assignee: 'tae', dueInMs: -5 * HOUR_MS, status: 'in_process' },
-      { title: 'ตั้งค่า LINE webhook บนเซิร์ฟเวอร์จริง', assignee: 'tae', dueInMs: -DAY_MS, status: 'done' },
-    ],
-    chat: [
-      ['tae', 'บั๊กปุ่มยืนยันงานยังแก้ไม่เสร็จนะพี่', 70],
-      ['nont', 'โอเค ขอให้ทันก่อนซ้อมใหญ่นะ', 65],
-      ['tae', 'รับทราบครับ', 64],
-    ],
-  },
-  {
-    name: 'ลูกค้า ร้านกาแฟ', members: ['nont', 'bomb', 'jeff'], workDescription: 'ทำแบรนด์และเพจให้ร้านกาแฟเปิดใหม่',
-    tasks: [
-      { title: 'ออกแบบโลโก้ร้านกาแฟ 3 แบบ', assignee: 'bomb', dueInMs: DAY_MS, status: 'in_process' },
-      { title: 'ถ่ายรูปเมนูใหม่ลงเพจ', assignee: 'jeff', dueInMs: -DAY_MS, status: 'in_process' },
-      { title: 'ส่งใบเสนอราคาให้ลูกค้า', assignee: 'nont', dueInMs: -3 * DAY_MS, status: 'done' },
-      { title: 'นัดคุยลูกค้าเรื่องโปรเปิดร้าน', assignee: null, dueInMs: 4 * DAY_MS, status: 'not_assigned' },
-    ],
-    chat: [
-      ['jeff', 'ลูกค้าอยากได้โทนสีอบอุ่นกว่าเดิมครับ', 50],
-      ['bomb', 'เดี๋ยวลองปรับโลโก้เป็นโทนน้ำตาลดูค่ะ', 45],
-      ['nont', 'ดีเลย ส่งให้ลูกค้าดูภายในพรุ่งนี้นะ', 40],
-      ['jeff', 'รูปเมนูขอเลื่อนไปวันศุกร์ได้ไหมครับ', 12],
-    ],
-  },
-]
-
-/** The setup default: three groups with Nont in all, each with a Project (or a Sub group of
- *  one), Nont the confirmed Owner, live Members, Tasks and a few chat lines. The bot is in
- *  every group. Mirrors test/harness.ts seedOwnedGroup, plus group_setups.isMain for the
- *  main groups (only confirmOwner sets it in the store). */
+/** The setup default: the groups of src/app/demo/groups/*.json (group-files.ts), in file
+ *  order, each set up: a Project (or a Sub group of the parent file's Project), its Owner
+ *  confirmed, live Members with nicknames and roles, the bot in the group, the file's Tasks
+ *  and chat lines. The first group is selected; the others keep their last two lines unread.
+ *  A missing folder (or one with no usable file) seeds the built-in FALLBACK_GROUPS instead.
+ *  A bad file or entry is skipped and logged as an error, never thrown. Mirrors
+ *  test/harness.ts seedOwnedGroup, plus group_setups.isMain (only confirmOwner sets it). */
 function seedSetUpWorld(world: DemoWorld, store: MemoryStore): void {
-  const now = world.now()
-  const owner = world.personas.find((p) => p.owner) ?? world.personas[0]
-  const projects: string[] = []
-  SEED.forEach((spec, i) => {
-    const wg = i === 0 ? world.groups[0] : world.addGroup({ name: spec.name, members: spec.members })
-    wg.name = spec.name
-    wg.members = new Set(spec.members)
-    wg.botInGroup = true
-    const projectId = spec.subGroupOf !== undefined ? projects[spec.subGroupOf] : store.seedProject(owner.lineUserId).id
-    projects.push(projectId)
-    const row = store.seedGroup({
-      lineGroupId: wg.lineGroupId, projectId, name: spec.name,
-      nominatedOwnerLineUserId: owner.lineUserId, ownerConfirmedAt: now, workDescription: spec.workDescription,
-    })
-    markSetup(store, row.id, spec.subGroupOf === undefined, owner.lineUserId, now)
-    for (const p of world.membersInGroup(wg)) seedLiveMember(store, row.id, p, true)
-    for (const t of spec.tasks) {
-      const assignee = t.assignee ? world.persona(t.assignee)?.lineUserId ?? null : null
-      const due = new Date(now.getTime() + t.dueInMs)
-      store.seedTask({
-        groupId: row.id, title: t.title, createdByLineUserId: owner.lineUserId, assigneeLineUserId: assignee,
-        status: t.status, dueAt: due, announcedAt: new Date(now.getTime() - 3 * HOUR_MS),
-        ...(t.status === 'done' ? { doneAt: new Date(Math.min(due.getTime(), now.getTime() - HOUR_MS)) } : {}),
-      })
-    }
-    seedChat(world, wg, spec.chat)
-    // The other groups keep their last two lines unread, so the chat list shows badges.
-    wg.readCount = i === 0 ? wg.chat.length : Math.max(0, wg.chat.length - 2)
-  })
+  const onError = (msg: string) => world.addLog('error', msg)
+  const dir = groupsDir()
+  const { missing, entries } = readGroupFiles(dir, onError)
+  // The constructor's default group goes: the files say which groups exist.
+  world.groups = []
+  if (!missing) seedGroups(world, store, entries, true, onError)
+  if (world.groups.length === 0) {
+    if (!missing) onError(`groups: no usable group file in ${dir}; seeded the built-in groups`)
+    // Built-in groups have no file on disk to delete.
+    seedGroups(world, store, FALLBACK_GROUPS, false, onError)
+  }
+  const first = world.groups[0]
+  world.selectedGroupId = first.lineGroupId
+  for (const g of world.groups) g.readCount = g === first ? g.chat.length : Math.max(0, g.chat.length - 2)
 }
 
-function seedChat(world: DemoWorld, group: DemoGroup, lines: SeedSpec['chat']): void {
+type Seeded = { projectId: string; owner: DemoPersona; isMain: boolean }
+
+function seedGroups(
+  world: DemoWorld, store: MemoryStore, entries: GroupFileEntry[], onDisk: boolean, onError: (msg: string) => void,
+): void {
+  const seeded = new Map<string, Seeded>()
+  // A Sub group listed before its parent waits until the end.
+  const later: GroupFileEntry[] = []
+  for (const e of entries) {
+    if (e.def.mode === 'sub-group' && !seeded.has(fileStem(e.def.parent ?? ''))) later.push(e)
+    else seedGroupFile(world, store, e, onDisk, seeded, onError)
+  }
+  for (const e of later) seedGroupFile(world, store, e, onDisk, seeded, onError)
+}
+
+function seedGroupFile(
+  world: DemoWorld, store: MemoryStore, { file, def }: GroupFileEntry, onDisk: boolean, seeded: Map<string, Seeded>,
+  onError: (msg: string) => void,
+): void {
+  const skip = (why: string) => onError(`group file ${file}: ${why}; skipped`)
+  if (world.groupById(def.lineGroupId)) return skip(`lineGroupId ${def.lineGroupId} is used by another group`)
+  const unknown = def.members.filter((k) => !world.persona(k))
+  if (unknown.length) onError(`group file ${file}: unknown persona(s) ${unknown.join(', ')} left out`)
+  const members = [...new Set(def.members.filter((k) => world.persona(k)))]
+  if (members.length === 0) return skip('no known member')
+
+  let projectId: string
+  let owner: DemoPersona | undefined
+  if (def.mode === 'sub-group') {
+    const parent = seeded.get(fileStem(def.parent ?? ''))
+    if (!parent) return skip(`parent ${def.parent} is missing or was skipped`)
+    if (!parent.isMain) return skip(`parent ${def.parent} is not a main group`)
+    // One admin per Project: a Sub group's Owner is the Project's Owner.
+    owner = parent.owner
+    if (def.owner !== owner.key) onError(`group file ${file}: owner ${def.owner} is not the Project's Owner; using ${owner.key}`)
+    if (!members.includes(owner.key)) return skip(`the Project's Owner (${owner.key}) is not a member`)
+    projectId = parent.projectId
+  } else {
+    owner = world.persona(def.owner)
+    if (!owner || !members.includes(owner.key)) return skip(`owner ${def.owner} is not a member`)
+    projectId = store.seedProject(owner.lineUserId).id
+  }
+  const isMain = def.mode === 'new-project'
+  seeded.set(fileStem(file), { projectId, owner, isMain })
+
+  const now = world.now()
+  const wg = world.addGroup({ lineGroupId: def.lineGroupId, name: def.name, members, botInGroup: true, file: onDisk ? file : null })
+  const row = store.seedGroup({
+    lineGroupId: wg.lineGroupId, projectId, name: def.name,
+    nominatedOwnerLineUserId: owner.lineUserId, ownerConfirmedAt: now, workDescription: def.workDescription ?? null,
+  })
+  markSetup(store, row.id, isMain, owner.lineUserId, now)
+  for (const p of world.membersInGroup(wg)) seedLiveMember(store, row.id, p, true)
+  if (def.weekly) {
+    store.seedSchedule(row.id, 'dayOffset' in def.weekly
+      ? weeklySlotAfter(now, def.weekly.dayOffset)
+      : { weeklySummaryWeekday: def.weekly.weekday, weeklySummaryTime: withSeconds(def.weekly.time) })
+  }
+  if (def.dailyReminderTime) store.seedSchedule(row.id, { dailyReminderTime: withSeconds(def.dailyReminderTime) })
+
+  const announcedAt = new Date(now.getTime() - 3 * HOUR_MS)
+  for (const t of def.tasks ?? []) {
+    let assignee: string | null = null
+    if (t.assignee) {
+      assignee = world.persona(t.assignee)?.lineUserId ?? null
+      if (!assignee) onError(`group file ${file}: task "${t.title}": unknown assignee ${t.assignee}, left unassigned`)
+    }
+    const due = t.due ? atOffset(now, t.due) : null
+    let doneAt: Date | null = null
+    if (t.status === 'done') {
+      doneAt = t.doneAt
+        ? atOffset(now, t.doneAt)
+        : new Date(Math.min(due?.getTime() ?? Infinity, now.getTime() - HOUR_MS))
+    }
+    const lastActivityAt = doneAt ?? (t.lastUpdate ? atOffset(now, t.lastUpdate) : announcedAt)
+    const task = store.seedTask({
+      groupId: row.id, title: t.title, createdByLineUserId: owner.lineUserId, assigneeLineUserId: assignee,
+      status: t.status, dueAt: due, announcedAt,
+    })
+    // done_at and last activity are store columns TaskRow does not carry.
+    const record = store.tables.tasks.find((x) => x.id === task.id)
+    if (record) Object.assign(record, { doneAt, lastActivityAt })
+  }
+  seedChat(world, wg, (def.chat ?? []).filter((c) => {
+    if (world.persona(c.persona)) return true
+    onError(`group file ${file}: chat line by unknown persona ${c.persona} left out`)
+    return false
+  }))
+}
+
+/** `now` moved by the offset; `hour` then pins that day's Bangkok hour; `thisWeek` keeps it
+ *  at or after this Bangkok week's Monday 00:00. */
+function atOffset(now: Date, o: GroupOffset & { thisWeek?: boolean }): Date {
+  let t = now.getTime() + (o.days ?? 0) * DAY_MS + (o.hours ?? 0) * HOUR_MS + (o.minutes ?? 0) * 60_000
+  if (o.hour !== undefined) t = Math.floor((t + BKK_OFFSET_MS) / DAY_MS) * DAY_MS + o.hour * HOUR_MS - BKK_OFFSET_MS
+  if (o.thisWeek) t = Math.max(t, Date.parse(`${bangkokWeekStartLabel(now)}T00:00:00+07:00`))
+  return new Date(t)
+}
+
+const withSeconds = (time: string): string => (time.length === 5 ? `${time}:00` : time)
+
+/** The weekly slot `dayOffset` days after `now`'s Bangkok day, at the next full Bangkok hour
+ *  (23:00 at the latest). Near the reset, so the Owner card's "done this week" and "stale"
+ *  read the seeded Tasks as they are, and the two Projects' slots differ by a day, so
+ *  POST weekly reaches one Project's slot without the other's. */
+function weeklySlotAfter(now: Date, dayOffset: number): { weeklySummaryWeekday: number; weeklySummaryTime: string } {
+  const hour = Math.min(23, bangkokParts(now).hh + 1)
+  const weekday = ((bangkokIsoWeekday(now) - 1 + dayOffset) % 7) + 1
+  return { weeklySummaryWeekday: weekday, weeklySummaryTime: `${String(hour).padStart(2, '0')}:00:00` }
+}
+
+function seedChat(world: DemoWorld, group: DemoGroup, lines: NonNullable<GroupFile['chat']>): void {
   const now = world.now().getTime()
-  for (const [persona, text, minutesAgo] of lines) {
+  for (const { persona, text, minutesAgo } of lines) {
     const item: Omit<ChatItem, 'id'> = {
       at: new Date(now - minutesAgo * 60_000).toISOString(), from: 'user', persona, message: { type: 'text', text },
     }

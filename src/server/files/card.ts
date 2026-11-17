@@ -27,7 +27,8 @@ export const FILE_SAVED_TEXT = {
   failedBody: 'กรุณาบันทึกไฟล์เองก่อนที่ไฟล์ใน LINE จะหมดอายุ',
   tooLarge: 'ไฟล์ใหญ่เกิน 100 MB',
   // #99: why the save failed, shown above failedBody.
-  timeout: 'ไฟล์ใหญ่หรือเครือข่ายช้า บันทึกไม่ทันเวลา ลองส่งใหม่อีกครั้ง',
+  // #148: a save has about one minute; files near 100 MB often need longer.
+  timeout: 'ไฟล์ใหญ่หรือเครือข่ายช้า บันทึกไม่ทันเวลา (น้องจดดีมีเวลาราว 1 นาทีต่อไฟล์) ลองส่งใหม่ หรืออัปโหลดลง Google Drive เอง',
   gone: 'LINE ไม่มีไฟล์นี้แล้ว อาจถูกยกเลิกการส่ง',
   driveFull: 'Google Drive ของเจ้าของบอทเต็ม ให้เจ้าของบอทลบไฟล์หรือเพิ่มพื้นที่',
   failed: 'ระบบขัดข้องชั่วคราว ลองส่งใหม่อีกครั้ง',
@@ -163,6 +164,8 @@ export const FILE_NOTICE_TEXT = {
   ownerButton: 'เป็นเจ้าของบอทแทน',
   driveButton: 'เชื่อม Google Drive',
   saving: (name: string) => `กำลังบันทึก ${name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1)}…` : name} ลง Google Drive…`,
+  /** #148: added to the saving notice above SLOW_FILE_BYTES. */
+  slowWarning: 'ไฟล์ใหญ่มาก อาจบันทึกไม่ทันใน 1 นาที ถ้าไม่สำเร็จ น้องจดดีจะแจ้ง แล้วอัปโหลดลง Google Drive เองได้',
 } as const
 
 /** UX review 2.1: why a file was not saved, with the button that fixes it. */

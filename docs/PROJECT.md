@@ -26,7 +26,7 @@ Use these words in code, comments and UI copy.
 |---|---|---|
 | 1 | File saver: files and images sent in a group go to that group's Drive folder; the bot replies with the link | #4 |
 | 2 | Create tasks: a Summary lists Task candidates; a Member edits and confirms them; a Task can later be edited, assigned or deleted | #5, #15, #16 |
-| 3 | Track progress: a progress line in normal chat gets "Mark as Done?"; only a person's answer changes the status | #7 |
+| 3 | Track progress: a normal chat line passes a free keyword gate in code first; only a line with a progress word goes to the decision model, which proposes "Mark as Done?" for one Task or a picker of open Tasks; only a person's answer changes the status | #7, #132 |
 | 4 | Follow-up and gap checks: daily reminders before due dates; flags for no assignee, overdue, or no update in 5 days | #8 |
 | 5 | Insight and Dashboard: cross-group Dashboard (5a) and a weekly insight per group (5b) | #9, #17-#19, #10, #20-#22 |
 
@@ -62,7 +62,7 @@ From the team's Figma prototype (page Final-Prototype, flow v4) and the user's a
 - LINE Messaging API for the bot. LIFF pages for setup, Task review and the Dashboard; the design calls them the Mini App, with the tabs My tasks, Dashboard and Settings. Publishing a LINE MINI App, which needs LINE review, is out of scope.
 - Supabase (Postgres) for messages, groups, Projects, Tasks, file records, usage and insights. Supabase `pg_cron` runs a scheduler tick every 15 minutes by calling the app's tick route over HTTP; each group is served at the reminder and weekly summary times it chose.
 - Google Drive API with the `drive.file` scope, writing to the Owner's own Drive.
-- OpenRouter for two model roles: a text model (Summaries, Task splitting) and a decision model (tagging progress updates).
+- OpenRouter for two model roles: a text model (Summaries, Task splitting) through chat completions, and a decision model (tagging progress updates). The decision model is TypeSafe Jev (`typesafe/jev-1.14`), called through OpenRouter's Decisions API (`POST /api/alpha/decisions`, `src/server/llm/openrouter-decisions.ts`, the `DecisionsPort` in `src/server/ports.ts`); it answers typed questions with probabilities, not text (decided 2026-11-17). It sees only chat lines that pass the keyword gate (`src/server/progress/keywords.ts`); other lines make no AI call (#132). When it does not answer (refusal, error, Fair-use cap), the group gets the free picker; there is no chat-model fallback.
 - Microsoft Clarity on the LIFF pages for usage funnels.
 - Secrets come from environment variables; `.env*` is git-ignored. Only `NEXT_PUBLIC_*` values reach the browser.
 

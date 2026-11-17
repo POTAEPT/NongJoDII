@@ -1,3 +1,4 @@
+import { lineMemberCount } from '../members/line-count'
 import { log, logError } from '../log'
 import type { ApiResult, Deps, GroupSetup } from '../ports'
 import { botLeaveGroup } from '../removal/leave'
@@ -5,7 +6,7 @@ import { badRequest } from '../review/load'
 import { FALLBACK_NAME, lineNameOf, openSetupGroup } from '../setup/load'
 import { setupState } from '../setup/rules'
 import { parseGroupValues } from '../setup/submit'
-import type { SettingsLoad, SettingsMember } from './types'
+import { DELETE_NOW_PHRASE, type SettingsLoad, type SettingsMember, type StopUsingResult } from './types'
 
 // #28 Settings: everything the setup form set, edited later by the group's confirmed Owner.
 // Every live Member may look; only the Owner may change, except that each Member edits their
@@ -24,7 +25,9 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
   if (!gate.ok) return gate.result
   const { group, requester } = gate
   const canEdit = isConfirmedOwner(group, requester)
-  const live = await deps.store.listLiveMembers(group.groupId)
+  const [live, lineCount] = await Promise.all([
+    deps.store.listLiveMembers(group.groupId), lineMemberCount(deps, { groupId: group.groupId, lineGroupId: group.lineGroupId }),
+  ])
   // #81: every live Member sees everyone's nicknames and role here; the Owner edits every
   // row, a Member only their own. Nicknames still never show outside Settings and the form.
   const members: SettingsMember[] = live
@@ -61,6 +64,7 @@ export async function loadSettings(deps: Deps, body: unknown): Promise<ApiResult
       weeklySummaryTime: group.weeklySummaryTime,
     },
     members,
+    lineMemberCount: lineCount,
   }
   return { status: 200, body: view }
 }
@@ -106,13 +110,22 @@ export async function submitSettings(deps: Deps, body: unknown): Promise<ApiResu
  *  confirmed Owner makes the bot leave the group; the group's data is deleted 7 days later
  *  unless the bot is invited back first, and files stay in the Owner's Drive. `confirm`
  *  is the page's confirm step: without it nothing happens. LINE refusing or failing the
- *  leave answers 502 and marks nothing, so the Owner can try again. */
+ *  leave answers 502 and marks nothing, so the Owner can try again.
+ *
+ *  #147: with deleteNow: true and confirmText equal to DELETE_NOW_PHRASE, the data is
+ *  deleted right after the leave instead of 7 days later, by the same delete as the daily
+ *  purge (purgeGroup), given the group's own delete date as "now" so the due check holds.
+ *  It cannot be undone; files in the Owner's Drive still stay. If that delete fails, the
+ *  group keeps its 7-day date and the answer says deleted: false. */
 export async function stopUsing(deps: Deps, body: unknown): Promise<ApiResult> {
   const gate = await openSetupGroup(deps, body)
   if (!gate.ok) return gate.result
   const { group, requester } = gate
   if (!isConfirmedOwner(group, requester)) return notOwner
   if ((body as { confirm?: unknown }).confirm !== true) return badRequest('confirm')
+  const b = body as { deleteNow?: unknown; confirmText?: unknown }
+  const deleteNow = b.deleteNow === true
+  if (deleteNow && (typeof b.confirmText !== 'string' || b.confirmText.trim() !== DELETE_NOW_PHRASE)) return badRequest('confirmText')
   let deleteAfter: Date | null
   try {
     ({ deleteAfter } = await botLeaveGroup(deps, { groupId: group.groupId, reason: 'stop_using', now: deps.now() }))
@@ -120,5 +133,15 @@ export async function stopUsing(deps: Deps, body: unknown): Promise<ApiResult> {
     logError('stop_using_failed', { groupId: group.groupId }, err)
     return { status: 502, body: { error: 'line_failed' } }
   }
-  return { status: 200, body: { left: true, deleteAfter: deleteAfter?.toISOString() ?? null } }
+  let deleted = false
+  if (deleteNow && deleteAfter) {
+    try {
+      ;({ purged: deleted } = await deps.store.purgeGroup(group.groupId, deleteAfter))
+      log('stop_using_deleted_now', { groupId: group.groupId, deleted })
+    } catch (err) {
+      logError('stop_using_delete_failed', { groupId: group.groupId }, err)
+    }
+  }
+  const result: StopUsingResult = { left: true, deleted, deleteAfter: deleted ? null : deleteAfter?.toISOString() ?? null }
+  return { status: 200, body: result }
 }

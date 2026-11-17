@@ -3,6 +3,7 @@ import type { LineEvent } from '@/server/line/types'
 import { BOT_DELETE_AFTER_MS, botLeaveGroup } from '@/server/removal/leave'
 import { PURGE_BATCH, PURGE_TIME, purgeJob } from '@/server/removal/purge'
 import { stopUsing } from '@/server/settings/settings'
+import { DELETE_NOW_PHRASE } from '@/server/settings/types'
 import { handleTickRequest } from '@/server/tick/handle-request'
 import { TICK_JOBS } from '@/server/tick/run-tick'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -136,7 +137,7 @@ describe('Stop using in Settings (#11)', () => {
     const now = at(10 * 60_000)
     t.setNow(now)
     const res = await stopUsing(t.deps, { idToken: 'tok-owner', groupId: t.group.id, confirm: true })
-    expect(res).toEqual({ status: 200, body: { left: true, deleteAfter: new Date(now.getTime() + 7 * DAY).toISOString() } })
+    expect(res).toEqual({ status: 200, body: { left: true, deleted: false, deleteAfter: new Date(now.getTime() + 7 * DAY).toISOString() } })
     expect(t.line.leaveCalls).toEqual(['Cgroup1'])
     expect(t.marks()).toMatchObject({ leftAt: now, deleteAfter: new Date(now.getTime() + 7 * DAY) })
     expect(infoEvents()).toContainEqual(expect.objectContaining({ event: 'bot_left_group', groupId: t.group.id, reason: 'stop_using' }))
@@ -169,6 +170,52 @@ describe('Stop using in Settings (#11)', () => {
     expect(await stopUsing(t.deps, { idToken: 'tok-owner', groupId: t.group.id, confirm: true }))
       .toEqual({ status: 502, body: { error: 'line_failed' } })
     expect(t.marks().deleteAfter).toBeNull()
+  })
+})
+
+describe('Stop using: delete the data now (#147)', () => {
+  const stop = (t: ReturnType<typeof setup>, extra: Record<string, unknown>) =>
+    stopUsing(t.deps, { idToken: 'tok-owner', groupId: t.group.id, confirm: true, ...extra })
+
+  it('with the typed phrase, the bot leaves and the group\'s data is deleted at once; Drive is not called', async () => {
+    const t = setup()
+    t.store.seedTask({ groupId: t.group.id, title: 'ทำสไลด์', createdByLineUserId: 'Uowner1', status: 'not_assigned', assigneeLineUserId: null })
+    const res = await stop(t, { deleteNow: true, confirmText: DELETE_NOW_PHRASE })
+    expect(res).toEqual({ status: 200, body: { left: true, deleted: true, deleteAfter: null } })
+    expect(t.line.leaveCalls).toEqual(['Cgroup1'])
+    expect(t.store.tables.groups.find((g) => g.id === t.group.id)).toBeUndefined()
+    expect(t.store.tables.tasks.filter((x) => x.groupId === t.group.id)).toEqual([])
+    expect(t.store.tables.group_members.filter((x) => x.groupId === t.group.id)).toEqual([])
+    expect(infoEvents()).toContainEqual(expect.objectContaining({ event: 'stop_using_deleted_now', groupId: t.group.id, deleted: true }))
+  })
+
+  it('a missing or wrong phrase refuses before the bot leaves', async () => {
+    const t = setup()
+    for (const confirmText of [undefined, '', 'ลบ', 'delete']) {
+      expect(await stop(t, { deleteNow: true, confirmText })).toEqual({ status: 400, body: { error: 'bad_request', field: 'confirmText' } })
+    }
+    expect(t.line.leaveCalls).toEqual([])
+    expect(t.marks().deleteAfter).toBeNull()
+  })
+
+  it('surrounding spaces in the phrase are fine', async () => {
+    const t = setup()
+    expect((await stop(t, { deleteNow: true, confirmText: `  ${DELETE_NOW_PHRASE} ` })).body).toMatchObject({ deleted: true })
+  })
+
+  it('a failed delete keeps the 7-day date and says so', async () => {
+    const t = setup()
+    t.store.failNext('purgeGroup')
+    const now = t.deps.now()
+    const res = await stop(t, { deleteNow: true, confirmText: DELETE_NOW_PHRASE })
+    expect(res).toEqual({ status: 200, body: { left: true, deleted: false, deleteAfter: new Date(now.getTime() + 7 * DAY).toISOString() } })
+    expect(t.store.tables.groups.find((g) => g.id === t.group.id)).toBeDefined()
+  })
+
+  it('the default is still the 7-day delete', async () => {
+    const t = setup()
+    expect((await stop(t, {})).body).toMatchObject({ deleted: false })
+    expect(t.store.tables.groups.find((g) => g.id === t.group.id)).toBeDefined()
   })
 })
 

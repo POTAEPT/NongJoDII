@@ -1,4 +1,4 @@
-import { COMMAND_TEXT, commandQuickReply } from '../commands/quick-reply'
+import { COMMAND_TEXT, commandQuickReply, quickReply } from '../commands/quick-reply'
 import { bubble, button, caption, column, commandRow, header, numbered, panel, text, uri } from '../line/flex-ui'
 import type { LineMessage } from '../line/types'
 import { liffUrl } from '../liff-links'
@@ -15,6 +15,8 @@ export const SETUP_CARD_TEXT = {
   items: ['กลุ่มนี้ทำเรื่องอะไร', 'ใครทำหน้าที่อะไร', 'อยากให้น้องจดดีช่วยอะไร', 'ให้เตือนตอนไหน'],
   button: 'ตั้งค่ากลุ่ม',
   footnote: 'แตะแล้วเปิดแบบฟอร์มในแอป LINE',
+  // #142: LINE does not tell the bot who was in the group before it.
+  everyone: 'ให้ทุกคนในกลุ่มพิมพ์ทักน้องจดดี 1 ครั้ง (กดปุ่ม 👋 ด้านล่างก็ได้) น้องจดดีจะได้รู้จักและตั้งชื่อเล่นให้ครบ',
   altText: 'สวัสดี น้องจดดีมาแล้วนะ แตะ "ตั้งค่ากลุ่ม" เพื่อเริ่มใช้งาน',
 } as const
 
@@ -47,9 +49,11 @@ export function setupCard(p: { liffId: string; groupId: string }): LineMessage {
           caption(SETUP_CARD_TEXT.steps),
           column(SETUP_CARD_TEXT.items.map((label, i) => numbered(i + 1, label))),
         ]),
+        caption(SETUP_CARD_TEXT.everyone),
       ],
       [button('primary', open), caption(SETUP_CARD_TEXT.footnote, { size: 'xxs', align: 'center' })],
     ),
+    quickReply: quickReply('hello', 'help'),
   }
 }
 

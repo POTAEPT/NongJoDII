@@ -23,6 +23,16 @@ const ERR_LOAD = 'เชื่อมต่อไม่ได้ชั่วค�
 /** #121: shown under the assignee when the requester may not move it (server: 403 not_allowed). */
 const ASSIGNEE_LOCKED = 'เปลี่ยนผู้รับได้เฉพาะผู้รับงาน เจ้าของบอท หรือ PM'
 const TITLE = 'แก้งาน'
+/** #139: a Done Task can go back to open, by the same people who may move the assignee. */
+const REOPEN = {
+  done: 'งานนี้เสร็จแล้ว',
+  hint: 'ปิดงานผิด? กดปุ่มนี้ งานจะกลับไปเป็น “กำลังทำ” (หรือ “ยังไม่มีผู้รับ” ถ้ายังไม่มีผู้รับ)',
+  button: 'ยังไม่เสร็จ',
+  busy: 'กำลังเปิดงาน...',
+  doneMsg: 'เปิดงานแล้ว',
+  changed: 'งานนี้เปลี่ยนไปแล้ว ลองดูอีกครั้ง',
+  locked: 'เปิดงานใหม่ได้เฉพาะผู้รับงาน เจ้าของบอท หรือ PM',
+}
 
 type Load =
   | { kind: 'loading' }
@@ -40,7 +50,7 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
   const [form, setForm] = useState<Form | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
+  const [saved, setSaved] = useState<string | null>(null)
   const [picking, setPicking] = useState(false)
   const started = useRef(false)
   const inFlight = useRef(false) // blocks a double submit before state re-renders
@@ -77,7 +87,7 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
     if (form.title.trim() === '') return setFormError(ERR_400)
     inFlight.current = true
     setFormError(null)
-    setSaved(false)
+    setSaved(null)
     setSubmitting(true)
     try {
       const { status, json } = await post('/api/tasks/update', {
@@ -92,10 +102,38 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
       if (status === 403 && (json as { error?: unknown } | null)?.error === 'not_allowed') setFormError(ASSIGNEE_LOCKED)
       else if (status !== 200) setFormError(errorCopy(status, COPY))
       else {
+        setLoad({ kind: 'ready', data: json as TaskData })
         setForm(toForm(json as TaskData))
-        setSaved(true)
+        setSaved('บันทึกแล้ว')
         track('task_saved') // #19
       }
+    } catch {
+      setFormError(COPY.fallback)
+    } finally {
+      inFlight.current = false
+      setSubmitting(false)
+    }
+  }
+
+  /** #139: "ยังไม่เสร็จ". The answer is the Task as it is now, so the form follows it. */
+  const reopen = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setFormError(null)
+    setSaved(null)
+    setSubmitting(true)
+    try {
+      const { status, json } = await post('/api/tasks/reopen', { idToken, taskId: id })
+      const body = json as ({ error?: unknown; task?: TaskData } & Partial<TaskData>) | null
+      if (status === 200) {
+        setLoad({ kind: 'ready', data: body as TaskData })
+        setSaved(REOPEN.doneMsg)
+        track('task_reopened')
+      } else if (status === 409 && body?.task) {
+        setLoad({ kind: 'ready', data: body.task })
+        setFormError(REOPEN.changed)
+      } else if (status === 403 && body?.error === 'not_allowed') setFormError(REOPEN.locked)
+      else setFormError(errorCopy(status, COPY))
     } catch {
       setFormError(COPY.fallback)
     } finally {
@@ -117,7 +155,7 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
   if (!form) return null
 
   const set = (patch: Partial<Form>) => {
-    setSaved(false)
+    setSaved(null)
     setForm({ ...form, ...patch })
   }
   const assignee = load.data.members.find((m) => m.lineUserId === form.assignee)
@@ -131,7 +169,7 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
       bottom={
         <div className="space-y-2">
           {formError && <Notice>{formError}</Notice>}
-          {saved && <Notice tone="success">บันทึกแล้ว</Notice>}
+          {saved && <Notice tone="success">{saved}</Notice>}
           <div className="flex gap-3">
             <Button variant="secondary" disabled={submitting} onClick={back}>ยกเลิก</Button>
             <Button disabled={submitting} onClick={() => void save()}>{submitting ? 'กำลังบันทึก...' : 'บันทึก'}</Button>
@@ -140,6 +178,21 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
       }
     >
       <div className="space-y-5">
+        {load.data.status === 'done' && (
+          <div className="space-y-2 rounded-xl bg-done-bg p-3">
+            <p className="text-sm font-semibold text-done">{REOPEN.done}</p>
+            {load.data.canReopen ? (
+              <>
+                <p className="text-xs text-ink-2">{REOPEN.hint}</p>
+                <Button variant="secondary" disabled={submitting} onClick={() => void reopen()}>
+                  {submitting ? REOPEN.busy : REOPEN.button}
+                </Button>
+              </>
+            ) : (
+              <p className="text-xs text-ink-2">{REOPEN.locked}</p>
+            )}
+          </div>
+        )}
         <Field label="ชื่องาน">
           <input type="text" maxLength={200} className={inputClass} value={form.title} disabled={submitting}
             onChange={(e) => set({ title: e.target.value })} />

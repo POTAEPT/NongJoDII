@@ -31,7 +31,7 @@ export const PROGRESS_TEXT = {
   confirmedBy: (name: string, at: string) => `ยืนยันโดย ${name} · ${at}`,
   alreadyUpdatedTitle: 'อัปเดตไปแล้ว ยังไม่ได้ยกเลิก',
   alreadyUpdated: (t: string, status: ProgressTarget) => `อัปเดต “${t}” เป็น${status === 'done' ? 'เสร็จ' : 'กำลังทำ'}ไปแล้ว`,
-  alreadyUpdatedHint: 'น้องจดดีปิดรายการนี้แล้ว แต่ไม่ได้ย้อนสถานะงานให้ ถ้าอัปเดตผิด กดแก้ไขงานได้เลย',
+  alreadyUpdatedHint: 'น้องจดดีปิดรายการนี้แล้ว แต่ไม่ได้ย้อนสถานะงานให้ ถ้าอัปเดตผิด กดแก้ไขงาน แล้วกด “ยังไม่เสร็จ”',
   editTask: 'แก้ไขงาน',
   editTaskNamed: (t: string) => `แก้ไข “${t}”`,
 } as const

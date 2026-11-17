@@ -82,6 +82,11 @@ export const FILE_SAVED_PUSH_RESERVE = 0.1
  *  group member. 50 MB, not lower: a smaller file usually saves inside the 25 s reply window
  *  and gets its card as one free reply; a file this large is likely to need a push anyway. */
 export const SAVING_NOTICE_BYTES = 50 * 1024 * 1024
+/** #148: the practical limit. A save must finish inside the webhook's window (download from
+ *  LINE, then upload to Drive, before SAVE_HARD_STOP_MS), so above about 80 MB it often runs
+ *  out of time even under MAX_FILE_BYTES. Such a file's "saving…" notice warns of it and the
+ *  timeout card says to upload it by hand. Saving large files in the background is later work. */
+export const SLOW_FILE_BYTES = 80 * 1024 * 1024
 /** A step needs at least this much time left to start. */
 const MIN_STEP_MS = 1_000
 
@@ -267,7 +272,9 @@ async function paused(deps: Deps, job: FileJob, state: JobState, reason: PauseRe
 async function sayingSaving(deps: Deps, job: FileJob): Promise<boolean> {
   if (!job.replyToken || !replyFits(deps, job)) return false
   try {
-    await deps.line.reply(job.replyToken, [{ type: 'text', text: FILE_NOTICE_TEXT.saving(job.fileName ?? 'ไฟล์') }])
+    const saving = FILE_NOTICE_TEXT.saving(job.fileName ?? 'ไฟล์')
+    const slow = job.fileSize !== null && job.fileSize > SLOW_FILE_BYTES
+    await deps.line.reply(job.replyToken, [{ type: 'text', text: slow ? `${saving}\n${FILE_NOTICE_TEXT.slowWarning}` : saving }])
     log('file_saving_notice', { groupId: job.groupId })
     return true
   } catch (err) {

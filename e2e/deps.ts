@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { OpenRouterClient } from '@/server/llm/openrouter'
-import type { Defer, Deps, LlmPort } from '@/server/ports'
+import { OpenRouterDecisionsClient } from '@/server/llm/openrouter-decisions'
+import type { DecisionsPort, Defer, Deps, LlmPort } from '@/server/ports'
 import { SupabaseStore } from '@/server/store/supabase-store'
+import { FakeDecisions } from '../test/fakes/fake-decisions'
 import { FakeGoogle } from '../test/fakes/fake-google'
 import { FakeLine } from '../test/fakes/fake-line'
 import { FakeLlm } from '../test/fakes/fake-llm'
@@ -48,6 +50,10 @@ export type E2eDeps = {
   llm: LlmPort
   /** The fake model, to queue answers on; null in real mode. */
   fakeLlm: FakeLlm | null
+  /** The decision model port (progress): FakeDecisions, or OpenRouter when E2E_REAL_LLM=1. */
+  decisions: DecisionsPort
+  /** The fake decision model; null in real mode. */
+  fakeDecisions: FakeDecisions | null
   google: FakeGoogle
   /** Raw supabase-js client, for seeding, cleanup and assertions. */
   db: SupabaseClient
@@ -69,13 +75,18 @@ export function makeE2eDeps(opts: { now: Date }): E2eDeps {
 
   let llm: LlmPort
   let fakeLlm: FakeLlm | null = null
+  let decisions: DecisionsPort
+  let fakeDecisions: FakeDecisions | null = null
   if (process.env.E2E_REAL_LLM === '1') {
     const apiKey = process.env.OPENROUTER_API_KEY
     if (!apiKey) throw new Error('E2E_REAL_LLM=1 needs OPENROUTER_API_KEY in the environment')
     llm = new OpenRouterClient({ apiKey })
+    decisions = new OpenRouterDecisionsClient({ apiKey })
   } else {
     fakeLlm = new FakeLlm()
     llm = fakeLlm
+    fakeDecisions = new FakeDecisions()
+    decisions = fakeDecisions
   }
 
   const line = new FakeLine()
@@ -92,7 +103,7 @@ export function makeE2eDeps(opts: { now: Date }): E2eDeps {
 
   const deferred: Array<() => Promise<void>> = []
   const deps: Deps = {
-    line, llm, google, store,
+    line, llm, decisions, google, store,
     now: () => new Date(current.getTime()),
     // Like the harness: a wait moves the clock instead of sleeping.
     sleep: async (ms) => {
@@ -102,7 +113,7 @@ export function makeE2eDeps(opts: { now: Date }): E2eDeps {
   }
 
   return {
-    deps, line, llm, fakeLlm, google, db,
+    deps, line, llm, fakeLlm, decisions, fakeDecisions, google, db,
     setNow(d: Date) {
       current = new Date(d.getTime())
     },

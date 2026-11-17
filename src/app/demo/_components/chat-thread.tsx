@@ -61,14 +61,16 @@ function RichText({ text, names }: { text: string; names: string[] }) {
   )
 }
 
-export function ChatThread({ items, onReply, onUnsend }: {
+/** direct: the bot's 1:1 chat (no read count, no reply or unsend, its own empty text). */
+export function ChatThread({ items, onReply, onUnsend, direct = false }: {
   items: ThreadItem[]
   onReply: (item: ThreadItem) => void
   onUnsend: (item: ThreadItem) => void
+  direct?: boolean
 }) {
   const { state, me, personaName } = useDemo()
   const scroller = useRef<HTMLDivElement>(null)
-  const busy = state?.ai.busy ?? false
+  const busy = !direct && (state?.ai.busy ?? false)
   const now = state?.now ?? items.at(-1)?.at ?? '1970-01-01T00:00:00Z'
   const names = [BOT_NAME, ...(state?.personas.map((p) => p.lineName) ?? []), 'All']
   const lastId = items.at(-1)?.id
@@ -108,15 +110,17 @@ export function ChatThread({ items, onReply, onUnsend }: {
       ? byMessageId.get(item.message.quotedMessageId) : undefined
     rows.push(
       <MessageRow key={item.id} item={item} mine={item.from === 'user' && item.persona === me?.key}
-        showHead={showHead} quoted={quoted} names={names} onReply={onReply} onUnsend={onUnsend} />,
+        showHead={showHead} quoted={quoted} names={names} onReply={onReply} onUnsend={onUnsend} direct={direct} />,
     )
   }
 
   return (
-    <div ref={scroller} className="demo-scroll flex-1 overflow-y-auto bg-(--line-chat-bg) px-3 pt-3 pb-4">
+    <div ref={scroller} className="demo-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto bg-(--line-chat-bg) px-3 pt-3 pb-4">
       {items.length === 0 && (
         <div className="mt-24 text-center text-sm text-[#4A5A73]">
-          ยังไม่มีข้อความ<br />เพิ่มน้องจดดีเข้ากลุ่ม แล้วเริ่มคุยได้เลย
+          {direct
+            ? <>ยังไม่มีข้อความ<br />กดเมนูด้านล่างเพื่อคุยกับน้องจดดี</>
+            : <>ยังไม่มีข้อความ<br />เพิ่มน้องจดดีเข้ากลุ่ม แล้วเริ่มคุยได้เลย</>}
         </div>
       )}
       <div className="flex flex-col gap-2">
@@ -148,9 +152,9 @@ function TypingRow() {
   )
 }
 
-function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend }: {
+function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend, direct }: {
   item: ThreadItem; mine: boolean; showHead: boolean; quoted: ThreadItem | undefined; names: string[]
-  onReply: (item: ThreadItem) => void; onUnsend: (item: ThreadItem) => void
+  onReply: (item: ThreadItem) => void; onUnsend: (item: ThreadItem) => void; direct: boolean
 }) {
   const { personaName, state } = useDemo()
   const [menu, setMenu] = useState(false)
@@ -158,8 +162,8 @@ function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend }: 
   const isBot = item.from === 'bot'
   const name = isBot ? BOT_NAME : personaName(item.persona)
   const m = item.message
-  const canReply = !!item.messageId && !item.local
-  const canUnsend = mine && !!item.messageId && !item.local
+  const canReply = !direct && !!item.messageId && !item.local
+  const canUnsend = !direct && mine && !!item.messageId && !item.local
   const canCopy = m.type === 'text'
   const hasMenu = canReply || canUnsend || canCopy
   const readers = mine ? Math.max(0, (state?.personas.filter((p) => p.inGroup).length ?? 1) - 1 + (state?.group.botInGroup ? 1 : 0)) : 0
@@ -173,17 +177,21 @@ function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend }: 
     press.current = null
   }
 
+  // A carousel takes the full row width (it scrolls sideways), so it never squeezes its bubbles.
+  const carousel = m.type === 'flex' && (m.contents as { type?: unknown }).type === 'carousel'
+
   const bubble = (
     <div onContextMenu={(e) => { if (hasMenu) { e.preventDefault(); setMenu(true) } }}
       onPointerDown={startPress} onPointerUp={endPress} onPointerLeave={endPress} onPointerCancel={endPress}
-      className={cn('min-w-0', menu && 'brightness-90')}>
+      className={cn('min-w-0', carousel && '-mr-3 self-stretch', menu && 'brightness-90')}>
       <Content item={item} mine={mine} quoted={quoted} names={names} />
     </div>
   )
 
   const meta = (
     <div className={cn('flex shrink-0 flex-col pb-0.5 text-[11px] leading-tight text-[#4A5A73]', mine ? 'items-end' : 'items-start')}>
-      {mine && readers > 0 && <span>อ่านแล้ว {readers}</span>}
+      {mine && direct && <span>อ่านแล้ว</span>}
+      {mine && !direct && readers > 0 && <span>อ่านแล้ว {readers}</span>}
       <span>{timeLabel(item.at)}</span>
     </div>
   )
@@ -193,9 +201,12 @@ function MessageRow({ item, mine, showHead, quoted, names, onReply, onUnsend }: 
   return (
     <div className={cn('flex gap-2', mine ? 'justify-end' : 'justify-start', !showHead && !mine && 'pl-11')}>
       {!mine && showHead && (isBot ? <BotAvatar /> : <PersonaAvatar personaKey={item.persona ?? ''} name={name} />)}
-      <div className={cn('flex min-w-0 flex-col', mine ? 'items-end' : 'items-start', wide ? 'max-w-[88%]' : 'max-w-[75%]')}>
+      <div className={cn('flex min-w-0 flex-col', mine ? 'items-end' : 'items-start',
+        carousel ? 'flex-1' : wide ? 'max-w-[88%]' : 'max-w-[75%]')}>
         {!mine && showHead && <span className="mb-1 ml-1 text-[12px] font-medium text-[#33435C]">{name}</span>}
-        <div className={cn('flex min-w-0 items-end gap-1.5', mine && 'flex-row-reverse')}>
+        {/* A carousel puts its time under the row (as LINE does), so the row reaches the edge
+            and the next card peeks in. */}
+        <div className={cn('flex min-w-0 gap-1.5', carousel ? 'w-full flex-col items-start' : 'items-end', mine && !carousel && 'flex-row-reverse')}>
           <Popover open={menu} onOpenChange={setMenu}>
             <PopoverAnchor asChild>{bubble}</PopoverAnchor>
             <PopoverContent side="top" align={mine ? 'end' : 'start'} sideOffset={6}

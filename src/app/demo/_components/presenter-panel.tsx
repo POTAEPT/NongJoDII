@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { cn } from 'cn'
 import {
-  Bot, Clock3, Cloud, Crown, Gauge, LayoutDashboard, LogIn, LogOut, Play, Plus, RotateCcw, ScrollText, Sparkles, UserPlus, Users,
+  Bot, CalendarClock, Clock3, Cloud, Crown, Gauge, LayoutDashboard, LogIn, LogOut, Play, Plus, RotateCcw, ScrollText, Sparkles, Trash2, UserPlus, Users,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AI_KIND, usd } from '../_lib/ai'
-import { demoApi, type ClockAdvance, type Persona, type ScriptInfo } from '../_lib/api'
+import { demoApi, type ClockAdvance, type DemoGroupInfo, type Persona, type ScriptInfo, type WeeklyResult } from '../_lib/api'
 import { clockLabel, timeLabel } from '../_lib/time'
 import { BotAvatar, PersonaAvatar } from './avatars'
 import { useDemo } from './demo-context'
@@ -51,9 +51,11 @@ function useRun() {
   return { busy, run }
 }
 
-export function PresenterPanel({ onOpenLiff, onOpenGroup }: {
+export function PresenterPanel({ onOpenLiff, onOpenGroup, onWeekly }: {
   onOpenLiff: (view: string, id: string | null) => void
   onOpenGroup: (lineGroupId: string) => void
+  /** After POST weekly: open the Owner's 1:1 chat and toast. */
+  onWeekly: (r: WeeklyResult) => void
 }) {
   const { state, me } = useDemo()
   const { busy, run } = useRun()
@@ -69,9 +71,10 @@ export function PresenterPanel({ onOpenLiff, onOpenGroup }: {
           onClick={() => onOpenLiff('dashboard', null)}>
           <LayoutDashboard /> เปิด Dashboard
         </Button>
+        <WeeklyButton onWeekly={onWeekly} compact />
         <ResetButton busy={busy === 'reset'}
           onConfirm={(setup) => run('reset', () => demoApi.reset(setup),
-            setup ? 'รีเซ็ตแล้ว (3 กลุ่ม ตั้งค่าแล้ว)' : 'รีเซ็ตแล้ว (กลุ่มใหม่ สำหรับ onboarding)')} />
+            setup ? 'รีเซ็ตแล้ว (กลุ่มที่บันทึกไว้ ตั้งค่าแล้ว)' : 'รีเซ็ตแล้ว (กลุ่มใหม่ สำหรับ onboarding)')} />
       </div>
 
       <GroupBar onOpenGroup={onOpenGroup} />
@@ -91,7 +94,7 @@ export function PresenterPanel({ onOpenLiff, onOpenGroup }: {
         <div className="min-h-0 flex-1 overflow-y-auto pt-2 pb-32">
           <TabsContent value="scripts"><ScriptsTab /></TabsContent>
           <TabsContent value="people"><PeopleTab /></TabsContent>
-          <TabsContent value="clock"><ClockTab /></TabsContent>
+          <TabsContent value="clock"><ClockTab onWeekly={onWeekly} /></TabsContent>
           <TabsContent value="quota"><QuotaTab /></TabsContent>
           <TabsContent value="ai"><AiTab /></TabsContent>
           <TabsContent value="google"><GoogleTab onConnect={() => onOpenLiff('google', null)} /></TabsContent>
@@ -154,8 +157,8 @@ function ResetButton({ busy, onConfirm }: { busy: boolean; onConfirm: (setup: bo
         <div className="flex flex-col gap-2">
           <DialogClose asChild>
             <Button variant="outline" className="h-auto flex-col items-start gap-0.5 px-4 py-3 text-left whitespace-normal" onClick={() => onConfirm(true)}>
-              <span className="text-[15px] font-semibold">3 กลุ่ม ตั้งค่าแล้ว (พร้อมสรุป)</span>
-              <span className="text-[13px] font-normal text-[#5F6B7E]">ทีมพิตช์, ทีม Dev (Sub group), ลูกค้า ร้านกาแฟ · Nont เป็น Owner · มีงานใน Dashboard แล้ว</span>
+              <span className="text-[15px] font-semibold">กลุ่มที่บันทึกไว้ ตั้งค่าแล้ว (พร้อมสรุป)</span>
+              <span className="text-[13px] font-normal text-[#5F6B7E]">ทีมพิตช์, ทีม Dev (Sub group), ลูกค้า ร้านกาแฟ และกลุ่มที่สร้างเพิ่ม · Nont เป็น Owner · มีงานใน Dashboard แล้ว</span>
             </Button>
           </DialogClose>
           <DialogClose asChild>
@@ -198,8 +201,43 @@ function GroupBar({ onOpenGroup }: { onOpenGroup: (lineGroupId: string) => void 
         </SelectContent>
       </Select>
       {selected && !selected.botInGroup && <Badge variant="outline" className="text-[#A15C00]">บอทไม่อยู่</Badge>}
+      {selected && <DeleteGroupDialog group={selected} onlyOne={state.groups.length <= 1} />}
       <CreateGroupDialog />
     </div>
+  )
+}
+
+/** Deletes the selected group and its file (it no longer comes back after Reset). */
+function DeleteGroupDialog({ group, onlyOne }: { group: DemoGroupInfo; onlyOne: boolean }) {
+  const { busy, run } = useRun()
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button size="lg" variant="outline" className="h-10 px-3 text-[#C2410C]" disabled={onlyOne || busy !== null}
+          title={onlyOne ? 'ลบกลุ่มสุดท้ายไม่ได้' : `ลบกลุ่ม ${group.name}`} aria-label={`ลบกลุ่ม ${group.name}`}>
+          <Trash2 />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>ลบกลุ่ม {group.name}?</DialogTitle>
+          <DialogDescription>
+            {group.file
+              ? `ลบไฟล์ src/app/demo/groups/${group.file} ด้วย กลุ่มนี้จะไม่กลับมาหลัง Reset`
+              : 'กลุ่มนี้ไม่มีไฟล์ จะหายจากเดโมตอนนี้เท่านั้น'}
+            {' '}แชตและงานของกลุ่มหายทั้งหมด ถ้ามี Sub group ที่ใช้กลุ่มนี้เป็นกลุ่มหลัก ต้องลบ Sub group ก่อน
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose asChild><Button variant="ghost">ยกเลิก</Button></DialogClose>
+          <DialogClose asChild>
+            <Button variant="destructive" onClick={() => run('delete-group', () => demoApi.deleteGroup(group.lineGroupId), `ลบกลุ่ม ${group.name} แล้ว`)}>
+              <Trash2 /> ลบกลุ่ม
+            </Button>
+          </DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -229,7 +267,7 @@ function CreateGroupDialog() {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>สร้างกลุ่ม LINE ใหม่</DialogTitle>
-          <DialogDescription>น้องจดดีเข้ากลุ่มทันทีและรู้จักสมาชิกทุกคน</DialogDescription>
+          <DialogDescription>น้องจดดีเข้ากลุ่มทันทีและรู้จักสมาชิกทุกคน กลุ่มถูกบันทึกเป็นไฟล์ จึงกลับมาหลัง Reset (ตั้งค่าแล้ว แชตว่าง)</DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-4" onSubmit={(e) => {
           e.preventDefault()
@@ -446,7 +484,35 @@ const CLOCK: { advance: ClockAdvance; label: string }[] = [
   { advance: 'nextMon0900', label: 'จันทร์ 09:00 ถัดไป' },
 ]
 
-function ClockTab() {
+/** "ส่งสรุปรายสัปดาห์": POST weekly for the selected group's Project, then the phone opens
+ *  the Owner's 1:1 chat with the per-person card (#120). */
+function WeeklyButton({ onWeekly, compact = false }: { onWeekly: (r: WeeklyResult) => void; compact?: boolean }) {
+  const { state, refresh } = useDemo()
+  const [busy, setBusy] = useState(false)
+  const click = async () => {
+    setBusy(true)
+    try {
+      onWeekly(await demoApi.weekly(state?.selectedGroup))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      refresh()
+    }
+  }
+  return compact ? (
+    <Button size="lg" variant="outline" className="h-10 gap-2 px-3.5 text-[15px]" disabled={busy || !state}
+      title="เลื่อนเวลาไปรอบสรุปรายสัปดาห์ของโปรเจกต์ที่เลือก แล้วเปิดแชตส่วนตัวของ Owner" onClick={() => void click()}>
+      <CalendarClock /> สรุปรายสัปดาห์
+    </Button>
+  ) : (
+    <Button size="lg" className="mt-2 h-12 w-full gap-2 text-[16px]" disabled={busy || !state} onClick={() => void click()}>
+      <CalendarClock /> ส่งสรุปรายสัปดาห์
+    </Button>
+  )
+}
+
+function ClockTab({ onWeekly }: { onWeekly: (r: WeeklyResult) => void }) {
   const { state } = useDemo()
   const { busy, run } = useRun()
   if (!state) return null
@@ -468,6 +534,10 @@ function ClockTab() {
       <Button variant="outline" className="mt-2 w-full" disabled={busy !== null} onClick={() => run('tick', () => demoApi.tick(), 'รัน tick แล้ว')}>
         รัน tick ตอนนี้ (ไม่เลื่อนเวลา)
       </Button>
+      <WeeklyButton onWeekly={onWeekly} />
+      <p className="mt-1.5 text-[13px] text-[#5F6B7E]">
+        เลื่อนเวลาไปรอบสรุปรายสัปดาห์ของกลุ่มหลักในโปรเจกต์ที่เลือก แล้วรัน tick: กลุ่มได้การ์ดสรุป และ Owner ได้การ์ดรายคนในแชตส่วนตัว
+      </p>
     </Section>
   )
 }

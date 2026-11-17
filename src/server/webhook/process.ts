@@ -119,7 +119,7 @@ async function runJob(deps: Deps, job: Job, namesReady: Promise<void>): Promise<
       if (replyToken) await handleFileRequest(deps, { groupId, quotedMessageId: job.quotedMessageId, replyToken })
       return
     }
-    // Any other text line may report progress on a Task (#7). Its card shows the sender's name.
+    // Any other text line may report progress on a Task (#7): a keyword gate first, then the decision model only on a match (#132).
     if (text && replyToken && senderLineUserId) {
       await namesReady
       await handleProgressText(deps, {

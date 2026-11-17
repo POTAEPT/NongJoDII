@@ -20,7 +20,9 @@ Apply each rule to the code a pull request adds or changes. The code is still a 
 - Summarize answers both "NongJoDII summarize" and "NongJoDII สรุปหน่อย". Reminder answers come from buttons, with "NongJoDII done" and "NongJoDII need time" as typed fallbacks (decided 2026-11-11).
 - Every AI call records the token counts from its response against the Owner's usage, summed across every group the Owner admins, in tokens and dollars (#6).
 - At the Fair-use cap, the group gets a message with the reset time, and summarizing stops until the month resets (#6).
-- When the decision model fails, the bot falls back to the text model or asks the user, and the message is kept (#7).
+- Progress detection is a keyword gate in code first (`src/server/progress/keywords.ts`): a chat line without a progress word makes no AI call. Only a match goes to the decision model (#132).
+- The decision model is TypeSafe Jev (`typesafe/jev-1.14`) through OpenRouter's Decisions API (`DecisionsPort`), never chat completions. A refused or missing answer means "not answered", never "not progress" (decided 2026-11-17).
+- When the decision model does not answer (refusal, missing answer, error or the Fair-use cap), the bot asks the user with the free picker, and the message is kept; there is no chat-model fallback (#7, decided 2026-11-17).
 
 ## Google Drive and files (#3, #4, #11)
 

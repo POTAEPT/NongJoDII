@@ -1,12 +1,13 @@
 'use client'
 
+import { MembersHint } from './members-hint'
 import { TAG_SET_MAX } from '@/server/tasks/tags'
 import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, ROLE_MAX, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import { liffUrl } from '@/server/liff-links'
 import { formatThaiDateLong } from '@/server/time/bangkok'
-import type { SettingsLoad } from '@/server/settings/types'
+import { DELETE_NOW_PHRASE, type SettingsLoad, type StopUsingResult } from '@/server/settings/types'
 import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
 import { Avatar, Button, Chip, Field, IconCheck, IconLock, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
@@ -43,7 +44,18 @@ function errorCopy(status: number, json: unknown, fallback: string): string {
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SettingsLoad }
 type Tab = 'settings' | 'plans'
 /** Stop using: idle, the confirm step, the call in flight, or done with the delete date. */
-type Stop = { kind: 'idle' } | { kind: 'confirm' } | { kind: 'leaving' } | { kind: 'done'; deleteAfter: string | null }
+type Stop = { kind: 'idle' } | { kind: 'confirm' } | { kind: 'leaving' } | { kind: 'done'; deleted: boolean; deleteAfter: string | null; wantedDelete: boolean }
+
+/** #147: the delete-now choice and its warnings. */
+const DELETE_NOW = {
+  label: 'ลบข้อมูลทันที ไม่รอ 7 วัน',
+  warn: 'ลบแชตที่เก็บไว้ งาน สรุป และรายชื่อสมาชิกของกลุ่มนี้ทันที กู้คืนไม่ได้ เชิญน้องจดดีกลับมาก็ไม่ได้ข้อมูลเดิม ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่ ไม่ถูกลบ',
+  type: (p: string) => `พิมพ์ “${p}” เพื่อยืนยัน`,
+  button: 'ยืนยัน เลิกใช้และลบข้อมูลทันที',
+  doneTitle: 'น้องจดดีออกจากกลุ่มและลบข้อมูลแล้ว',
+  doneMsg: 'ลบข้อมูลของกลุ่มนี้แล้ว กู้คืนไม่ได้ ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่',
+  failed: 'ลบทันทีไม่สำเร็จ ข้อมูลจะถูกลบตามกำหนดแทน',
+}
 
 export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
@@ -54,6 +66,8 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [saved, setSaved] = useState(false)
   const [stop, setStop] = useState<Stop>({ kind: 'idle' })
   const [stopError, setStopError] = useState<string | null>(null)
+  const [deleteNow, setDeleteNow] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
   const started = useRef(false)
   const inFlight = useRef(false)
 
@@ -125,8 +139,13 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     setStopError(null)
     setStop({ kind: 'leaving' })
     try {
-      const { status, json } = await post('/api/settings/stop-using', { idToken, groupId: id, confirm: true })
-      if (status === 200) return setStop({ kind: 'done', deleteAfter: (json as { deleteAfter: string | null }).deleteAfter })
+      const { status, json } = await post('/api/settings/stop-using', {
+        idToken, groupId: id, confirm: true, ...(deleteNow ? { deleteNow: true, confirmText } : {}),
+      })
+      if (status === 200) {
+        const r = json as StopUsingResult
+        return setStop({ kind: 'done', deleted: r.deleted === true, deleteAfter: r.deleteAfter, wantedDelete: deleteNow })
+      }
       setStopError(errorCopy(status, json, ERR_STOP))
       setStop({ kind: 'confirm' })
     } catch {
@@ -147,11 +166,14 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     )
   }
   const { data } = load
+  if (stop.kind === 'done' && stop.deleted) {
+    return <StatusScreen kind="done" appTitle={TITLE} onBack={close} title={DELETE_NOW.doneTitle} message={DELETE_NOW.doneMsg} onClose={close} />
+  }
   if (stop.kind === 'done') {
     const date = stop.deleteAfter ? formatThaiDateLong(new Date(stop.deleteAfter)) : null
     return (
       <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="น้องจดดีออกจากกลุ่มแล้ว"
-        message={`ข้อมูลของกลุ่มนี้จะถูกลบ${date ? `วันที่ ${date}` : 'ใน 7 วัน'} ถ้าเชิญน้องจดดีกลับเข้ากลุ่มก่อนวันนั้น ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่ ไม่ถูกลบ`}
+        message={`${stop.wantedDelete ? `${DELETE_NOW.failed} ` : ''}ข้อมูลของกลุ่มนี้จะถูกลบ${date ? `วันที่ ${date}` : 'ใน 7 วัน'} ถ้าเชิญน้องจดดีกลับเข้ากลุ่มก่อนวันนั้น ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่ ไม่ถูกลบ`}
         onClose={close} />
     )
   }
@@ -241,6 +263,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
           </div>
 
           <MemberRows rows={rows} me={me} canEdit={data.canEdit} saving={saving} onChange={set} form={form} />
+          <MembersHint known={form.members.length} total={data.lineMemberCount ?? null} />
 
           <section className="space-y-2">
             <span className="block text-sm font-semibold">ฟีเจอร์</span>
@@ -320,6 +343,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
               <p className="text-xs text-ink-3">
                 น้องจดดีจะออกจากกลุ่ม และลบข้อมูลของกลุ่มนี้ (แชตที่เก็บไว้ งาน และสรุป) ใน 7 วัน
                 ถ้าเชิญกลับภายใน 7 วัน ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ไม่ถูกลบ
+                ถ้าไม่อยากรอ เลือกลบข้อมูลทันทีได้ในขั้นยืนยัน
               </p>
               {stop.kind === 'idle' ? (
                 <button
@@ -333,16 +357,31 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
               ) : (
                 <div className="space-y-2">
                   <Notice>ยืนยันให้น้องจดดีออกจากกลุ่มนี้ใช่ไหม</Notice>
+                  {/* #147: an optional delete at once, behind a typed confirm. */}
+                  <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-line p-3 text-sm">
+                    <input type="checkbox" className="mt-1" checked={deleteNow} disabled={stop.kind === 'leaving'}
+                      onChange={(e) => { setDeleteNow(e.target.checked); setConfirmText('') }} />
+                    <span className="font-semibold">{DELETE_NOW.label}</span>
+                  </label>
+                  {deleteNow && (
+                    <div className="space-y-2">
+                      <Notice>{DELETE_NOW.warn}</Notice>
+                      <Field label={DELETE_NOW.type(DELETE_NOW_PHRASE)}>
+                        <input type="text" className={inputClass} value={confirmText} disabled={stop.kind === 'leaving'}
+                          autoComplete="off" onChange={(e) => setConfirmText(e.target.value)} />
+                      </Field>
+                    </div>
+                  )}
                   {stopError && <Notice>{stopError}</Notice>}
                   <button
                     type="button"
                     className="flex min-h-12 w-full items-center justify-center rounded-xl bg-danger px-4 text-base font-semibold text-white disabled:opacity-50"
-                    disabled={stop.kind === 'leaving' || saving}
+                    disabled={stop.kind === 'leaving' || saving || (deleteNow && confirmText.trim() !== DELETE_NOW_PHRASE)}
                     onClick={() => void stopUsing()}
                   >
-                    {stop.kind === 'leaving' ? 'กำลังออกจากกลุ่ม...' : 'ยืนยัน เลิกใช้'}
+                    {stop.kind === 'leaving' ? 'กำลังออกจากกลุ่ม...' : deleteNow ? DELETE_NOW.button : 'ยืนยัน เลิกใช้'}
                   </button>
-                  <Button variant="ghost" disabled={stop.kind === 'leaving'} onClick={() => { setStopError(null); setStop({ kind: 'idle' }) }}>
+                  <Button variant="ghost" disabled={stop.kind === 'leaving'} onClick={() => { setStopError(null); setDeleteNow(false); setConfirmText(''); setStop({ kind: 'idle' }) }}>
                     ยกเลิก
                   </Button>
                 </div>

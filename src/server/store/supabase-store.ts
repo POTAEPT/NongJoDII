@@ -357,13 +357,14 @@ export class SupabaseStore implements StorePort {
   }
 
   async linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }> {
-    const { data, error } = await this.db
-      .from('files')
-      .update({ message_id: messageId })
-      .eq('id', fileId)
-      .select('id')
+    // #140: a link row; files.message_id keeps the first message.
+    const { error } = await this.db
+      .from('file_messages')
+      .upsert({ file_id: fileId, message_id: messageId }, { onConflict: 'file_id,message_id', ignoreDuplicates: true })
+    // 23503: the file (group purged) or the message (unsent) is gone; nothing to link.
+    if (error?.code === '23503') return { updated: false }
     check('linkFileToMessage', error)
-    return { updated: (data ?? []).length > 0 }
+    return { updated: true }
   }
 
   async findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null> {
@@ -467,7 +468,18 @@ export class SupabaseStore implements StorePort {
       .limit(1)
     check('findQuotedFile', fileError)
     const file = ((files ?? []) as { file_name: string; drive_link: string }[])[0]
-    return file ? { kind: 'file', fileName: file.file_name, driveLink: file.drive_link } : { kind: 'no_file' }
+    if (file) return { kind: 'file', fileName: file.file_name, driveLink: file.drive_link }
+    // #140: a later message that carried a file saved before.
+    const { data: links, error: linkError } = await this.db
+      .from('file_messages')
+      .select('linked_at, files!inner(file_name, drive_link, group_id)')
+      .eq('message_id', (message as { id: string }).id)
+      .eq('files.group_id', groupId)
+      .order('linked_at', { ascending: false })
+      .limit(1)
+    check('findQuotedFile', linkError)
+    const linked = ((links ?? []) as unknown as { files: { file_name: string; drive_link: string } | null }[])[0]?.files
+    return linked ? { kind: 'file', fileName: linked.file_name, driveLink: linked.drive_link } : { kind: 'no_file' }
   }
 
   // ---- #15 Summary ----

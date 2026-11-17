@@ -62,11 +62,17 @@ describe('SupabaseStore files (#4)', () => {
     expect((err as Error).message).toBe('supabase insertFile: 23514')
   })
 
-  it('linkFileToMessage updates message_id by id', async () => {
-    const { store, requests } = standIn([{ data: [{ id: 'f1' }], error: null }])
+  it('linkFileToMessage adds a file_messages row and leaves files.message_id alone (#140)', async () => {
+    const { store, requests } = standIn([{ data: null, error: null }])
     expect(await store.linkFileToMessage('f1', 'msg-9')).toEqual({ updated: true })
-    expect(requests[0].calls).toContainEqual(['update', { message_id: 'msg-9' }])
-    expect(requests[0].calls).toContainEqual(['eq', 'id', 'f1'])
+    expect(requests[0].table).toBe('file_messages')
+    expect(requests[0].calls).toContainEqual(['upsert', { file_id: 'f1', message_id: 'msg-9' }, { onConflict: 'file_id,message_id', ignoreDuplicates: true }])
+    expect(requests.some((r) => r.calls.some((c) => c[0] === 'update'))).toBe(false)
+  })
+
+  it('linkFileToMessage answers updated false when the file or the message is gone (23503)', async () => {
+    const { store } = standIn([{ data: null, error: { code: '23503', message: 'fk' } }])
+    expect(await store.linkFileToMessage('f1', 'msg-9')).toEqual({ updated: false })
   })
 
   it('countImageSet counts the set messages and their settled rows in webhook_events', async () => {

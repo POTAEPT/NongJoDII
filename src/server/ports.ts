@@ -417,9 +417,10 @@ export interface StorePort {
   /** INSERT ... ON CONFLICT (group_id, content_sha256) DO NOTHING. inserted false: another
    *  save of the same content got in first; `file` is then that row. */
   insertFile(f: NewFile): Promise<{ inserted: boolean; file: SavedFile }>
-  /** A re-sent file (same hash): points the row's message_id at the newest message that
-   *  carried it, so a quote-reply to that message (#33) finds the link. updated false when
-   *  the row is gone (group purged). */
+  /** A re-sent file (same hash): links the newer message to the saved file (file_messages,
+   *  #140), so a quote-reply (#33) to the first message or to any later one finds the link.
+   *  files.message_id stays on the first message. A repeat link is a no-op. updated false
+   *  when the file row is gone (group purged). */
   linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }>
   /** The Project's active drive_connections row, or null. */
   findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null>

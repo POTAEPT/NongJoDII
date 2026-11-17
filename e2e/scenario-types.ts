@@ -14,7 +14,7 @@ export type ScenarioCommand = { persona: string; minute: number; text: string }
 
 export type ExpectedTask = {
   title: string
-  assignee: string // persona key
+  assignee: string | null // persona key; null = nobody took it (#138)
   due: string // ISO 8601 instant
   sourceMessage: string // scenario message id
 }

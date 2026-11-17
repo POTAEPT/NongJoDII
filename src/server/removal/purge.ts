@@ -1,5 +1,7 @@
 import { checkTime, driveDeadline, DriveTimeUp } from '../google/drive-folders'
 import { log, logError } from '../log'
+import { announceDetached } from '../owner-change/detach'
+import type { DetachedSubGroup } from '../ports'
 import type { TickJob } from '../tick/run-tick'
 import { bangkokParts, parseTimeOfDay } from '../time/bangkok'
 
@@ -36,11 +38,14 @@ export const purgeJob: TickJob = {
     let purged = 0
     let failed = 0
     let complete = true
+    const detached: DetachedSubGroup[] = []
     for (const groupId of groupIds) {
       try {
         checkTime(deps, deadline, 0)
         const res = await deps.store.purgeGroup(groupId, now)
         if (res.purged) purged++
+        // #77: Sub groups of a purged main group need an Owner of their own.
+        detached.push(...res.detached)
       } catch (err) {
         if (err instanceof DriveTimeUp) {
           complete = false
@@ -50,6 +55,8 @@ export const purgeJob: TickJob = {
         logError('purge_failed', { groupId }, err)
       }
     }
-    log('purge_done', { due: groupIds.length, purged, failed, complete })
+    log('purge_done', { due: groupIds.length, purged, failed, complete, detached: detached.length })
+    // After every delete, so a run short of time never leaves a purge half done. Best effort.
+    if (detached.length > 0) await announceDetached(deps, detached, deadline, now, 'owner_needed')
   },
 }

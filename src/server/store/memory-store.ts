@@ -61,7 +61,7 @@ import type {
   UnownedTask,
   WeeklySummaryGroup,
   ProgressYes,
-  ProgressYesOutcome, OwnedProject, SubGroupSetupOutcome, SubGroupSetupWrite } from '@/server/ports'
+  ProgressYesOutcome, OwnedProject, PurgeResult, SubGroupSetupOutcome, SubGroupSetupWrite } from '@/server/ports'
 import { ownerCountDue } from '@/server/store/mappers'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
@@ -2022,11 +2022,25 @@ export class MemoryStore implements StorePort {
 
   /** Mirrors the schema's cascade: group-keyed rows go, ai_usage keeps its rows with
    *  groupId null, push_log and webhook_events have no group link and stay. */
-  async purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }> {
+  async purgeGroup(groupId: string, now: Date): Promise<PurgeResult> {
     this.fault('purgeGroup')
     const s = this.tables.group_schedules.find((r) => r.groupId === groupId)
-    if (!s || s.deleteAfter == null || s.deleteAfter > now) return { purged: false }
+    if (!s || s.deleteAfter == null || s.deleteAfter > now) return { purged: false, projectDeleted: false, detached: [] }
     const t = this.tables
+    // #77, as rpc purge_group: a main group's Project lets go of its other groups first.
+    const purgedRow = t.groups.find((g) => g.id === groupId)
+    const projectId = purgedRow?.projectId ?? null
+    const detached: DetachedSubGroup[] = []
+    if (projectId !== null && this.setupOf(groupId).isMain) {
+      for (const g of t.groups.filter((x) => x.projectId === projectId && x.id !== groupId).sort((a, b) => a.id.localeCompare(b.id))) {
+        Object.assign(this.setupOf(g.id), { takeoverAskedAt: null, driveFolderId: null })
+        g.projectId = null
+        g.ownerConfirmedAt = null // groups_owner_rules: a new owner_left_at clears the confirmation
+        this.clearForOwnerCount(g, now)
+        const botIn = (t.group_schedules.find((r) => r.groupId === g.id)?.leftAt ?? null) === null
+        if (botIn) detached.push({ groupId: g.id, lineGroupId: g.lineGroupId, name: g.name })
+      }
+    }
     const summaryIds = new Set(t.summaries.filter((x) => x.groupId === groupId).map((x) => x.id))
     t.groups = t.groups.filter((g) => g.id !== groupId)
     t.group_members = t.group_members.filter((x) => x.groupId !== groupId)
@@ -2043,7 +2057,18 @@ export class MemoryStore implements StorePort {
     t.weekly_insights = t.weekly_insights.filter((x) => x.groupId !== groupId)
     t.group_setups = t.group_setups.filter((x) => x.groupId !== groupId)
     for (const u of t.ai_usage) if (u.groupId === groupId) u.groupId = null
-    return { purged: true }
+    t.files = t.files.filter((x) => x.groupId !== groupId)
+    let projectDeleted = false
+    if (projectId !== null && !t.groups.some((g) => g.projectId === projectId)) {
+      const connectionIds = new Set(t.drive_connections.filter((c) => c.projectId === projectId).map((c) => c.id))
+      if (!t.files.some((f) => connectionIds.has(f.driveConnectionId))) {
+        t.drive_connections = t.drive_connections.filter((c) => c.projectId !== projectId)
+        t.projects = t.projects.filter((p) => p.id !== projectId)
+        for (const u of t.ai_usage) if (u.projectId === projectId) u.projectId = null
+        projectDeleted = true
+      }
+    }
+    return { purged: true, projectDeleted, detached }
   }
 
   // ---- Seed helpers (not on the port). They create the line_users rows they reference. ----

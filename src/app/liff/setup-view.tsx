@@ -8,6 +8,7 @@ import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX 
 import { MembersHint } from './members-hint'
 import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { ERR_401, post } from './api'
+import { useLiffAutofill } from './autofill'
 import { track } from './analytics'
 import type { LiffViewProps } from './liff-sdk'
 import { FEATURES, OWNER_ROLE, OwnerRoleNote, TAG_SET_COPY, TIMES_COPY, TimeSelect } from './setup-parts'
@@ -65,6 +66,7 @@ type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: '
 export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
   const [form, setForm] = useState<SetupForm | null>(null)
+  const autofill = useLiffAutofill()?.setup
   const [step, setStep] = useState(1)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -273,6 +275,13 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
         ))}
         <span className="text-xs text-ink-3">ข้อ {step} จาก {SETUP_STEPS}</span>
       </div>
+      {/* Demo only: /demo provides the fill; the live LIFF never shows this button. */}
+      {autofill && (
+        <button type="button" disabled={submitting} onClick={() => set(autofill(form, data))}
+          className="mt-3 w-full rounded-xl border border-dashed border-primary px-3 py-2 text-sm font-semibold text-primary disabled:opacity-50">
+          ✨ เติมข้อมูลตัวอย่าง (เดโม)
+        </button>
+      )}
       <h2 className="mt-3 text-[22px] font-semibold leading-snug">{head.title}</h2>
       <p className="mt-1 text-sm text-ink-2">{head.sub}</p>
 

@@ -108,8 +108,8 @@ export function simState(demo: Demo): DemoState {
     group: { lineGroupId: selected.lineGroupId, name: selected.name, botInGroup: selected.botInGroup },
     groups: world.groups.map((g) => groupInfo(demo, g)),
     selectedGroup: selected.lineGroupId,
-    personas: world.personas.map(({ key, lineUserId, lineName, role, owner }) => ({
-      key, lineUserId, lineName, role, owner, inGroup: selected.members.has(key),
+    personas: world.personas.map(({ key, lineUserId, lineName, role, owner, nicknames }) => ({
+      key, lineUserId, lineName, role, owner, inGroup: selected.members.has(key), nicknames: nicknames ?? [],
     })),
     quota: { ...world.quota },
     ai: {

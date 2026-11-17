@@ -70,7 +70,7 @@ export type DemoState = {
   groups: DemoGroupInfo[]
   selectedGroup: string
   /** inGroup: in the selected group. */
-  personas: Array<{ key: string; lineUserId: string; lineName: string; role: string | null; owner: boolean; inGroup: boolean }>
+  personas: Array<{ key: string; lineUserId: string; lineName: string; role: string | null; owner: boolean; inGroup: boolean; nicknames: string[] }>
   quota: { limit: number | null; used: number }
   ai: { model: string | null; lastCallFallback: boolean; busy: boolean; calls: AiCall[]; totalUsd: number }
   google: { connected: boolean; email: string | null }

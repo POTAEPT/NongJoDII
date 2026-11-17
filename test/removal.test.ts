@@ -313,7 +313,7 @@ describe('re-invite (#11)', () => {
     // The tick's purge deletes the row first, so the join's own purge finds nothing.
     vi.spyOn(t.store, 'purgeGroup').mockImplementationOnce(async (id, now) => {
       await realPurge(id, now)
-      return { purged: false }
+      return { purged: false, projectDeleted: false, detached: [] }
     })
     await t.send(ev.join({ timestamp: at(8 * DAY).getTime() }))
     const fresh = t.store.tables.groups.find((g) => g.lineGroupId === 'Cgroup1')

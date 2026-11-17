@@ -63,6 +63,7 @@ import type {
   ProgressYes,
   ProgressYesOutcome,
   OwnedProject,
+  PurgeResult,
   SubGroupSetupOutcome,
   SubGroupSetupWrite,
 } from '../ports'
@@ -2550,15 +2551,21 @@ export class SupabaseStore implements StorePort {
     return ((data ?? []) as { id: string }[]).map((r) => r.id)
   }
 
-  async purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }> {
-    // The due check is part of the DELETE: a group re-invited since it was listed stays.
-    const { data, error } = await this.db
-      .from('groups')
-      .delete()
-      .eq('id', groupId)
-      .lte('delete_after', now.toISOString())
-      .select('id')
+  async purgeGroup(groupId: string, now: Date): Promise<PurgeResult> {
+    // #77: one transaction (rpc purge_group): the due check, the Sub group detach, the delete
+    // and the Project row once nothing points at it.
+    const { data, error } = await this.db.rpc('purge_group', { p_group_id: groupId, p_now: now.toISOString() })
     check('purgeGroup', error)
-    return { purged: (data ?? []).length > 0 }
+    const r = data as {
+      purged?: unknown; project_deleted?: unknown
+      detached?: { id: string; line_group_id: string; name: string | null; bot_in: boolean }[]
+    } | null
+    if (!r || typeof r.purged !== 'boolean') throw new Error('purgeGroup: unexpected result from purge_group')
+    return {
+      purged: r.purged, projectDeleted: r.project_deleted === true,
+      detached: (r.detached ?? []).filter((d) => d.bot_in)
+        .map((d) => ({ groupId: d.id, lineGroupId: d.line_group_id, name: d.name })),
+    }
   }
+
 }

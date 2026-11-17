@@ -73,10 +73,29 @@ describe('SupabaseStore #11 removal', () => {
     expect(queries[0]).toMatchObject({ table: 'groups', op: 'select', filters: [`delete_after=lte.${ISO}`], order: ['delete_after', 'id'], limit: 50 })
   })
 
-  it('purgeGroup deletes the group only while it is still past due', async () => {
-    const hit = recordingDb([[{ id: 'g1' }]])
-    expect(await hit.store.purgeGroup('g1', AT)).toEqual({ purged: true })
-    expect(hit.queries[0]).toMatchObject({ table: 'groups', op: 'delete', filters: ['id=eq.g1', `delete_after=lte.${ISO}`] })
-    expect(await recordingDb([[]]).store.purgeGroup('g1', AT)).toEqual({ purged: false })
+  it('purgeGroup calls rpc purge_group and keeps only detached groups the bot is still in (#77)', async () => {
+    const calls: { fn: string; args: unknown }[] = []
+    const answer = {
+      purged: true, project_deleted: false,
+      detached: [
+        { id: 's1', line_group_id: 'Cs1', name: 'ทีม Dev', bot_in: true },
+        { id: 's2', line_group_id: 'Cs2', name: null, bot_in: false },
+      ],
+    }
+    const db = { rpc: (fn: string, args: unknown) => { calls.push({ fn, args }); return Promise.resolve({ data: answer, error: null }) } }
+    const store = new SupabaseStore(db as unknown as SupabaseClient)
+    expect(await store.purgeGroup('g1', AT)).toEqual({
+      purged: true, projectDeleted: false, detached: [{ groupId: 's1', lineGroupId: 'Cs1', name: 'ทีม Dev' }],
+    })
+    expect(calls).toEqual([{ fn: 'purge_group', args: { p_group_id: 'g1', p_now: ISO } }])
+  })
+
+  it('purgeGroup answers not purged, and throws on an error or an unexpected answer', async () => {
+    const answer = (data: unknown, error: unknown = null) =>
+      new SupabaseStore({ rpc: () => Promise.resolve({ data, error }) } as unknown as SupabaseClient)
+    expect(await answer({ purged: false, project_deleted: false, detached: [] }).purgeGroup('g1', AT))
+      .toEqual({ purged: false, projectDeleted: false, detached: [] })
+    await expect(answer(null, { code: '57014', message: 'x' }).purgeGroup('g1', AT)).rejects.toThrow()
+    await expect(answer('weird').purgeGroup('g1', AT)).rejects.toThrow()
   })
 })

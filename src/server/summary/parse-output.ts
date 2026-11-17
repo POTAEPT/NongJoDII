@@ -1,5 +1,5 @@
 import { suggestedTags } from '../tasks/tags'
-import { bangkokEndOfDay, bangkokParts } from '../time/bangkok'
+import { bangkokEndOfDay, bangkokIsoWeekday, bangkokParts, bangkokTodayLabel, bangkokWeekdayDate, findWeekday } from '../time/bangkok'
 
 export type ParsedTask = {
   title: string; details: string | null; assigneeRef: string | null; due: Date | null; sourceRef: string | null
@@ -112,6 +112,25 @@ export function settleMidnightDue(due: Date | null, chatText: string): Date | nu
   const p = bangkokParts(due)
   if (p.hh !== 0 || p.mm !== 0 || MIDNIGHT.test(chatText)) return due
   return bangkokEndOfDay(due)
+}
+
+/** The model counts days instead of reading the calendar: "ส่งวันพฤหัส" on Tue 17 Nov came back
+ *  as Wed 18 or Tue 24 (2 of 6 live runs). When `sourceText` (the raw text of the Task's own
+ *  message) names exactly one weekday (findWeekday) and the due is on another weekday, or
+ *  before today, the due moves to that weekday by the prompt's rule: the first such day on or
+ *  after today, or that day of the following week for "พฤหัสหน้า" / "สัปดาห์หน้า" / "next
+ *  week" (there the exact date must match). Whole days move, so the time stays (23:59 for a
+ *  date-only due). No source, no weekday or a written-out date: the due is kept. */
+export function settleWeekdayDue(due: Date | null, sourceText: string | null, now: Date): Date | null {
+  if (due === null || sourceText === null) return due
+  const ref = findWeekday(sourceText)
+  if (ref === null) return due
+  const target = bangkokWeekdayDate(now, ref.weekday, ref.nextWeek)
+  const dueDay = bangkokTodayLabel(due)
+  const right = ref.nextWeek ? dueDay === target : bangkokIsoWeekday(due) === ref.weekday && dueDay >= bangkokTodayLabel(now)
+  if (right) return due
+  const days = Math.round((Date.parse(`${target}T00:00:00Z`) - Date.parse(`${dueDay}T00:00:00Z`)) / 86_400_000)
+  return new Date(due.getTime() + days * 86_400_000)
 }
 
 /** "msg14" is the prompt's form; "{msg14}" and the older "#14" are accepted and

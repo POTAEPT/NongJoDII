@@ -5,7 +5,7 @@ import type { Deps, NewCandidate } from '../ports'
 import { capMessage, getFairUseStatus, warnMessage } from '../usage/fair-use'
 import { FairUseCapReachedError, runMeteredAi } from '../usage/meter'
 import { TEXT_MODEL } from '../usage/pricing'
-import { parseSummaryOutput, settleMidnightDue, SUMMARY_SCHEMA, type ParsedTask, ModelOutputError } from './parse-output'
+import { parseSummaryOutput, settleMidnightDue, settleWeekdayDue, SUMMARY_SCHEMA, type ParsedTask, ModelOutputError } from './parse-output'
 import { isTaskFeedback } from '../review/feedback'
 import { ownerBackedOn, ownerNeededCard } from '../members/owner-left'
 import { nextStepCard, uri } from '../line/flex-ui'
@@ -251,7 +251,10 @@ async function summarize(deps: Deps, job: SummaryJob, replyToken: string, sent: 
       const source = task.sourceRef ? messageByRef.get(task.sourceRef) : undefined
       // A T00:00 due is 23:59 that day unless the Task's message (or, with no source, the
       // chat) speaks of midnight.
-      const due = settleMidnightDue(task.due, source ? source.text : messages.map((m) => m.text).join('\n'))
+      const settled = settleMidnightDue(task.due, source ? source.text : messages.map((m) => m.text).join('\n'))
+      // A weekday in the Task's own message ("ส่งวันพฤหัส") fixes the day the model counted
+      // wrong, against the same "now" as the prompt's calendar.
+      const due = settleWeekdayDue(settled, source ? source.text : null, promptInput.now)
       candidates.push({
         title, details, suggestedAssigneeLineUserId: assignee?.lineUserId ?? null, suggestedDueAt: due,
         // #109: a tag that carries a member or message ref is dropped (people are never tags).

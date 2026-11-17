@@ -157,6 +157,23 @@ describe('Summary command', () => {
     expect(t.store.tables.task_candidates[0].suggestedDueAt).toEqual(new Date('2026-11-13T10:00:00Z'))
   })
 
+  it('the prompt carries a Thai calendar, and a weekday the model counted wrong is fixed from the Task\'s message', async () => {
+    const t = setup()
+    await seedChat(t)
+    await t.send(ev.groupText({ text: 'เราทำรายงานให้ ส่งวันจันทร์', userId: 'Ubank', timestamp: T0 + 3 * MIN }))
+    // Thu 12 Nov: "วันจันทร์" is Mon 16 Nov; the model counted to Tue 17.
+    t.respond((ref, req) => ({
+      summary: 'สรุป',
+      tasks: [{ title: 'ทำรายงาน', assignee: ref('Bank T.'), due: '2026-11-17', source: chatLines(req).find((c) => c.text.includes('วันจันทร์'))?.ref }],
+    }))
+    await t.command()
+    const user = t.llm.requests[0].user
+    expect(user).toContain('- 2026-11-12 Thu พฤหัสบดี (พฤ.) this week, วันนี้ (today)')
+    expect(user).toContain('- 2026-11-16 Mon จันทร์ (จ.) next week (สัปดาห์หน้า)')
+    expect(t.llm.requests[0].system).toContain('NEXT such day on or after today')
+    expect(t.store.tables.task_candidates[0].suggestedDueAt).toEqual(new Date('2026-11-16T23:59:00+07:00'))
+  })
+
   it('4. sends only the newest 100 texts (M1)', async () => {
     const t = setup()
     const events = Array.from({ length: 120 }, (_, i) =>

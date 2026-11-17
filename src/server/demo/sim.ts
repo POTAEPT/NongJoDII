@@ -7,8 +7,9 @@ import {
   BKK_OFFSET_MS, bangkokIsoWeekday, bangkokTodayLabel, bangkokWeekStartLabel, isWeeklyDue, parseTimeOfDay,
 } from '@/server/time/bangkok'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
-import { attachSubGroup, getDemo, resetDemo, seedLiveMember, type Demo } from './demo-deps'
+import { getDemo, resetDemo, seedLiveMember, type Demo } from './demo-deps'
 import { deleteGroupFile, fileStem, groupsDir, readGroupFiles, writeGroupFile, type GroupFile } from './group-files'
+import { recordSetUpFiles } from './setup-files'
 import { signedWebhookRequest } from './sign'
 import type { ChatItem, DemoDirectInfo, DemoGroupInfo, DemoPersona, DemoScript, DemoState } from './types'
 import { DEMO_LIFF_ID, demoGroupId, demoUserId, type DemoGroup } from './world'
@@ -37,8 +38,15 @@ const DAY_MS = 86_400_000
 const HOUR_MS = 3_600_000
 const GROUP_NAME_MAX = 50
 
-/** Every sim route. GET: state, scripts. POST: the rest. */
+/** Every sim route. GET: state, scripts. POST: the rest. After a POST, a group whose setup
+ *  just completed gets it recorded in its file (setup-files.ts). */
 export async function runSimAction(action: string, method: string, body: unknown): Promise<SimResult> {
+  const result = await runAction(action, method, body)
+  if (method === 'POST') recordSetUpFiles(getDemo())
+  return result
+}
+
+async function runAction(action: string, method: string, body: unknown): Promise<SimResult> {
   if (method === 'GET') {
     if (action === 'state') return ok(simState(getDemo()))
     if (action === 'scripts') return ok(await listScripts(getDemo()))
@@ -71,6 +79,7 @@ export async function runSimAction(action: string, method: string, body: unknown
     case 'postback': return postback(demo, g, b)
     case 'unsend': return unsend(demo, g, b)
     case 'join': return join(demo, g)
+    case 'say-hi': return sayHi(demo, g)
     case 'leave-bot': return leaveBot(demo, g)
     case 'member-join': return memberJoin(demo, g, b)
     case 'member-leave': return memberLeave(demo, g, b)
@@ -137,7 +146,18 @@ function groupInfo(demo: Demo, g: DemoGroup): DemoGroupInfo {
     lastMessage: last ? { text: preview(demo, last), at: last.at } : null,
     unread: world.unread(g),
     file: g.file,
+    unknownMembers: unknownMembers(demo, g).map((p) => p.key),
   }
+}
+
+/** The group's people the bot holds no live Member for: it learns a person only from their
+ *  first message (#151). */
+function unknownMembers(demo: Demo, g: DemoGroup): DemoPersona[] {
+  const row = storeRow(demo, g)
+  const live = new Set(row
+    ? demo.store.tables.group_members.filter((m) => m.groupId === row.id && m.leftAt === null).map((m) => m.lineUserId)
+    : [])
+  return demo.world.membersInGroup(g).filter((p) => !live.has(p.lineUserId))
 }
 
 function directInfo(demo: Demo, personaKey: string): DemoDirectInfo {
@@ -399,36 +419,26 @@ function storeRow(demo: Demo, g: DemoGroup) {
 }
 
 async function join(demo: Demo, g: DemoGroup): Promise<SimResult> {
-  const { world } = demo
-  const row = storeRow(demo, g)
-  const setUp = row !== undefined && (row.projectId !== null || row.ownerConfirmedAt !== null)
   g.botInGroup = true
-  world.system('NongJoDII เข้าร่วมกลุ่ม', g)
+  demo.world.system('NongJoDII เข้าร่วมกลุ่ม', g)
+  // As in LINE, the bot learns no one on join: its setup card asks everyone to say hi (#151).
   await deliver(demo, g, [base(demo, g, 'join', null)], 'bot joined the group')
-  if (!setUp) learnMembers(demo, g)
   return ok({})
 }
 
-/** LINE tells a bot nothing about who is already in a group; the real bot learns a Member
- *  from their first message. So the setup form lists everyone at once, the demo writes each
- *  person in the group as a live Member (LINE name only, no role: roles come from the form)
- *  straight into the store, as the seed does. No chat item, no event. */
-function learnMembers(demo: Demo, g: DemoGroup): void {
-  const row = storeRow(demo, g)
-  if (!row) {
-    demo.world.addLog('error', `[${g.name}] join stored no group row: members not learned`)
-    return
+/** Short, different greetings, one per person, as a group would answer the bot's ask. */
+const GREETINGS = ['สวัสดีครับ 👋', 'หวัดดีค่ะทุกคน', 'ดีจ้า', 'สวัสดีน้องจดดี', 'มาแล้วครับ', 'หวัดดีครับผม', 'ทักทายค่ะ 🙌', 'สวัสดีจ้า']
+
+/** POST say-hi {group?}: every person in the group the bot does not know yet sends one
+ *  greeting through the webhook, so the bot learns them as it would in LINE. */
+async function sayHi(demo: Demo, g: DemoGroup): Promise<SimResult> {
+  if (!g.botInGroup) return bad('the bot is not in the group')
+  const people = unknownMembers(demo, g)
+  for (const [i, p] of people.entries()) {
+    const res = await send(demo, g, { persona: p.key, text: GREETINGS[i % GREETINGS.length] })
+    if (res.status !== 200) return res
   }
-  const live = new Set(
-    demo.store.tables.group_members.filter((m) => m.groupId === row.id && m.leftAt === null).map((m) => m.lineUserId),
-  )
-  const learned: string[] = []
-  for (const p of demo.world.membersInGroup(g)) {
-    if (live.has(p.lineUserId)) continue
-    seedLiveMember(demo.store, row.id, p, false)
-    learned.push(p.lineName)
-  }
-  if (learned.length) demo.world.addLog('event', `[${g.name}] members learned silently: ${learned.join(', ')}`)
+  return ok({ greeted: people.map((p) => p.key) })
 }
 
 async function leaveBot(demo: Demo, g: DemoGroup): Promise<SimResult> {
@@ -468,39 +478,21 @@ async function memberLeave(demo: Demo, g: DemoGroup, b: Record<string, unknown>)
   return ok({})
 }
 
-/** POST create-group {name, members, mode, parentGroup?}: a new LINE group with those
- *  people; the bot joins (the setup card, members learned silently). 'new-project' then
- *  waits for the setup form like any new group. 'sub-group' attaches it to the Project of
- *  parentGroup with that Project's Owner as its Owner (one admin per Project), through the
- *  store: no user-facing attach path exists yet. The new group becomes the selected one. */
+/** POST create-group {name, members}: a new LINE group with those people, and the bot joins
+ *  it: its setup card, no known Member. New Project or Sub group is picked in the real setup
+ *  form (#159), as in LINE. The group is saved as a not-set-up file and becomes the selected
+ *  one. */
 async function createGroup(demo: Demo, b: Record<string, unknown>): Promise<SimResult> {
-  const { world, store } = demo
+  const { world } = demo
   const name = typeof b.name === 'string' ? b.name.trim() : ''
   if (!name) return bad('name is required')
   if (name.length > GROUP_NAME_MAX) return bad(`name is longer than ${GROUP_NAME_MAX}`)
   if (!Array.isArray(b.members) || b.members.length === 0 || !b.members.every((k) => typeof k === 'string')) {
     return bad('members must be a non-empty list of persona keys')
   }
+  if (b.mode === 'sub-group') return bad('a Sub group is attached in the setup form: create the group, then open the bot\'s setup card')
   const keys = [...new Set(b.members as string[])]
   for (const k of keys) if (!world.persona(k)) return bad(`unknown persona ${k}`, 404)
-  const mode = b.mode
-  if (mode !== 'new-project' && mode !== 'sub-group') return bad("mode must be 'new-project' or 'sub-group'")
-
-  let attach: { projectId: string; owner: string } | null = null
-  if (mode === 'sub-group') {
-    if (typeof b.parentGroup !== 'string') return bad('parentGroup is required for a sub-group')
-    const parent = world.groupById(b.parentGroup)
-    if (!parent) return bad(`unknown group ${b.parentGroup}`, 404)
-    const prow = storeRow(demo, parent)
-    if (!prow?.projectId || prow.ownerConfirmedAt === null) return bad(`${parent.name} has no Project with a confirmed Owner yet`)
-    const project = store.tables.projects.find((x) => x.id === prow.projectId)
-    if (!project) return bad(`${parent.name} has no Project`)
-    const owner = world.personaById(project.ownerLineUserId)
-    if (!owner || !keys.includes(owner.key)) {
-      return bad(`a Sub group's Owner is its Project's Owner (${owner?.lineName ?? project.ownerLineUserId}): add them to members`)
-    }
-    attach = { projectId: project.id, owner: owner.lineUserId }
-  }
 
   const dir = groupsDir()
   const onError = (msg: string) => world.addLog('error', msg)
@@ -513,43 +505,20 @@ async function createGroup(demo: Demo, b: Record<string, unknown>): Promise<SimR
   world.select(g.lineGroupId)
   world.system(`สร้างกลุ่ม "${name}"`, g)
   await join(demo, g)
-  if (attach) {
-    const row = storeRow(demo, g)
-    if (!row) return bad('the join stored no group row', 500)
-    attachSubGroup(store, row.id, attach.projectId, attach.owner, world.now())
-    // A Sub group gets no setup form, so its members get their nicknames and role here.
-    for (const p of world.membersInGroup(g)) seedLiveMember(store, row.id, p, true)
-    world.addLog('event', `[${name}] attached as a Sub group (store write; no user-facing path yet)`)
-  }
-  g.file = saveGroupFile(demo, dir, g, keys, attach, b.parentGroup)
+  g.file = saveGroupFile(demo, dir, g, keys)
+  g.fileNotSetUp = g.file !== null
   return ok({ lineGroupId: g.lineGroupId, file: g.file })
 }
 
-/** Writes the new group's file (no Tasks, no chat), so every Reset and server start brings
- *  it back set up. The Owner: a Sub group's is its Project's; a new Project's is the
- *  owner-flagged persona (Nont) when a member, else the first member. null: not saved
- *  (logged): the folder is missing, or the parent group has no file to point at. */
-function saveGroupFile(
-  demo: Demo, dir: string, g: DemoGroup, keys: string[], attach: { owner: string } | null, parentGroup: unknown,
-): string | null {
+/** Writes the new group's file as not set up (no Tasks, no chat): every Reset and server
+ *  start brings it back with the bot's setup card, until its setup completes and
+ *  setup-files.ts records the outcome. null: not saved (logged). */
+function saveGroupFile(demo: Demo, dir: string, g: DemoGroup, keys: string[]): string | null {
   const { world } = demo
-  const def: GroupFile = { name: g.name, lineGroupId: g.lineGroupId, members: keys, owner: '', mode: 'new-project' }
-  if (attach) {
-    const parent = world.groupById(String(parentGroup))
-    if (!parent?.file) {
-      world.addLog('error', `[${g.name}] not saved as a file: its parent group has no file`)
-      return null
-    }
-    def.owner = world.personaById(attach.owner)?.key ?? keys[0]
-    def.mode = 'sub-group'
-    def.parent = parent.file
-  } else {
-    const flagged = world.personas.find((p) => p.owner && keys.includes(p.key))
-    def.owner = flagged?.key ?? keys[0]
-  }
+  const def: GroupFile = { name: g.name, lineGroupId: g.lineGroupId, members: keys, setUp: false }
   try {
     const file = writeGroupFile(dir, def)
-    world.addLog('event', `[${g.name}] saved as ${file}: it comes back after every Reset`)
+    world.addLog('event', `[${g.name}] saved as ${file} (not set up): it comes back after every Reset`)
     return file
   } catch (err) {
     world.addLog('error', `[${g.name}] not saved as a file: ${err instanceof Error ? err.message : String(err)}`)

@@ -69,9 +69,13 @@ export const demoApi = {
   follow: (persona: string) => call<unknown>('follow', { persona }),
   /** The phone shows this persona's 1:1 chat (its unread goes to 0); null: none. */
   openDirect: (persona: string | null) => call<{ openDirect: string | null }>('open-direct', { persona }),
-  /** Also saves the group as a file in src/app/demo/groups/ (file: its name; null: not saved). */
-  createGroup: (g: { name: string; members: string[]; mode: 'new-project' | 'sub-group'; parentGroup?: string }) =>
+  /** The bot joins with its setup card; new Project or Sub group is picked in the setup form.
+   *  Also saves the group as a not-set-up file in src/app/demo/groups/ (file: its name; null:
+   *  not saved). */
+  createGroup: (g: { name: string; members: string[] }) =>
     call<{ lineGroupId: string; file: string | null }>('create-group', g),
+  /** Everyone in the group the bot does not know yet says hi through the webhook. */
+  sayHi: (group?: string) => call<{ greeted: string[] }>('say-hi', group ? { group } : {}),
   /** Deletes the group and its file; refused (400) while a Sub group's file names it as parent. */
   deleteGroup: (group: string) =>
     call<{ deleted: string; file: string | null; selectedGroup: string }>('delete-group', { group }),

@@ -41,6 +41,9 @@ export type DemoGroupInfo = {
   unread: number
   /** Its file in src/app/demo/groups/ (it comes back after every Reset); null: none. */
   file: string | null
+  /** Persona keys of the people in the group the bot does not know yet (it learns a person
+   *  from their first message); "ให้ทุกคนทักทาย" (POST say-hi) makes each of them say hi. */
+  unknownMembers: string[]
 }
 
 /** The chat list row of one persona's 1:1 chat with the bot. unread: items since the

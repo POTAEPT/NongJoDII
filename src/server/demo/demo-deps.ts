@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { GoogleHttpClient } from '@/server/google/client'
 import type { Defer, Deps, GooglePort, HandlerConfig } from '@/server/ports'
+import { setupCard } from '@/server/setup/card'
 import { MemoryStore } from '@/server/store/memory-store'
 import { BKK_OFFSET_MS, bangkokIsoWeekday, bangkokParts, bangkokWeekStartLabel } from '@/server/time/bangkok'
 import { DemoLine } from './demo-line'
@@ -185,6 +186,7 @@ function seedGroupFile(
   if (unknown.length) onError(`group file ${file}: unknown persona(s) ${unknown.join(', ')} left out`)
   const members = [...new Set(def.members.filter((k) => world.persona(k)))]
   if (members.length === 0) return skip('no known member')
+  if (def.setUp === false) return seedNotSetUp(world, store, file, def, members, onDisk)
 
   let projectId: string
   let owner: DemoPersona | undefined
@@ -194,15 +196,15 @@ function seedGroupFile(
     if (!parent.isMain) return skip(`parent ${def.parent} is not a main group`)
     // One admin per Project: a Sub group's Owner is the Project's Owner.
     owner = parent.owner
-    if (def.owner !== owner.key) onError(`group file ${file}: owner ${def.owner} is not the Project's Owner; using ${owner.key}`)
+    if (def.owner !== undefined && def.owner !== owner.key) onError(`group file ${file}: owner ${def.owner} is not the Project's Owner; using ${owner.key}`)
     if (!members.includes(owner.key)) return skip(`the Project's Owner (${owner.key}) is not a member`)
     projectId = parent.projectId
   } else {
-    owner = world.persona(def.owner)
+    owner = world.persona(def.owner ?? '')
     if (!owner || !members.includes(owner.key)) return skip(`owner ${def.owner} is not a member`)
     projectId = store.seedProject(owner.lineUserId).id
   }
-  const isMain = def.mode === 'new-project'
+  const isMain = def.mode !== 'sub-group'
   seeded.set(fileStem(file), { projectId, owner, isMain })
 
   const now = world.now()
@@ -250,6 +252,19 @@ function seedGroupFile(
   }))
 }
 
+/** A group whose setup never completed, as LINE left it: the bot in the group with its setup
+ *  card (the join card asks everyone to say hi), no Project and no known Member, since the
+ *  bot learns people only from their messages (#151). */
+function seedNotSetUp(
+  world: DemoWorld, store: MemoryStore, file: string, def: GroupFile, members: string[], onDisk: boolean,
+): void {
+  const wg = world.addGroup({ lineGroupId: def.lineGroupId, name: def.name, members, botInGroup: true, file: onDisk ? file : null })
+  wg.fileNotSetUp = onDisk
+  const row = store.seedGroup({ lineGroupId: wg.lineGroupId, name: def.name })
+  world.system('NongJoDII เข้าร่วมกลุ่ม', wg)
+  world.addChat({ from: 'bot', via: 'reply', message: setupCard({ liffId: DEMO_LIFF_ID, groupId: row.id }) }, wg)
+}
+
 /** `now` moved by the offset; `hour` then pins that day's Bangkok hour; `thisWeek` keeps it
  *  at or after this Bangkok week's Monday 00:00. */
 function atOffset(now: Date, o: GroupOffset & { thisWeek?: boolean }): Date {
@@ -295,19 +310,4 @@ export function seedLiveMember(store: MemoryStore, groupId: string, p: DemoPerso
     groupId, lineUserId: p.lineUserId, displayName: p.lineName,
     ...(withProfile ? { nicknames: p.nicknames ?? [], ...(p.role ? { role: p.role } : {}) } : {}),
   })
-}
-
-/** Makes a group a Sub group of `projectId`: its Owner is the Project's Owner (the one-admin
- *  rule, check_same_owner), confirmed now. No user-facing path does this yet (the "Sub group
- *  attach flow" is not built), so the demo writes the store as the seed does. */
-export function attachSubGroup(store: MemoryStore, groupId: string, projectId: string, owner: string, at: Date): void {
-  const row = store.tables.groups.find((g) => g.id === groupId)
-  if (!row) throw new Error(`no group ${groupId}`)
-  row.projectId = projectId
-  row.nominatedOwnerLineUserId = owner
-  row.ownerConfirmedAt = at
-  row.ownerLeftAt = null
-  const setup = store.tables.group_setups.find((r) => r.groupId === groupId)
-  if (setup) Object.assign(setup, { isMain: false, ownerNominatedByLineUserId: owner, ownerNominatedAt: at })
-  else markSetup(store, groupId, false, owner, at)
 }

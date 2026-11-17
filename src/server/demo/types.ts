@@ -41,6 +41,9 @@ export type DemoGroupInfo = {
   unread: number
   /** Its file in src/app/demo/groups/ (it comes back after every Reset); null: none. */
   file: string | null
+  /** Persona keys of the people in the group the bot does not know yet (it learns a person
+   *  from their first message); "ให้ทุกคนทักทาย" (POST say-hi) makes each of them say hi. */
+  unknownMembers: string[]
 }
 
 /** The chat list row of one persona's 1:1 chat with the bot. unread: items since the
@@ -67,7 +70,7 @@ export type DemoState = {
   groups: DemoGroupInfo[]
   selectedGroup: string
   /** inGroup: in the selected group. */
-  personas: Array<{ key: string; lineUserId: string; lineName: string; role: string | null; owner: boolean; inGroup: boolean }>
+  personas: Array<{ key: string; lineUserId: string; lineName: string; role: string | null; owner: boolean; inGroup: boolean; nicknames: string[] }>
   quota: { limit: number | null; used: number }
   ai: { model: string | null; lastCallFallback: boolean; busy: boolean; calls: AiCall[]; totalUsd: number }
   google: { connected: boolean; email: string | null }
@@ -83,13 +86,26 @@ export type DemoState = {
 
 /** A script in the e2e scenario shape (e2e/scenario-types.ts). The player uses personas,
  *  messages (in order) and summaryCommand; the other fields are kept for reference. */
+/** One line of a scenario. type 'text' (the default) needs text. 'image' and 'file' send
+ *  public/demo/files/<file> as that person's upload (the File saver, #4); fileName is the
+ *  name the chat shows (default: file). replyTo: the id of an earlier message of the same
+ *  script, sent as a LINE quote-reply (e.g. "NongJoDII ขอไฟล์" on a file, #33). */
+export type DemoScriptMessage = {
+  id?: string; persona: string; minute?: number
+  type?: 'text' | 'image' | 'file'
+  text?: string
+  file?: string
+  fileName?: string
+  replyTo?: string
+}
+
 export type DemoScript = {
   name: string
   description?: string
   feature?: string
   group?: { lineGroupId?: string; name?: string; workDescription?: string }
   personas?: Record<string, { lineName: string; role: string | null; owner?: boolean; lineUserId?: string }>
-  messages: Array<{ id?: string; persona: string; minute?: number; text: string }>
+  messages: DemoScriptMessage[]
   summaryCommand?: { persona: string; minute?: number; text: string } | null
   [k: string]: unknown
 }

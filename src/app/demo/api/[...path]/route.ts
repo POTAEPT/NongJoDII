@@ -1,3 +1,4 @@
+import { noteDemoOrigin } from '@/server/demo/demo-deps'
 import { demoEnabled, demoNotFound } from '@/server/demo/gate'
 import { demoGoogleCallback, demoLiffPost } from '@/server/demo/liff-api'
 
@@ -11,6 +12,7 @@ const notDemoPath = (path: string) => Response.json({ error: `no demo api path $
 export async function GET(request: Request, ctx: Ctx) {
   const path = (await ctx.params).path.join('/')
   if (!demoEnabled()) return demoNotFound()
+  noteDemoOrigin(request)
   if (path === 'google/callback') return demoGoogleCallback(request)
   return notDemoPath(path)
 }
@@ -18,5 +20,6 @@ export async function GET(request: Request, ctx: Ctx) {
 export async function POST(request: Request, ctx: Ctx) {
   const path = (await ctx.params).path.join('/')
   if (!demoEnabled()) return demoNotFound()
+  noteDemoOrigin(request)
   return (await demoLiffPost(path, request)) ?? notDemoPath(path)
 }

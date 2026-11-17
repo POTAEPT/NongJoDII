@@ -15,9 +15,42 @@ describe('substituteMemberRefs', () => {
     expect(substituteMemberRefs('{m9}', names)).toBe('สมาชิก')
   })
 
-  it('leaves text without braced refs unchanged', () => {
+  it('leaves text without refs unchanged', () => {
     expect(substituteMemberRefs('ไม่มีชื่อ', names)).toBe('ไม่มีชื่อ')
-    expect(substituteMemberRefs('m1 ทำ', names)).toBe('m1 ทำ')
+  })
+
+  // Live 2026-11-17: the model wrote refs without braces ("m1", "ม1") into the summary.
+  describe('bare refs', () => {
+    const three = new Map<string, string | null>([['m1', 'Naruekot'], ['m2', 'Test'], ['m3', 'Ploy']])
+
+    it.each([
+      ['m1 ทำสไลด์', 'Naruekot ทำสไลด์'],
+      ['ม1 ให้ทำสไลด์ ส่วนม2 ทำรายงาน', 'Naruekot ให้ทำสไลด์ ส่วนTest ทำรายงาน'],
+      ['ม.2 ทำรายงาน', 'Test ทำรายงาน'],
+      ['ตามคำสั่งของ m1.', 'ตามคำสั่งของ Naruekot.'],
+      ['ผู้รับ (m2)', 'ผู้รับ (Test)'],
+      ['ผู้รับ [m2]', 'ผู้รับ Test'],
+      ['m1-m3 ช่วยกันทำ', 'Naruekot, Test, Ploy ช่วยกันทำ'],
+      ['ม1–ม2 ช่วยกันทำ', 'Naruekot, Test ช่วยกันทำ'],
+      ['{ม3} จองห้อง', 'Ploy จองห้อง'],
+    ])('%j becomes %j', (raw, want) => {
+      expect(substituteMemberRefs(raw, three)).toBe(want)
+    })
+
+    it('keeps words and numbers that are not refs in this prompt', () => {
+      expect(substituteMemberRefs('m9 ทำ', three)).toBe('m9 ทำ')
+      expect(substituteMemberRefs('ม.6 กับ m10', three)).toBe('ม.6 กับ m10')
+      expect(substituteMemberRefs('msg1 ห้อง 5m1 Apple M1 rm1', three)).toBe('msg1 ห้อง 5m1 Apple M1 rm1')
+      expect(substituteMemberRefs('[m9]', three)).toBe('[m9]')
+    })
+
+    it('a range with an unknown end swaps only the known end', () => {
+      expect(substituteMemberRefs('m2-m9', three)).toBe('Test-m9')
+    })
+
+    it('a LINE name put in for a ref is not read again', () => {
+      expect(substituteMemberRefs('{m1} และ m2', new Map([['m1', 'm2'], ['m2', 'Test']]))).toBe('m2 และ Test')
+    })
   })
 })
 

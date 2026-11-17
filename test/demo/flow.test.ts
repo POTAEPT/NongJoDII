@@ -78,14 +78,20 @@ describe('/demo full in-process run', () => {
     expect(card).toContain('https://liff.line.me/demo-liff?view=setup')
   })
 
-  it('a fresh group: the bot learns everyone silently on join, so the setup form lists all four with no role', async () => {
+  it('a fresh group: join adds no Member (#151); say-hi makes all four live, with no role', async () => {
     const demo = fresh(false)
     await sim('join')
     await demo.idle()
     // No greeting bubbles and no message events: only the join line and the setup card.
     expect(demo.world.chat.filter((c) => c.from === 'user')).toHaveLength(0)
     expect(demo.store.tables.messages).toHaveLength(0)
+    expect(demo.store.tables.group_members).toHaveLength(0)
+    expect(simState(demo).groups[0].unknownMembers.sort()).toEqual(['bomb', 'jeff', 'nont', 'tae'])
 
+    await sim('say-hi')
+    await demo.idle()
+    expect(demo.world.chat.filter((c) => c.from === 'user')).toHaveLength(4)
+    expect(simState(demo).groups[0].unknownMembers).toEqual([])
     const group = demo.store.tables.groups[0]
     const nominee = demo.world.persona('nont')!.lineUserId
     const res = await loadSetup(demo.deps, { idToken: `demo:${nominee}`, groupId: group.id })
@@ -94,10 +100,13 @@ describe('/demo full in-process run', () => {
     expect(members.map((m) => m.displayName).sort()).toEqual(['Bomb', 'Jeff', 'Nont', 'Tae'])
     expect(members.every((m) => m.role === null)).toBe(true)
 
-    // A second join adds no one twice.
+    // A second join learns no one and adds no one twice.
     await sim('join')
     await demo.idle()
     expect(demo.store.tables.group_members).toHaveLength(4)
+    // say-hi needs the bot in the group.
+    await sim('leave-bot')
+    expect((await runSimAction('say-hi', 'POST', {})).status).toBe(400)
   })
 
   it('a set-up group: join adds no chat bubbles from people', async () => {
@@ -140,7 +149,7 @@ describe('/demo full in-process run', () => {
     fresh()
     const res = await runSimAction('scripts', 'GET', null)
     expect((res.body as { scripts: Array<{ name: string }> }).scripts.map((s) => s.name)).toEqual([
-      '01-clear-task', '02-casual-no-task', '03-several-tasks',
+      '01-clear-task', '02-casual-no-task', '03-several-tasks', '04-file-saver',
     ])
   })
 

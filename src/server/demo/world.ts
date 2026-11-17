@@ -38,6 +38,9 @@ export type DemoGroup = {
   readCount: number
   /** Its file in the groups folder (group-files.ts), e.g. '04-group.json'; null: none. */
   file: string | null
+  /** Its file says "not set up" (setUp: false): setup-files.ts rewrites it once the group's
+   *  setup completes. */
+  fileNotSetUp?: boolean
 }
 
 /** Everything the simulator shows besides the store: the clock, the LINE groups as LINE

@@ -112,6 +112,19 @@ describe('Summary command', () => {
     expect(reply).toContain('จาก Pim Sirin เวลา')
   })
 
+  it('a member ref the model wrote without braces never reaches the reply (live 2026-11-17)', async () => {
+    const t = setup()
+    await seedChat(t)
+    t.respond((ref) => {
+      const thai = ref('Bank T.').replace('m', 'ม')
+      return { summary: `${ref('Pim Sirin')} รับทำสไลด์ ส่วน${thai} ดูเรื่องห้อง`, tasks: [{ title: `${ref('Pim Sirin')} ทำสไลด์` }] }
+    })
+    await t.command()
+    expect(t.store.tables.summaries[0].summaryText).toBe('Pim Sirin รับทำสไลด์ ส่วนBank T. ดูเรื่องห้อง')
+    expect(t.store.tables.task_candidates[0].title).toBe('Pim Sirin ทำสไลด์')
+    expect(textOf(t.line.replies[0].messages)).not.toMatch(/(?<![A-Za-z0-9])(?:m|ม)\d/)
+  })
+
   it('a LINE name that looks like a message ref is kept', async () => {
     const t = setup()
     t.store.seedMember({ groupId: t.group.id, lineUserId: 'Umsg', displayName: 'msg5' })
@@ -142,6 +155,23 @@ describe('Summary command', () => {
       '09:00 Pim Sirin สวัสดีทุกคน | 09:01 Bank T. ใครทำสไลด์ได้บ้าง ด่วนนะ | 09:02 Pim Sirin เดี๋ยวทำสไลด์เอง',
     )
     expect(t.store.tables.task_candidates[0].suggestedDueAt).toEqual(new Date('2026-11-13T10:00:00Z'))
+  })
+
+  it('the prompt carries a Thai calendar, and a weekday the model counted wrong is fixed from the Task\'s message', async () => {
+    const t = setup()
+    await seedChat(t)
+    await t.send(ev.groupText({ text: 'เราทำรายงานให้ ส่งวันจันทร์', userId: 'Ubank', timestamp: T0 + 3 * MIN }))
+    // Thu 12 Nov: "วันจันทร์" is Mon 16 Nov; the model counted to Tue 17.
+    t.respond((ref, req) => ({
+      summary: 'สรุป',
+      tasks: [{ title: 'ทำรายงาน', assignee: ref('Bank T.'), due: '2026-11-17', source: chatLines(req).find((c) => c.text.includes('วันจันทร์'))?.ref }],
+    }))
+    await t.command()
+    const user = t.llm.requests[0].user
+    expect(user).toContain('- 2026-11-12 Thu พฤหัสบดี (พฤ.) this week, วันนี้ (today)')
+    expect(user).toContain('- 2026-11-16 Mon จันทร์ (จ.) next week (สัปดาห์หน้า)')
+    expect(t.llm.requests[0].system).toContain('NEXT such day on or after today')
+    expect(t.store.tables.task_candidates[0].suggestedDueAt).toEqual(new Date('2026-11-16T23:59:00+07:00'))
   })
 
   it('4. sends only the newest 100 texts (M1)', async () => {

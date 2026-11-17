@@ -18,13 +18,16 @@ Every `/demo` page and `/demo/api/**` route answers 404 unless `process.env.DEMO
 
 `/demo/api/<path>` has the same body and answer as `/api/<path>` for: dashboard/load, me/load, me/save, review/load, review/notify, review/submit, settings/load, settings/stop-using, settings/submit, setup/confirm-owner, setup/load, setup/resend-card, setup/submit, takeover/answer, takeover/load, tasks/load, tasks/update, progress/answer, google/start, google/status, google/disconnect. It also serves `GET /demo/api/google/callback`, and its "back to LINE" link points to `<origin>/demo?view=google&id=done|back`.
 
+The demo's origin (the Google redirect URI `<origin>/demo/api/google/callback` and the card links' `appBaseUrl`) follows the requests: every `/demo/api/**` request sets it to its own origin, so a server on `next dev -p 3001` signs in through `:3001`. Before the first request it is `http://localhost:<PORT or 3000>`. `DEMO_BASE_URL`, when set, wins (a tunnel URL, for example). Google accepts only a redirect URI listed on the OAuth client, so each port used for the demo needs its own entry there.
+
 ## Sim API (`/demo/api/sim/*`, JSON in and out)
 
 | Route | Body | Effect |
 | --- | --- | --- |
 | `GET state` | none | `DemoState` (below). Reading it changes nothing |
 | `POST select-group` | `{group}` | Selects (opens) that group; its unread count goes to 0. Unknown group: 404 |
-| `POST create-group` | `{name, members: string[] /* persona keys */, mode: 'new-project' \| 'sub-group', parentGroup?: string}` | Creates the group, selects it, the bot joins (setup card) and learns the members silently. `sub-group` then attaches it to `parentGroup`'s Project (below). Also saves it as a group file (see "Groups"). Answers `{lineGroupId, file /* e.g. '04-group.json'; null: not saved */}` |
+| `POST create-group` | `{name, members: string[] /* persona keys */}` | Creates the group, selects it, and the bot joins: its setup card, no known Member (as in LINE, #151). New Project or Sub group is picked in the real setup form (#159), never here: `mode: 'sub-group'` answers 400. Also saves it as a not-set-up group file (see "Groups"). Answers `{lineGroupId, file /* e.g. '04-group.json'; null: not saved */}` |
+| `POST say-hi` | `{group?}` | Each person in the group the bot does not know yet (`unknownMembers`) sends one short, different Thai greeting through the webhook, so the bot learns them as in LINE. 400 when the bot is not in the group. Answers `{greeted: string[] /* persona keys */}` |
 | `POST delete-group` | `{group}` (a lineGroupId, required) | Deletes the group's file and removes the group from the world and the store (see "Groups"). 400 while another file names it as `parent`, or when it is the only group; 404 for an unknown group. Answers `{deleted, file, selectedGroup}` |
 | `POST send` | `{group?, persona, type:'text', text, quotedMessageId?, mentions?: string[] /* persona keys */}` or `{persona, type:'image', fileName, contentType, dataBase64, imageSet?: {id, index, total}}` or `{persona, type:'file', fileName, contentType, dataBase64}` or `{persona, type:'sticker'}` | Builds a LINE message event, signs it, calls `handleWebhookRequest`. Answers `{messageId}` |
 | `POST message` | `{group?, persona, text}` | External injection API; same as a text `send` |
@@ -63,9 +66,10 @@ type DemoState = {
     lastMessage: { text: string; at: string } | null   // "Nont: ..." preview
     unread: number               // non-system items since the group was last open; 0 for the selected one
     file: string | null          // its file in src/app/demo/groups/ (comes back after Reset); null: none
+    unknownMembers: string[]     // persona keys of people in the group the bot holds no live Member for
   }>
   selectedGroup: string      // lineGroupId
-  personas: Array<{ key: string; lineUserId: string; lineName: string; role: string | null; owner: boolean; inGroup: boolean /* in the selected group */ }>
+  personas: Array<{ key: string; lineUserId: string; lineName: string; role: string | null; owner: boolean; inGroup: boolean /* in the selected group */; nicknames: string[] }>
   quota: { limit: number | null; used: number }
   ai: {
     model: string | null; lastCallFallback: boolean; busy: boolean
@@ -114,10 +118,12 @@ type ChatItem = {
 
   Each has 3 to 4 Thai Tasks in the store (assignees, dues relative to now, open, done and exactly one overdue) and a few chat lines; the two other groups start with 2 unread. For the Owner card (#120) every count shows: Tasks in process, one done this week per group (done_at earlier this Bangkok week), the overdue one, and one stale Task (last update 6 days ago) in each main group. The weekly slot of each **main group** is set near the reset, so "done this week" usually holds when the card fires (not for `ลูกค้า ร้านกาแฟ` after a Sunday reset: its slot falls in the next week): `ทีมพิตช์ NongJoDII` on the reset day's weekday, `ลูกค้า ร้านกาแฟ` the next day, both at the next full Bangkok hour (23:00 at the latest). The Sub group keeps the default (Monday 09:00). The Dashboard as Nont lists all three. `{setup: false}` keeps one fresh group (`...0001`, the four personas, the bot not in it, no store row) for the onboarding demo (join, setup card, setup LIFF, Owner confirm).
 - **Replies and pushes** land in the chat of the group they target: DemoLine maps each reply token to the group of the event that carried it, and a push goes to the group named by `to`. Push cost counts that group's members.
-- **Sub group path.** The bot code has no user-facing way for a group to join an existing Project (the "Sub group attach flow" is referenced but not built; confirming an Owner always creates a new Project). So `create-group` with `mode: 'sub-group'` writes the store after the join, as the seed does: the group's `projectId` is the parent's Project, its Owner is that Project's Owner (one admin per Project), confirmed now, and `isMain` is false. It answers 400 when the parent has no Project with a confirmed Owner, or the Project's Owner is not in `members`.
+- **Sub group path.** A new group becomes a Sub group in the real setup form ("attach to your Project", `setup/submit` with `attachProjectId`, #159), as in LINE. The sim has no shortcut for it.
 - **AI calls.** Each finished call of the demo AI is recorded: the cost OpenRouter reported (`usage.costUsd`), else the tokens at the app's price (`src/server/usage/pricing.ts`, `estimated: true`), else `null` ("n/a"). A canned fallback costs 0 and has `fallback: true`. `kind` is `progress` for a progress decision (the Decisions API call to TypeSafe Jev), else comes from the schema (`summary`) or a prompt that mentions tags. The UI shows one Sonner toast per call id (kept until closed, stacked), remembered in `localStorage` so a reload does not repeat them, and lists the calls in the AI tab.
-- `GET scripts` lists the playable scripts: `{scripts: [{name, description, messages}]}`, read from `src/app/demo/scripts/*.json` on every request, sorted by file name. `load-script` accepts the name with or without `.json`; a name that is not a plain file name (letters, digits, `-`, `_`) answers 400, an unknown one 404. A file with invalid JSON or no `messages[]` is left out of the list and logged as `error`.
-- `join` on a group that is not set up (no Project, no confirmed Owner): after the join event, every persona in the group that is not yet a live Member is written to the store as a live Member (LINE name only, no role: roles come from the setup form). No chat item and no message event; the log says "members learned silently". So the setup form lists everyone at once. (In real LINE the bot learns a Member from their first message.)
+- `GET scripts` lists the playable scripts: `{scripts: [{name, description, messages}]}`, read from `src/app/demo/scripts/*.json` on every request, sorted by file name. `load-script` accepts the name with or without `.json`; a name that is not a plain file name (letters, digits, `-`, `_`) answers 400, an unknown one 404. A file with invalid JSON or no `messages[]` is left out of the list and logged as `error`. A message may be an upload instead of text: `type: 'image' | 'file'` with `file` (a plain file name in `public/demo/files/`) and an optional `fileName` shown in the chat; `replyTo` (an earlier message's `id`) sends it as a quote-reply. A bad `file` name or an unknown `replyTo` leaves the script out of the list; a `file` that cannot be read makes `load-script` answer 400 before anything plays.
+- `join` writes no Member: as in LINE, the bot learns a person from their first message (#151), and its setup card asks everyone to say hi. `say-hi` (the presenter's "ให้ทุกคนทักทาย") sends those messages. Opening the setup form also makes the opener known, as the real form does.
+- **Setup autofill.** In the demo's LIFF drawer, the setup form shows "✨ เติมข้อมูลตัวอย่าง (เดโม)". It fills only what is empty: the work description (the seeded group's own, else a generic one with the group name), four starting tags, and each known person's nicknames and role from the personas. Times, features, the Owner and the attach choice stay as they are. The drawer provides it through `LiffAutofillContext` (`src/app/liff/autofill.ts`, fill in `src/app/demo/_lib/autofill.ts`); the live `/liff` page provides nothing, so it never shows the button.
+- **Dashboard rule.** A group appears on the Dashboard only after its setup form is saved and its Owner confirms (a Sub group attached by its Project's Owner is confirmed at once). The presenter panel marks a group with no Project "ยังไม่ตั้งค่า" and, when it is selected, says so in one line.
 - While the bot is not in a group, `send`, `postback`, `unsend` and member events still change that group's chat and members, but no event reaches the bot (as in LINE); the log says "not delivered".
 - `load-script` into a group that lacks a speaker: before the first message, each such persona joins the group (a memberJoined event, so the bot's welcome card shows) and gets their nicknames and role in the store, as if they filled in "ข้อมูลของฉัน". The answer's `joined` lists them.
 - `join` on a set-up group still gets the real join reply (the setup card); that is the bot's own behaviour.
@@ -134,7 +140,7 @@ The set-up seed is a folder of group files, `src/app/demo/groups/*.json`, one gr
 - **Fallback.** Only when the folder does not exist (or holds no usable file) does the seed use the built-in definitions (`FALLBACK_GROUPS`, the same as the three shipped files).
 - **Shipped files.** `01-main.json` (`ทีมพิตช์ NongJoDII`), `02-dev.json` (`ทีม Dev`, Sub group of `01-main.json`), `03-cafe.json` (`ลูกค้า ร้านกาแฟ`).
 
-Each seeded group is set up: the bot is in it, its Owner is confirmed, every member is a live Member with their nicknames and role, and it gets the file's Tasks and chat lines.
+Each seeded group is set up: the bot is in it, its Owner is confirmed, every member is a live Member with their nicknames and role, and it gets the file's Tasks and chat lines. A file with `"setUp": false` comes back as LINE left it instead: the bot in the group, its setup card in the chat, no Project and no known Member.
 
 ### File shape
 
@@ -143,6 +149,7 @@ Each seeded group is set up: the bot is in it, its Owner is confirmed, every mem
   "name": "ทีม Dev",                                  // 1-50 characters
   "lineGroupId": "Cdemo0000000000000000000000000002", // stable: C + letters or digits
   "members": ["nont", "tae"],                         // persona keys
+  "setUp": true,                                      // optional; false: not set up (owner, mode unused)
   "owner": "nont",                                    // persona key, a member
   "mode": "sub-group",                                // "new-project" | "sub-group"
   "parent": "01-main.json",                           // sub-group only: the parent's file name
@@ -164,7 +171,9 @@ Each seeded group is set up: the bot is in it, its Owner is confirmed, every mem
 
 ### Create and delete
 
-- **Create.** `create-group` writes `NN-<slug>.json`: `NN` one past the highest number in the folder, `<slug>` the name in lowercase ascii letters and digits (a Thai name gives `group`). The file holds `name`, `lineGroupId`, `members`, `owner`, `mode` and, for a Sub group, `parent` (the parent group's file). No Tasks, no chat: after a Reset the group is back set up with an empty chat. The Owner of a new Project is the owner-flagged persona (Nont) when a member, else the first member. The new group's `lineGroupId` is never one a group file holds. The folder is never created: when it is missing, or the parent group has no file, the group is not saved (logged).
+- **Create.** `create-group` writes `NN-<slug>.json`: `NN` one past the highest number in the folder, `<slug>` the name in lowercase ascii letters and digits (a Thai name gives `group`). The file holds `name`, `lineGroupId`, `members` and `"setUp": false`. The new group's `lineGroupId` is never one a group file holds. The folder is never created: when it is missing, the group is not saved (logged).
+- **Setup recorded.** After every sim and demo LIFF request, a not-set-up group whose setup has completed (a Project and a confirmed Owner) gets its file rewritten with `owner`, `mode` and, for a Sub group, `parent` (the Project's main group's file); `setUp` is dropped. Code: `src/server/demo/setup-files.ts`. After a Reset the group is back set up, with no Tasks and an empty chat. A form saved but not yet confirmed leaves the file not set up. When the Project's main group has no file, the outcome is not recorded (logged).
+- A file written before this rule (with `owner` and `mode`, no `setUp`) still seeds set up. Add `"setUp": false` to bring such a group back not set up.
 - **Delete.** `delete-group {group}` deletes the file, then removes the group from the world and every store row with its group id (and its Project when no other group is in it), so the Dashboard no longer lists it. If it was selected, the first group is selected. Refused (400) while another file has it as `parent`: delete the Sub group first. The presenter panel's group picker has a delete button (with a confirm dialog) for the selected group.
 - **Tests** never touch the shipped folder: `test/setup.ts` points `DEMO_GROUPS_DIR` at a temp folder holding the three built-in groups, and `setGroupsDir(dir)` overrides it per test. One test checks that the shipped files equal the built-in definitions.
 - **Built-in groups** (the fallback) have `file: null`: there is no file to delete.

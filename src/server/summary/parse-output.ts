@@ -1,4 +1,5 @@
 import { suggestedTags } from '../tasks/tags'
+import { bangkokEndOfDay, bangkokIsoWeekday, bangkokParts, bangkokTodayLabel, bangkokWeekdayDate, findWeekday } from '../time/bangkok'
 
 export type ParsedTask = {
   title: string; details: string | null; assigneeRef: string | null; due: Date | null; sourceRef: string | null
@@ -35,7 +36,10 @@ export const SUMMARY_SCHEMA = {
             title: { type: 'string' },
             details: { type: ['string', 'null'] },
             assignee: { type: ['string', 'null'] },
-            due: { type: ['string', 'null'] },
+            due: {
+              type: ['string', 'null'],
+              description: 'YYYY-MM-DD when the chat names a day but no time; YYYY-MM-DDTHH:MM:SS+07:00 when it names a time; null when no deadline.',
+            },
             source: { type: ['string', 'null'] },
             tags: { type: 'array', items: { type: 'string' } },
           },
@@ -83,12 +87,50 @@ function parseTask(item: unknown): ParsedTask | null {
   const details = typeof t.details === 'string' ? t.details.trim().slice(0, DETAILS_MAX) || null : null
   const assigneeRef = typeof t.assignee === 'string' && /^m\d+$/.test(t.assignee) ? t.assignee : null
   const sourceRef = typeof t.source === 'string' ? readSourceRef(t.source) : null
-  let due: Date | null = null
-  if (typeof t.due === 'string') {
-    const d = new Date(t.due)
-    if (!Number.isNaN(d.getTime())) due = d
-  }
-  return { title, details, assigneeRef, due, sourceRef, tags: suggestedTags(t.tags) }
+  return { title, details, assigneeRef, due: parseDue(t.due), sourceRef, tags: suggestedTags(t.tags) }
+}
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+/** A deadline with a day but no time ("YYYY-MM-DD") is 23:59 Bangkok that day, never the
+ *  start of it (a Task due at 00:00 looks overdue all day). A date-time is kept as given. */
+export function parseDue(raw: unknown): Date | null {
+  if (typeof raw !== 'string') return null
+  const s = raw.trim()
+  const d = new Date(DATE_ONLY.test(s) ? `${s}T23:59:00+07:00` : s)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+// Words for midnight: เที่ยงคืน, หกทุ่ม (6 ทุ่ม), ตีศูนย์, midnight, and 00:00 / 0.00 / 24:00.
+const MIDNIGHT = /เที่ยงคืน|หก\s*ทุ่ม|(?<!\d)6\s*ทุ่ม|ตี\s*(?:ศูนย์|0)|midnight|(?<!\d)(?:0?0|24)[:.]00(?!\d)/i
+
+/** The model often writes T00:00 for a deadline that names only a day. A due at 00:00
+ *  Bangkok becomes 23:59 that day unless `chatText` (the raw text of the message the Task
+ *  came from, never a prompt line, which starts with its time) speaks of midnight. */
+export function settleMidnightDue(due: Date | null, chatText: string): Date | null {
+  if (due === null) return null
+  const p = bangkokParts(due)
+  if (p.hh !== 0 || p.mm !== 0 || MIDNIGHT.test(chatText)) return due
+  return bangkokEndOfDay(due)
+}
+
+/** The model counts days instead of reading the calendar: "ส่งวันพฤหัส" on Tue 17 Nov came back
+ *  as Wed 18 or Tue 24 (2 of 6 live runs). When `sourceText` (the raw text of the Task's own
+ *  message) names exactly one weekday (findWeekday) and the due is on another weekday, or
+ *  before today, the due moves to that weekday by the prompt's rule: the first such day on or
+ *  after today, or that day of the following week for "พฤหัสหน้า" / "สัปดาห์หน้า" / "next
+ *  week" (there the exact date must match). Whole days move, so the time stays (23:59 for a
+ *  date-only due). No source, no weekday or a written-out date: the due is kept. */
+export function settleWeekdayDue(due: Date | null, sourceText: string | null, now: Date): Date | null {
+  if (due === null || sourceText === null) return due
+  const ref = findWeekday(sourceText)
+  if (ref === null) return due
+  const target = bangkokWeekdayDate(now, ref.weekday, ref.nextWeek)
+  const dueDay = bangkokTodayLabel(due)
+  const right = ref.nextWeek ? dueDay === target : bangkokIsoWeekday(due) === ref.weekday && dueDay >= bangkokTodayLabel(now)
+  if (right) return due
+  const days = Math.round((Date.parse(`${target}T00:00:00Z`) - Date.parse(`${dueDay}T00:00:00Z`)) / 86_400_000)
+  return new Date(due.getTime() + days * 86_400_000)
 }
 
 /** "msg14" is the prompt's form; "{msg14}" and the older "#14" are accepted and

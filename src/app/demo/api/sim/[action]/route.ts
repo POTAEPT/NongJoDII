@@ -1,3 +1,4 @@
+import { noteDemoOrigin } from '@/server/demo/demo-deps'
 import { demoEnabled, demoNotFound } from '@/server/demo/gate'
 import { runSimAction } from '@/server/demo/sim'
 
@@ -6,10 +7,11 @@ import { runSimAction } from '@/server/demo/sim'
 
 type Ctx = { params: Promise<{ action: string }> }
 
-export async function GET(_request: Request, ctx: Ctx) {
+export async function GET(request: Request, ctx: Ctx) {
   // Awaiting params first makes the handler run at request time (cacheComponents).
   const { action } = await ctx.params
   if (!demoEnabled()) return demoNotFound()
+  noteDemoOrigin(request)
   const result = await runSimAction(action, 'GET', null)
   return Response.json(result.body, { status: result.status, headers: { 'Cache-Control': 'no-store' } })
 }
@@ -17,6 +19,7 @@ export async function GET(_request: Request, ctx: Ctx) {
 export async function POST(request: Request, ctx: Ctx) {
   const { action } = await ctx.params
   if (!demoEnabled()) return demoNotFound()
+  noteDemoOrigin(request)
   let body: unknown = {}
   const raw = await request.text()
   if (raw.trim() !== '') {

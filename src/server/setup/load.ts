@@ -76,6 +76,10 @@ export async function loadSetup(deps: Deps, body: unknown): Promise<ApiResult> {
     lineMemberCount: lineCount,
     nominee: nomineeId ? { lineUserId: nomineeId, displayName: await lineNameOf(deps, nomineeId, live) } : null,
     ownerNeeded: group.ownerLeftAt !== null,
+    // #146: the picker lists only Projects the requester owns (rules: the attach picker).
+    attachOptions: editable && group.ownerLeftAt === null
+      ? (await deps.store.listOwnedProjects(requester)).map((p) => ({ projectId: p.projectId, name: p.name }))
+      : [],
   }
   return { status: 200, body: view }
 }

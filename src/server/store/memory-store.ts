@@ -61,8 +61,7 @@ import type {
   UnownedTask,
   WeeklySummaryGroup,
   ProgressYes,
-  ProgressYesOutcome,
-} from '@/server/ports'
+  ProgressYesOutcome, OwnedProject, SubGroupSetupOutcome, SubGroupSetupWrite } from '@/server/ports'
 import { ownerCountDue } from '@/server/store/mappers'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
@@ -1481,29 +1480,7 @@ export class MemoryStore implements StorePort {
     const g = this.groupOf(w.groupId)
     if (g.ownerConfirmedAt !== null || g.projectId !== null) return { outcome: 'closed' }
     if (!this.isLiveMember(w.groupId, w.ownerLineUserId)) return { outcome: 'owner_not_member' }
-    fk(this.hasLineUser(w.byLineUserId), 'groups.owner_nominated_by_line_user_id')
-    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
-    const s = this.scheduleOf(w.groupId)
-    const x = this.setupOf(w.groupId)
-    Object.assign(g, {
-      workDescription: w.workDescription, featureSummarize: w.features.summarize,
-      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
-    })
-    const newNominee = g.nominatedOwnerLineUserId !== w.ownerLineUserId
-    // groups_owner_rules: a new nominee resets the confirmation.
-    if (newNominee) g.ownerConfirmedAt = null
-    g.nominatedOwnerLineUserId = w.ownerLineUserId
-    Object.assign(s, {
-      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
-      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
-    })
-    x.featureSaveFiles = w.features.saveFiles
-    // Who nominated and when change only with the nominee (the CASEs in setup_group).
-    if (newNominee) Object.assign(x, { ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
-    for (const m of w.members) {
-      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
-      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
-    }
+    this.writeSetupValues(w, w.ownerLineUserId)
     if (w.ownerLineUserId === w.byLineUserId) {
       const { outcome } = this.confirmOwner(w.groupId, w.ownerLineUserId, w.at)
       // Cannot happen: the checks above (no confirmed Owner, no Project, the Owner a live
@@ -1548,6 +1525,62 @@ export class MemoryStore implements StorePort {
   }
 
   /** Same rules as confirm_group_owner. */
+  /** The setup form's values and the nominee, as setup_group and setup_sub_group write them. */
+  private writeSetupValues(w: Omit<GroupSetupWrite, 'ownerLineUserId'>, nominee: string): void {
+    const g = this.groupOf(w.groupId)
+    fk(this.hasLineUser(w.byLineUserId), 'groups.owner_nominated_by_line_user_id')
+    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
+    const s = this.scheduleOf(w.groupId)
+    const x = this.setupOf(w.groupId)
+    Object.assign(g, {
+      workDescription: w.workDescription, featureSummarize: w.features.summarize,
+      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
+    })
+    const newNominee = g.nominatedOwnerLineUserId !== nominee
+    // groups_owner_rules: a new nominee resets the confirmation.
+    if (newNominee) g.ownerConfirmedAt = null
+    g.nominatedOwnerLineUserId = nominee
+    Object.assign(s, {
+      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
+      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
+    })
+    x.featureSaveFiles = w.features.saveFiles
+    // Who nominated and when change only with the nominee (the CASEs in setup_group).
+    if (newNominee) Object.assign(x, { ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
+    for (const m of w.members) {
+      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
+      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
+    }
+  }
+
+  async saveSubGroupSetup(w: SubGroupSetupWrite): Promise<{ outcome: SubGroupSetupOutcome }> {
+    this.fault('saveSubGroupSetup')
+    const g = this.groupOf(w.groupId)
+    if (g.ownerConfirmedAt !== null || g.projectId !== null) return { outcome: 'closed' }
+    if (!this.isLiveMember(w.groupId, w.byLineUserId)) return { outcome: 'not_member' }
+    const project = this.tables.projects.find((p) => p.id === w.projectId)
+    if (!project || project.ownerLineUserId !== w.byLineUserId) return { outcome: 'not_project_owner' }
+    const main = this.tables.groups.find((x) => x.projectId === w.projectId && this.setupOf(x.id).isMain)
+    const mainIn = main && main.nominatedOwnerLineUserId === w.byLineUserId && main.ownerConfirmedAt !== null
+      && (this.tables.group_schedules.find((r) => r.groupId === main.id)?.leftAt ?? null) === null
+    if (!mainIn) return { outcome: 'not_project_owner' }
+    this.writeSetupValues(w, w.byLineUserId)
+    g.projectId = w.projectId
+    g.ownerConfirmedAt = w.at
+    g.ownerLeftAt = null
+    this.setupOf(w.groupId).isMain = false
+    if (w.tagSet.length > 0) this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
+    return { outcome: 'attached' }
+  }
+
+  async listOwnedProjects(lineUserId: string): Promise<OwnedProject[]> {
+    this.fault('listOwnedProjects')
+    return this.tables.groups
+      .filter((x) => x.projectId !== null && this.setupOf(x.id).isMain && x.nominatedOwnerLineUserId === lineUserId
+        && x.ownerConfirmedAt !== null && (this.tables.group_schedules.find((r) => r.groupId === x.id)?.leftAt ?? null) === null)
+      .map((x) => ({ projectId: x.projectId as string, mainGroupId: x.id, name: x.name ?? null }))
+  }
+
   private confirmOwner(groupId: string, lineUserId: string, at: Date): { outcome: OwnerConfirmOutcome } {
     const g = this.groupOf(groupId)
     if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }

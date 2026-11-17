@@ -23,6 +23,7 @@ export function initialSettingsForm(view: SettingsLoad): SetupForm {
     })),
     ownerLineUserId: view.owner?.lineUserId ?? '',
     tagSet: [...(view.values.tagSet ?? [])],
+    attachProjectId: null, // #146: the setup form only
   }
 }
 

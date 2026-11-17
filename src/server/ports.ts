@@ -314,6 +314,15 @@ export type GroupSetupWrite = {
   members: SetupMemberWrite[]; ownerLineUserId: string; at: Date
   tagSet: string[]   // #110
 }
+/** #146: the setup form attaching the group to a Project the sender owns, as a Sub group.
+ *  The sender is the Owner (the Project's owner), so there is no ownerLineUserId. */
+export type SubGroupSetupWrite = Omit<GroupSetupWrite, 'ownerLineUserId'> & { projectId: string }
+/** #146: 'attached'; 'closed' as setup_group; 'not_member': the sender is not a live Member;
+ *  'not_project_owner': the Project is unknown, not the sender's, or its main group is not
+ *  confirmed by them or has no bot. */
+export type SubGroupSetupOutcome = 'attached' | 'closed' | 'not_member' | 'not_project_owner'
+/** #146: a Project the person owns, named by its main group, for the attach picker. */
+export type OwnedProject = { projectId: string; mainGroupId: string; name: string | null }
 /** 'closed': the group has a confirmed Owner or already belongs to a Project. */
 export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'
 export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nominee' | 'not_member' | 'closed'
@@ -615,6 +624,12 @@ export interface StorePort {
    *  when the sender named themselves, confirms them and creates the Project as
    *  confirmGroupOwner does. */
   saveGroupSetup(s: GroupSetupWrite): Promise<{ outcome: SetupOutcome }>
+  /** #146 rpc setup_sub_group: the setup form's values and the attach as a Sub group of
+   *  projectId, in one transaction, the sender confirmed as Owner. The tag set follows in a
+   *  second statement, as saveGroupSetup. */
+  saveSubGroupSetup(s: SubGroupSetupWrite): Promise<{ outcome: SubGroupSetupOutcome }>
+  /** #146: Projects whose main group this person is the confirmed Owner of, bot still in. */
+  listOwnedProjects(lineUserId: string): Promise<OwnedProject[]>
   /** One transaction (rpc confirm_group_owner): only the nominee, while a live Member,
    *  confirms; this creates the Project (owner = the nominee) with the group as its main
    *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */

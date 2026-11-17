@@ -20,6 +20,7 @@ function view(partial: Partial<SetupLoad> = {}): SetupLoad {
     lineMemberCount: 2,
     nominee: null,
     ownerNeeded: false,
+    attachOptions: [],
     ...partial,
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ModelOutputError, parseSummaryOutput, settleMidnightDue } from '@/server/summary/parse-output'
+import { ModelOutputError, parseSummaryOutput, settleMidnightDue, settleWeekdayDue } from '@/server/summary/parse-output'
 
 const task = (over: Record<string, unknown> = {}) => ({
   title: 'ทำสไลด์', details: null, assignee: 'm1', due: null, source: 'msg1', ...over,
@@ -96,5 +96,48 @@ describe('settleMidnightDue', () => {
 
   it('no due stays null', () => {
     expect(settleMidnightDue(null, 'เที่ยงคืน')).toBeNull()
+  })
+})
+
+describe('settleWeekdayDue', () => {
+  // Tuesday 17 Nov 2026, 13:30 in Bangkok.
+  const now = new Date('2026-11-17T06:30:00Z')
+  const bkk = (s: string) => new Date(`${s}+07:00`)
+
+  it.each(['2026-11-18T23:59:00', '2026-11-24T23:59:00'])('"ส่งวันพฤหัส" moves a due of %s to Thu 19 Nov', (wrong) => {
+    expect(settleWeekdayDue(bkk(wrong), 'ผมทำรายงานให้ ส่งวันพฤหัส', now)).toEqual(bkk('2026-11-19T23:59:00'))
+  })
+
+  it('"พฤหัสหน้า" is Thu 26 Nov, even when the model gave this week\'s Thursday', () => {
+    expect(settleWeekdayDue(bkk('2026-11-19T23:59:00'), 'ส่งพฤหัสหน้านะ', now)).toEqual(bkk('2026-11-26T23:59:00'))
+    expect(settleWeekdayDue(bkk('2026-11-25T23:59:00'), 'ส่งพฤหัสหน้านะ', now)).toEqual(bkk('2026-11-26T23:59:00'))
+  })
+
+  it('"ศุกร์นี้ห้าโมงเย็น" keeps 17:00 and lands on Fri 20 Nov', () => {
+    expect(settleWeekdayDue(bkk('2026-11-19T17:00:00'), 'สไลด์ขอศุกร์นี้ห้าโมงเย็น', now)).toEqual(bkk('2026-11-20T17:00:00'))
+  })
+
+  it('a right weekday is kept, and so is a later week of it', () => {
+    expect(settleWeekdayDue(bkk('2026-11-19T23:59:00'), 'ส่งวันพฤหัส', now)).toEqual(bkk('2026-11-19T23:59:00'))
+    expect(settleWeekdayDue(bkk('2026-11-26T23:59:00'), 'ส่งวันพฤหัส', now)).toEqual(bkk('2026-11-26T23:59:00'))
+  })
+
+  it('a due before today on the right weekday moves forward', () => {
+    expect(settleWeekdayDue(bkk('2026-11-12T18:00:00'), 'พฤหัส 6 โมงเย็น', now)).toEqual(bkk('2026-11-19T18:00:00'))
+  })
+
+  it('"ภายใน 20 พ.ย." stays untouched', () => {
+    expect(settleWeekdayDue(bkk('2026-11-20T23:59:00'), 'ส่งภายใน 20 พ.ย.', now)).toEqual(bkk('2026-11-20T23:59:00'))
+    expect(settleWeekdayDue(bkk('2026-11-21T23:59:00'), 'ศุกร์ 21 พ.ย. นะ', now)).toEqual(bkk('2026-11-21T23:59:00'))
+  })
+
+  it('a message with no weekday stays untouched', () => {
+    expect(settleWeekdayDue(bkk('2026-11-18T12:00:00'), 'ทำสไลด์ให้ ส่งพรุ่งนี้เที่ยง', now)).toEqual(bkk('2026-11-18T12:00:00'))
+    expect(settleWeekdayDue(bkk('2026-11-18T12:00:00'), 'ไปศึกษาเพิ่ม แล้วสั่งอาหาร', now)).toEqual(bkk('2026-11-18T12:00:00'))
+  })
+
+  it('no due or no source message: nothing to check', () => {
+    expect(settleWeekdayDue(null, 'ส่งวันพฤหัส', now)).toBeNull()
+    expect(settleWeekdayDue(bkk('2026-11-18T23:59:00'), null, now)).toEqual(bkk('2026-11-18T23:59:00'))
   })
 })

@@ -70,8 +70,9 @@ export function buildSummaryPrompt(p: {
 
   const user = [
     `Group context: ${p.workDescription ?? '-'}`,
-    // #161: weekdays, so "ศุกร์นี้" maps to a date.
-    `Calendar (Asia/Bangkok): ${bangkokCalendar(p.now).join(', ')}`,
+    // #161: weekdays, in English and Thai, so "ศุกร์นี้" and "วันพฤหัส" map to a date.
+    'Calendar (Asia/Bangkok), one day per line (date, weekday, Thai name, Thai short form, week):',
+    ...bangkokCalendar(p.now),
     'Members:',
     ...lines,
     ...(existingTasks.length > 0
@@ -115,7 +116,7 @@ export function buildSummaryPrompt(p: {
     `- due: null when the chat states no deadline. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok). A deadline with a day but no time: the date only, "YYYY-MM-DD" (the day ends at 23:59). A deadline with a time: ISO 8601 date-time with +07:00 offset. Never make up a time: 00:00 only when the chat says midnight ("เที่ยงคืน").`,
     '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
     // #161: weekday deadlines came back as the wrong day.
-    '- Work out dates from "Calendar" in the user message. "ศุกร์นี้" or "วันศุกร์" is the first Friday on or after today; "ศุกร์หน้า" is the Friday of the next week (weeks start on Monday); "พรุ่งนี้" is tomorrow; "มะรืน" is the day after tomorrow. A time with no day is today if it is still ahead, else tomorrow. Thai times: "5 โมงเย็น" 17:00, "6 โมงเย็น" 18:00, "เที่ยง" 12:00, "บ่าย 2" 14:00, "2 ทุ่ม" 20:00. A deadline is never before today.',
+    '- Work out dates from "Calendar" in the user message: find the day there, never count days. A weekday word (Thai or English, with or without "วัน": จันทร์, อังคาร, พุธ, พฤหัส/พฤหัสบดี/พฤ., ศุกร์/ศ., เสาร์, อาทิตย์/อา., Fri) means the NEXT such day on or after today in this list; "ศุกร์นี้" and "วันศุกร์" are that day too. หน้า / next week means the one in the following week: "ศุกร์หน้า" or "ศุกร์สัปดาห์หน้า" is the Friday of the next week (weeks start on Monday). "พรุ่งนี้" is tomorrow; "มะรืน" is the day after tomorrow. A time with no day is today if it is still ahead, else tomorrow. Thai times: "5 โมงเย็น" 17:00, "6 โมงเย็น" 18:00, "เที่ยง" 12:00, "บ่าย 2" 14:00, "2 ทุ่ม" 20:00. A deadline is never before today.',
     '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Pick from "Group tags" first, then reuse "Tags in use"; a new tag only when none fits. Never a person\'s name or nickname. [] when none fits.',
   ].join('\n')
 

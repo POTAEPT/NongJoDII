@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bangkokCalendar, bangkokMonthRange, bangkokParts, bangkokTodayLabel, formatPromptTime, formatThaiDateLong, formatThaiShort, formatHhmm, formatRelativeDue, formatThaiWeekdayDay } from '@/server/time/bangkok'
+import { bangkokCalendar, bangkokWeekdayDate, findWeekday, bangkokMonthRange, bangkokParts, bangkokTodayLabel, formatPromptTime, formatThaiDateLong, formatThaiShort, formatHhmm, formatRelativeDue, formatThaiWeekdayDay } from '@/server/time/bangkok'
 
 describe('bangkok time', () => {
   it('shifts to UTC+7 wall-clock parts', () => {
@@ -49,18 +49,77 @@ describe('bangkok time', () => {
 })
 
 describe('bangkokCalendar (#161)', () => {
-  it('lists today and the next 14 days in Bangkok, each with its weekday', () => {
+  it('lists today and the next 14 days in Bangkok, one per line, with English and Thai weekdays', () => {
     // Tuesday 17 Nov 2026, 10:00 in Bangkok.
     const days = bangkokCalendar(new Date('2026-11-17T03:00:00Z'))
     expect(days).toHaveLength(15)
-    expect(days.slice(0, 5)).toEqual([
-      'Tue 2026-11-17 (today)', 'Wed 2026-11-18 (tomorrow)', 'Thu 2026-11-19', 'Fri 2026-11-20', 'Sat 2026-11-21',
+    expect(days.slice(0, 4)).toEqual([
+      '- 2026-11-17 Tue อังคาร (อ.) this week, วันนี้ (today)',
+      '- 2026-11-18 Wed พุธ (พ.) this week, พรุ่งนี้ (tomorrow)',
+      '- 2026-11-19 Thu พฤหัสบดี (พฤ.) this week',
+      '- 2026-11-20 Fri ศุกร์ (ศ.) this week',
     ])
-    expect(days[14]).toBe('Tue 2026-12-01')
+    expect(days[9]).toBe('- 2026-11-26 Thu พฤหัสบดี (พฤ.) next week (สัปดาห์หน้า)')
+    expect(days[14]).toBe('- 2026-12-01 Tue อังคาร (อ.) later')
+    // Every day carries its Thai name and short form.
+    const thai = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์', 'อาทิตย์']
+    for (const line of days) expect(thai.some((name) => line.includes(` ${name} (`))).toBe(true)
+    expect(days.filter((l) => l.includes('วันนี้'))).toHaveLength(1)
+    expect(days.filter((l) => l.includes('พรุ่งนี้'))).toHaveLength(1)
   })
 
   it('uses the Bangkok date late at night UTC', () => {
     // 23:30 UTC on 16 Nov is 06:30 on Tuesday 17 Nov in Bangkok.
-    expect(bangkokCalendar(new Date('2026-11-16T23:30:00Z'), 1)).toEqual(['Tue 2026-11-17 (today)', 'Wed 2026-11-18 (tomorrow)'])
+    expect(bangkokCalendar(new Date('2026-11-16T23:30:00Z'), 1)).toEqual([
+      '- 2026-11-17 Tue อังคาร (อ.) this week, วันนี้ (today)', '- 2026-11-18 Wed พุธ (พ.) this week, พรุ่งนี้ (tomorrow)',
+    ])
+  })
+})
+
+describe('findWeekday', () => {
+  it.each([
+    ['ส่งวันพฤหัส', 4], ['พฤหัสบดีนะ', 4], ['ส่งวันพฤ', 4], ['พฤ. ส่ง', 4], ['ศุกร์นี้ห้าโมงเย็น', 5], ['ส่ง ศ. นะ', 5],
+    ['วันจันทร์', 1], ['อังคาร', 2], ['พุธ', 3], ['เสาร์', 6], ['วันอาทิตย์', 7], ['วันอา', 7], ['due Fri', 5], ['by friday', 5],
+  ])('%j names weekday %i, this week', (text, weekday) => {
+    expect(findWeekday(text)).toEqual({ weekday, nextWeek: false })
+  })
+
+  it.each([['พฤหัสหน้า', 4], ['ส่งวันศุกร์ สัปดาห์หน้า', 5], ['พฤหัสอาทิตย์หน้า', 4], ['วันอาทิตย์หน้า', 7], ['next Friday', 5], ['Mon next week', 1]])(
+    '%j names weekday %i of the following week', (text, weekday) => {
+      expect(findWeekday(text)).toEqual({ weekday, nextWeek: true })
+    },
+  )
+
+  it.each([
+    'ทำสไลด์ให้', 'ภายใน 20 พ.ย.', 'ศุกร์ 20 พ.ย.', '20/11 ศุกร์', 'วันที่ 20 ศุกร์', 'Fri 20 Nov',
+    'พรุ่งนี้ส่ง ส่วนศุกร์ประชุม', 'มะรืนนะ ไม่ใช่ศุกร์', 'พุธประชุม ศุกร์ส่ง', 'ก่อนวันศุกร์', 'ส่งอาทิตย์หน้า', 'อาทิตย์นี้',
+  ])('%j gives no weekday to act on', (text) => {
+    expect(findWeekday(text)).toBeNull()
+  })
+
+  it('never reads a short form inside another word', () => {
+    for (const text of ['ไปศึกษาเพิ่ม', 'สั่งอาหาร', 'ถามอาจารย์', 'เดือนพฤศจิกายน', 'พฤษภาคม', 'ศ.ดร.สมชาย', 'I sat on the sun']) {
+      expect(findWeekday(text)).toBeNull()
+    }
+  })
+
+  it('reads หน้า as next week only right at the day, not "10 หน้า" pages', () => {
+    expect(findWeekday('สไลด์ 10 หน้า ส่งวันศุกร์')).toEqual({ weekday: 5, nextWeek: false })
+  })
+})
+
+describe('bangkokWeekdayDate', () => {
+  // Tuesday 17 Nov 2026, 13:30 in Bangkok.
+  const now = new Date('2026-11-17T06:30:00Z')
+  it('is the first such day on or after today', () => {
+    expect(bangkokWeekdayDate(now, 4, false)).toBe('2026-11-19')
+    expect(bangkokWeekdayDate(now, 2, false)).toBe('2026-11-17')
+    expect(bangkokWeekdayDate(now, 1, false)).toBe('2026-11-23')
+  })
+  it('is that day of the following Monday-start week for หน้า', () => {
+    expect(bangkokWeekdayDate(now, 4, true)).toBe('2026-11-26')
+    expect(bangkokWeekdayDate(now, 1, true)).toBe('2026-11-23')
+    // On a Sunday, the following week starts tomorrow.
+    expect(bangkokWeekdayDate(new Date('2026-11-22T03:00:00Z'), 5, true)).toBe('2026-11-27')
   })
 })

@@ -107,6 +107,17 @@ describe('the Summary pre-check (#157)', () => {
     expect(s.replyText()).toContain(SUMMARY_TEXT.mayHaveMore)
   })
 
+  it('"many" with 3 Tasks is enough: no retry and no "may have more" line (Jev calls a 3-Task chat "many")', async () => {
+    const s = setup()
+    await s.chat()
+    s.decisions.respond(s.jev(0.9, 'many'))
+    s.answer(['ทำสไลด์', 'เขียนรายงาน', 'จองห้องซ้อม'])
+    await s.summarize()
+    expect(s.llm.requests).toHaveLength(1)
+    expect(s.store.tables.task_candidates).toHaveLength(3)
+    expect(s.replyText()).not.toContain(SUMMARY_TEXT.mayHaveMore)
+  })
+
   it('an unreadable answer to the hinted prompt: the second call is the old prompt, and no third call', async () => {
     const s = setup()
     await s.chat()

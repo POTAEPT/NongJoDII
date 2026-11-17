@@ -16,7 +16,9 @@ export const HAS_TASK_MIN = 0.5
 
 export type TaskCount = 'one' | 'several' | 'many'
 /** The fewest Tasks each count means; a first answer with fewer gets one retry. */
-export const COUNT_MIN: Record<TaskCount, number> = { one: 1, several: 2, many: 4 }
+// many asks for 3, not 4: live (2026-11-17), Jev put the /demo 3-Task chat (script 03) in
+// "many" (0.66), so 4 retried and flagged a correct answer with "อาจมีงานเพิ่ม".
+export const COUNT_MIN: Record<TaskCount, number> = { one: 1, several: 2, many: 3 }
 /** The words the text model is told (user part of the Summary prompt). */
 export const COUNT_HINT: Record<TaskCount, string> = { one: 'about 1', several: '2 to 3', many: '4 or more' }
 

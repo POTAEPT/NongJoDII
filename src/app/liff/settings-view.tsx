@@ -11,8 +11,8 @@ import { DELETE_NOW_PHRASE, type SettingsLoad, type StopUsingResult } from '@/se
 import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
 import { Avatar, Button, Chip, Field, IconCheck, IconLock, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
-import { initialSettingsForm, settingsFieldMessage, toMyProfileBody, toSettingsBody, validateMyRow, validateSettings } from './settings-model'
-import { FEATURES, TimeSelect } from './setup-parts'
+import { formKey, initialSettingsForm, isSettingsDirty, settingsFieldMessage, toMyProfileBody, toSettingsBody, validateMyRow, validateSettings } from './settings-model'
+import { FEATURES, TAG_SET_COPY, TIMES_COPY, TimeSelect } from './setup-parts'
 import { addNickname, removeNickname, setNickname, setRole, type SetupForm } from './setup-model'
 
 // #28 Settings, opened from the "น้องจดดี ตั้งค่า" card. `id` is groups.id. Two tabs:
@@ -60,6 +60,8 @@ const DELETE_NOW = {
 export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
   const [form, setForm] = useState<SetupForm | null>(null)
+  /** #143: the form as last loaded or saved; Save stays off until something differs. */
+  const [baseline, setBaseline] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('settings')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -78,7 +80,9 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
       const { status, json } = await post('/api/settings/load', { idToken, groupId: id })
       if (status !== 200) return setLoad({ kind: 'error', message: errorCopy(status, json, ERR_LOAD) })
       const data = json as SettingsLoad
-      setForm(initialSettingsForm(data))
+      const initial = initialSettingsForm(data)
+      setForm(initial)
+      setBaseline(formKey(initial))
       setLoad({ kind: 'ready', data })
     } catch {
       setLoad({ kind: 'error', message: ERR_LOAD })
@@ -100,8 +104,10 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     setSaving(true)
     try {
       const { status, json } = await post('/api/settings/submit', { idToken, groupId: id, ...toSettingsBody(form) })
-      if (status === 200) setSaved(true)
-      else setError(errorCopy(status, json, ERR_SAVE))
+      if (status === 200) {
+        setSaved(true)
+        setBaseline(formKey(form))
+      } else setError(errorCopy(status, json, ERR_SAVE))
     } catch {
       setError(ERR_SAVE)
     } finally {
@@ -123,8 +129,10 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     setSaving(true)
     try {
       const { status, json } = await post('/api/me/save', { idToken, groupId: id, ...mine })
-      if (status === 200) setSaved(true)
-      else setError(errorCopy(status, json, ERR_SAVE))
+      if (status === 200) {
+        setSaved(true)
+        setBaseline(formKey(form))
+      } else setError(errorCopy(status, json, ERR_SAVE))
     } catch {
       setError(ERR_SAVE)
     } finally {
@@ -198,6 +206,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
   const me = data.requesterLineUserId
   // #81: the Owner edits every row; anyone else only their own, shown first.
   const editingMine = tab === 'settings' && !data.canEdit && form.members.some((m) => m.lineUserId === me)
+  const dirty = isSettingsDirty(baseline, form)
   const rows = data.canEdit ? form.members : [...form.members].sort((a, b) => Number(b.lineUserId === me) - Number(a.lineUserId === me))
 
   return (
@@ -208,7 +217,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
         <div className="space-y-2">
           {error && <Notice>{error}</Notice>}
           {saved && <Notice tone="success">บันทึกแล้ว</Notice>}
-          <Button disabled={saving} onClick={() => void (editing ? save() : saveMine())}>
+          <Button disabled={saving || !dirty} onClick={() => void (editing ? save() : saveMine())}>
             {saving ? 'กำลังบันทึก...' : editing ? 'บันทึก' : 'บันทึกข้อมูลของฉัน'}
           </Button>
         </div>
@@ -255,11 +264,11 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
 
           {/* #110 */}
           <div>
-            <Field label="แท็กของกลุ่ม (ไม่บังคับ)">
+            <Field label={TAG_SET_COPY.label}>
               <TagsEditor tags={form.tagSet} max={TAG_SET_MAX} disabled={ro}
                 onChange={(tagSet) => set({ ...form, tagSet })} />
             </Field>
-            <p className="mt-1 text-xs text-ink-3">น้องจดดีจะเลือกแท็กจากชุดนี้ก่อนเวลาสรุปงาน แก้ได้ในหน้าตั้งค่า</p>
+            <p className="mt-1 text-xs text-ink-3">{TAG_SET_COPY.hint}</p>
           </div>
 
           <MemberRows rows={rows} me={me} canEdit={data.canEdit} saving={saving} onChange={set} form={form} />
@@ -293,8 +302,9 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
 
           <section className="space-y-2 rounded-2xl border border-line bg-page p-4">
             <Field label="เตือนงานทุกวัน">
-              <TimeSelect value={form.dailyReminderTime} disabled={ro} onChange={(v) => set({ ...form, dailyReminderTime: v })} />
+              <TimeSelect value={form.dailyReminderTime} disabled={ro || !form.features.trackRemind} onChange={(v) => set({ ...form, dailyReminderTime: v })} />
             </Field>
+            <p className="text-xs text-ink-3">{form.features.trackRemind ? TIMES_COPY.dailyWhat : TIMES_COPY.dailyOff}</p>
           </section>
           <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
             <span className="block text-sm font-semibold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
@@ -307,7 +317,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
                     type="button"
                     aria-pressed={on}
                     className={`rounded-full px-4 py-1.5 text-sm font-semibold ${on ? 'bg-primary text-white' : 'border border-line bg-page text-ink-2'}`}
-                    disabled={ro}
+                    disabled={ro || !form.features.weeklySummary}
                     onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
                   >
                     {d.label}
@@ -315,7 +325,8 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
                 )
               })}
             </div>
-            <TimeSelect value={form.weeklySummaryTime} disabled={ro} onChange={(v) => set({ ...form, weeklySummaryTime: v })} />
+            <TimeSelect value={form.weeklySummaryTime} disabled={ro || !form.features.weeklySummary} onChange={(v) => set({ ...form, weeklySummaryTime: v })} />
+            <p className="text-xs text-ink-3">{form.features.weeklySummary ? TIMES_COPY.weeklyWhat : TIMES_COPY.weeklyOff}</p>
           </section>
           <p className="text-xs text-ink-3">
             เวลาเป็นเวลาประเทศไทย เปลี่ยนแล้วมีผลในรอบถัดไป ถ้าวันนี้เตือนไปแล้ว เวลาใหม่จะเริ่มพรุ่งนี้

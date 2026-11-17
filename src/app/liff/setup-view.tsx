@@ -10,7 +10,7 @@ import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/s
 import { ERR_401, post } from './api'
 import { track } from './analytics'
 import type { LiffViewProps } from './liff-sdk'
-import { FEATURES, TimeSelect } from './setup-parts'
+import { FEATURES, OWNER_ROLE, OwnerRoleNote, TAG_SET_COPY, TIMES_COPY, TimeSelect } from './setup-parts'
 import {
   addNickname, initialSetupForm, removeNickname, setNickname, setRole, SETUP_STEPS, stepForField, toSubmitBody,
   submitView, validateAll, validateStep, type SetupForm,
@@ -280,28 +280,30 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
           <p className="mt-1 text-right text-xs text-ink-3">{form.workDescription.length}/{WORK_DESCRIPTION_MAX}</p>
           {/* #110: the group's starting tags; the step can be left empty. */}
           <div className="mt-4">
-            <Field label="แท็กของกลุ่ม (ไม่บังคับ)">
+            <Field label={TAG_SET_COPY.label}>
               <TagsEditor tags={form.tagSet} max={TAG_SET_MAX} disabled={submitting}
                 onChange={(tagSet) => set({ ...form, tagSet })} />
             </Field>
-            <p className="mt-1 text-xs text-ink-3">น้องจดดีจะเลือกแท็กจากชุดนี้ก่อนเวลาสรุปงาน แก้ได้ในหน้าตั้งค่า</p>
+            <p className="mt-1 text-xs text-ink-3">{TAG_SET_COPY.hint} แก้ได้ในหน้าตั้งค่า</p>
           </div>
         </div>
       )}
 
       {step === 2 && (
         <div className="mt-4 space-y-3">
+          <OwnerRoleNote />
           {form.members.map((m) => {
             const owner = form.ownerLineUserId === m.lineUserId
             return (
-              <section key={m.lineUserId} className="space-y-3 rounded-2xl border border-line bg-page p-4">
+              <section key={m.lineUserId}
+                className={`space-y-3 rounded-2xl border bg-page p-4 ${owner ? 'border-primary ring-2 ring-primary' : 'border-line'}`}>
                 <div className="flex items-center gap-3">
                   <Avatar name={m.displayName} id={m.lineUserId} size="md" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-semibold">{m.displayName}</p>
                     <p className="text-xs text-ink-3">ชื่อใน LINE</p>
                   </div>
-                  <label className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${owner ? 'bg-primary text-white' : 'bg-primary-soft text-primary'}`}>
+                  <label className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${owner ? 'bg-primary text-white' : 'border border-primary bg-page text-primary'}`}>
                     <input
                       type="radio"
                       name="owner"
@@ -311,7 +313,7 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
                       onChange={() => set({ ...form, ownerLineUserId: m.lineUserId })}
                     />
                     {owner && <IconCheck className="h-3.5 w-3.5" />}
-                    เจ้าของบอท
+                    {owner ? OWNER_ROLE.chosen : OWNER_ROLE.choose}
                   </label>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -401,11 +403,13 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
             <Field label="เตือนงานทุกวัน">
               <TimeSelect
                 value={form.dailyReminderTime}
-                disabled={submitting}
+                disabled={submitting || !form.features.trackRemind}
                 onChange={(v) => set({ ...form, dailyReminderTime: v })}
               />
             </Field>
-            <p className="text-xs text-ink-3">เลือกเวลาได้ทีละ 15 นาที · ค่าเริ่มต้น {SETUP_DEFAULTS.dailyReminderTime}</p>
+            <p className="text-xs text-ink-3">
+              {form.features.trackRemind ? `${TIMES_COPY.dailyWhat} · เลือกเวลาได้ทีละ 15 นาที · ค่าเริ่มต้น ${SETUP_DEFAULTS.dailyReminderTime}` : TIMES_COPY.dailyOff}
+            </p>
           </section>
           <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
             <span className="block text-sm font-semibold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
@@ -418,7 +422,7 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
                     type="button"
                     aria-pressed={on}
                     className={`rounded-full px-4 py-1.5 text-sm font-semibold ${on ? 'bg-primary text-white' : 'border border-line bg-page text-ink-2'}`}
-                    disabled={submitting}
+                    disabled={submitting || !form.features.weeklySummary}
                     onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
                   >
                     {d.label}
@@ -428,9 +432,10 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
             </div>
             <TimeSelect
               value={form.weeklySummaryTime}
-              disabled={submitting}
+              disabled={submitting || !form.features.weeklySummary}
               onChange={(v) => set({ ...form, weeklySummaryTime: v })}
             />
+            <p className="text-xs text-ink-3">{form.features.weeklySummary ? TIMES_COPY.weeklyWhat : TIMES_COPY.weeklyOff}</p>
           </section>
           <p className="text-xs text-ink-3">เปลี่ยนได้ทุกเมื่อในตั้งค่า</p>
         </div>

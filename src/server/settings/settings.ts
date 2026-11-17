@@ -1,5 +1,7 @@
 import { lineMemberCount } from '../members/line-count'
+import { driveDeadline } from '../google/drive-folders'
 import { log, logError } from '../log'
+import { announceDetached } from '../owner-change/detach'
 import type { ApiResult, Deps, GroupSetup } from '../ports'
 import { botLeaveGroup } from '../removal/leave'
 import { badRequest } from '../review/load'
@@ -136,8 +138,11 @@ export async function stopUsing(deps: Deps, body: unknown): Promise<ApiResult> {
   let deleted = false
   if (deleteNow && deleteAfter) {
     try {
-      ;({ purged: deleted } = await deps.store.purgeGroup(group.groupId, deleteAfter))
-      log('stop_using_deleted_now', { groupId: group.groupId, deleted })
+      const res = await deps.store.purgeGroup(group.groupId, deleteAfter)
+      deleted = res.purged
+      log('stop_using_deleted_now', { groupId: group.groupId, deleted, detached: res.detached.length })
+      // #77: Sub groups of a main group deleted now get the owner_needed card, as in the purge.
+      if (res.detached.length > 0) await announceDetached(deps, res.detached, driveDeadline(deps.now()), deps.now(), 'owner_needed')
     } catch (err) {
       logError('stop_using_delete_failed', { groupId: group.groupId }, err)
     }

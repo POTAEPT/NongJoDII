@@ -374,6 +374,8 @@ export type PausedOwnerCard = {
   card: { promptId: string; askedAt: Date; pushed: boolean } | null
 }
 export type DetachedSubGroup = { groupId: string; lineGroupId: string; name: string | null }
+/** #77: what one purge did. detached: Sub groups of a purged main group the bot is still in. */
+export type PurgeResult = { purged: boolean; projectDeleted: boolean; detached: DetachedSubGroup[] }
 /** #30 part B: a group that has had no Owner since ownerLeftAt. subGroup: attached to a
  *  Project and not its main group (it detaches instead of the bot leaving). */
 export type OwnerlessGroup = {
@@ -805,12 +807,15 @@ export interface StorePort {
   getOwnerExitState(groupId: string): Promise<OwnerExitState | null>
   /** IDs of the groups whose delete_after <= now, oldest delete date first, at most `limit`. */
   listPurgeDueGroups(now: Date, limit: number): Promise<string[]>
-  /** One DELETE: the group row where id = groupId and delete_after <= now. Its messages,
-   *  Summaries, Tasks, file records, Members and insights go with it (on delete cascade);
-   *  usage keeps its rows with group_id null; push counts and webhook event IDs have no
-   *  link and stay. A group re-invited since it was listed is no longer due and stays.
+  /** rpc purge_group (#77): deletes the group row where id = groupId and delete_after <= now.
+   *  Its messages, Summaries, Tasks, file records, Members and insights go with it (on delete
+   *  cascade); usage keeps its rows with group_id null; push counts and webhook event IDs have
+   *  no link and stay. A group re-invited since it was listed is no longer due and stays.
+   *  When it was a main group, its Project's other groups detach (no Project, no Drive folder,
+   *  a fresh 7-day Owner count with no nominee); `detached` lists those the bot is still in.
+   *  The Project row goes once no group and no saved file points at it (projectDeleted).
    *  Never touches Drive. purged: this call deleted the row. */
-  purgeGroup(groupId: string, now: Date): Promise<{ purged: boolean }>
+  purgeGroup(groupId: string, now: Date): Promise<PurgeResult>
 }
 
 // ---- Composition ----

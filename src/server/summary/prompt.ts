@@ -22,7 +22,9 @@ export function buildSummaryPrompt(p: {
   context?: StoredMessage[]; existingTasks?: ExistingTask[]
   /** #110: the group's starting tags, set by the Owner; the model picks from these first. */
   groupTags?: string[]
-}): { system: string; user: string; memberRefs: PromptRef[]; messageRefs: MessageRef[] } {
+  /** #157: what the Jev pre-check found: a count hint, or that the chat holds no work. */
+  precheck?: { noTask: true } | { noTask: false; countHint: string } | null
+}): { system: string; user: string; chat: string; memberRefs: PromptRef[]; messageRefs: MessageRef[] } {
   const context = p.context ?? []
   const existingTasks = p.existingTasks ?? []
   const memberRefs: PromptRef[] = []
@@ -78,6 +80,12 @@ export function buildSummaryPrompt(p: {
       : []),
     'Chat (oldest first, Asia/Bangkok time):',
     ...chat,
+    // #157: the Jev pre-check read the same chat first.
+    ...(p.precheck?.noTask === true
+      ? ['A first reading found no work to do in this chat: return "tasks": [] and write the summary only.']
+      : p.precheck && p.precheck.noTask === false
+        ? [`A first reading found ${p.precheck.countHint} separate pieces of work in the Chat. List each separate piece of work as its own task.`]
+        : []),
   ].join('\n')
 
   const system = [
@@ -104,7 +112,7 @@ export function buildSummaryPrompt(p: {
     '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Pick from "Group tags" first, then reuse "Tags in use"; a new tag only when none fits. Never a person\'s name or nickname. [] when none fits.',
   ].join('\n')
 
-  return { system, user, memberRefs, messageRefs }
+  return { system, user, chat: chat.join('\n'), memberRefs, messageRefs }
 }
 
 /** Replaces each LINE user tag of a live Member ("@Pim Sirin") with "@{mN}", so who

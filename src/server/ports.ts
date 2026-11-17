@@ -559,6 +559,10 @@ export interface StorePort {
   deleteTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
   /** Undo of deleteTask: clears deleted_at and deleted_by; only a Task a person deleted (deleted_by set). */
   restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  /** #139 "ยังไม่เสร็จ" on the Task page: a Done Task goes back to toStatus (In Process with an
+   *  assignee, else Not Assigned), done_at cleared, last_activity_at and last_edited_by set.
+   *  Only a live Done Task whose assignee is still `assignee`, so a change since the read wins. */
+  reopenTask(t: { taskId: string; assignee: string | null; toStatus: 'in_process' | 'not_assigned'; by: string; at: Date }): Promise<{ updated: boolean }>
   // #29 member leaves. One UPDATE each, conditions in WHERE, so a repeat changes nothing.
   /** Sets left_at on a live membership row, or adds a left row when there is none (so a late
    *  message cannot add the person back); updated false = already left. */

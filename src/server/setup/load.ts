@@ -1,3 +1,4 @@
+import { lineMemberCount } from '../members/line-count'
 import { ensureGroupAccess, requireLiffUser } from '../liff-auth'
 import type { ApiResult, Deps, GroupSetup, Member } from '../ports'
 import { badRequest, field } from '../review/load'
@@ -39,7 +40,9 @@ export async function loadSetup(deps: Deps, body: unknown): Promise<ApiResult> {
   if (!gate.ok) return gate.result
   const { group, requester } = gate
   // After the access check, which adds a requester LINE knows but we had not stored.
-  const live = await deps.store.listLiveMembers(group.groupId)
+  const [live, lineCount] = await Promise.all([
+    deps.store.listLiveMembers(group.groupId), lineMemberCount(deps, { groupId: group.groupId, lineGroupId: group.lineGroupId }),
+  ])
   const state = setupState(group)
   const editable = isSetupOpen(state)
   // The setup form is where nicknames are edited, so they come back to it while it takes
@@ -70,6 +73,7 @@ export async function loadSetup(deps: Deps, body: unknown): Promise<ApiResult> {
       tagSet: group.tagSet,
     },
     members,
+    lineMemberCount: lineCount,
     nominee: nomineeId ? { lineUserId: nomineeId, displayName: await lineNameOf(deps, nomineeId, live) } : null,
     ownerNeeded: group.ownerLeftAt !== null,
     // #146: the picker lists only Projects the requester owns (rules: the attach picker).

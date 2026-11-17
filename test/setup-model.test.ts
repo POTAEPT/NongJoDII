@@ -17,6 +17,7 @@ function view(partial: Partial<SetupLoad> = {}): SetupLoad {
       { lineUserId: 'Ume', displayName: 'Me', nicknames: [], role: null },
       { lineUserId: 'Upim', displayName: 'Pim', nicknames: ['พิม'], role: 'ออกแบบ' },
     ],
+    lineMemberCount: 2,
     nominee: null,
     ownerNeeded: false,
     attachOptions: [],

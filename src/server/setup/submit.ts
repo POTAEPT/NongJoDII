@@ -211,16 +211,21 @@ async function attachSubGroup(
 }
 
 /** The #2e card, under the key of its nomination (see submitSetup). */
-function pushSetupCard(
+async function pushSetupCard(
   deps: Deps,
   group: Pick<GroupSetup, 'groupId' | 'lineGroupId'>,
   c: { owner: string; outcome: SetupOutcome; nominatedAt: Date; pendingOwnerName: string | null },
 ) {
+  // #143: the card repeats what was saved; a failed read only drops the recap.
+  const recap = await deps.store.getGroupSetup(group.groupId).catch((err) => {
+    logError('setup_recap_read_failed', { groupId: group.groupId }, err)
+    return null
+  })
   return pushToGroupWithinBudget(deps, {
     purpose: 'setup_done',
     groupId: group.groupId,
     lineGroupId: group.lineGroupId,
-    messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName: c.pendingOwnerName })],
+    messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName: c.pendingOwnerName, recap })],
     reserve: SETUP_PUSH_RESERVE,
     retryKey: retryKeyFrom(`setup_done:${group.groupId}:${c.owner}:${c.outcome}:${c.nominatedAt.toISOString()}`),
   })

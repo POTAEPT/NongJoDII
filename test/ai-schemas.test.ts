@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { TaskRow } from '@/server/ports'
-import { DECIDE_SYSTEM, DECISION_SCHEMA, parseDecision } from '@/server/progress/decide'
 import { parseSummaryOutput, SUMMARY_SCHEMA } from '@/server/summary/parse-output'
 import { buildSummaryPrompt } from '@/server/summary/prompt'
 
-// #111: each AI call sends a JSON Schema (OpenRouter structured outputs, strict). These
+// #111: each chat-model call sends a JSON Schema (OpenRouter structured outputs, strict). These
 // tests keep each schema in step with the parser that reads the answer: an answer the schema
 // allows must parse, the schema must follow the strict-mode rules, and the prompt must name
-// the same fields. A tiny validator covers the JSON Schema subset the schemas use.
+// the same fields. A tiny validator covers the JSON Schema subset the schemas use. The progress
+// decision model answers typed questions instead (Decisions API, test/openrouter-decisions.test.ts).
 
 type Schema = Record<string, unknown>
 
@@ -45,8 +44,6 @@ function strictProblems(schema: Schema, path = '$'): string[] {
   return out
 }
 
-const task = (id: string, status: TaskRow['status'] = 'not_assigned') => ({ id, status } as TaskRow)
-
 describe('SUMMARY_SCHEMA and parseSummaryOutput', () => {
   it('follows the strict-mode rules', () => {
     expect(strictProblems(SUMMARY_SCHEMA.schema)).toEqual([])
@@ -79,33 +76,5 @@ describe('SUMMARY_SCHEMA and parseSummaryOutput', () => {
     const props = SUMMARY_SCHEMA.schema.properties
     for (const k of Object.keys(props)) expect(shape).toContain(`"${k}"`)
     for (const k of Object.keys(props.tasks.items.properties)) expect(shape).toContain(`"${k}"`)
-  })
-})
-
-describe('DECISION_SCHEMA and parseDecision', () => {
-  const tasks = [task('t1'), task('t2'), task('t3')]
-
-  it('follows the strict-mode rules', () => {
-    expect(strictProblems(DECISION_SCHEMA.schema)).toEqual([])
-  })
-
-  it.each([
-    [{ kind: 'none', task: null, tasks: null, status: null }, { kind: 'none' }],
-    [{ kind: 'match', task: 2, tasks: null, status: 'done' }, { kind: 'match', taskId: 't2', status: 'done' }],
-    [{ kind: 'ambiguous', task: null, tasks: [1, 3], status: 'in_process' }, { kind: 'ambiguous', taskIds: ['t1', 't3'], status: 'in_process' }],
-  ])('%j is allowed by the schema and parses', (answer, expected) => {
-    expect(valid(DECISION_SCHEMA.schema, answer)).toBe(true)
-    expect(parseDecision(JSON.stringify(answer), tasks)).toEqual(expected)
-  })
-
-  it('the schema refuses a status or kind the parser does not know', () => {
-    expect(valid(DECISION_SCHEMA.schema, { kind: 'match', task: 1, tasks: null, status: 'started' })).toBe(false)
-    expect(valid(DECISION_SCHEMA.schema, { kind: 'maybe', task: null, tasks: null, status: null })).toBe(false)
-  })
-
-  it('the prompt names the schema\'s fields and kinds, and says unused ones are null', () => {
-    for (const k of Object.keys(DECISION_SCHEMA.schema.properties)) expect(DECIDE_SYSTEM).toContain(`"${k}"`)
-    for (const kind of DECISION_SCHEMA.schema.properties.kind.enum) expect(DECIDE_SYSTEM).toContain(`"${kind}"`)
-    expect(DECIDE_SYSTEM).toContain('are null')
   })
 })

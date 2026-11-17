@@ -79,7 +79,7 @@ export type AnalyticsEvent =
   | `liff_${string}_open`
   | 'dashboard_tab_overview' | 'dashboard_tab_calendar' | 'dashboard_tab_tasks'
   | 'dashboard_compare_open_group' | 'dashboard_member_open' | 'dashboard_task_open'
-  | 'task_saved' | 'review_confirmed' | 'setup_submitted'
+  | 'task_saved' | 'task_reopened' | 'review_confirmed' | 'setup_submitted'
 
 /** Sends one Clarity custom event. Does nothing when Clarity is not loaded (dev, tests). */
 export function track(event: AnalyticsEvent): void {

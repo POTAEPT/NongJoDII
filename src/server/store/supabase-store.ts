@@ -1248,6 +1248,20 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
+  async reopenTask(t: { taskId: string; assignee: string | null; toStatus: 'in_process' | 'not_assigned'; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    let q = this.db
+      .from('tasks')
+      .update({ status: t.toStatus, done_at: null, last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('status', 'done')
+    q = t.assignee === null ? q.is('assignee_line_user_id', null) : q.eq('assignee_line_user_id', t.assignee)
+    const { data, error } = await q.select('id')
+    check('reopenTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
   async restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
     const { data, error } = await this.db
       .from('tasks')

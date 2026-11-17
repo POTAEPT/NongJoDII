@@ -15,6 +15,7 @@ import { confirmOwner } from '@/server/setup/confirm'
 import { loadSetup } from '@/server/setup/load'
 import { resendSetupCard, submitSetup } from '@/server/setup/submit'
 import { loadTask } from '@/server/tasks/load'
+import { reopenTaskFromLiff } from '@/server/tasks/reopen'
 import { updateTaskFromLiff } from '@/server/tasks/update'
 import { getDemo } from './demo-deps'
 
@@ -41,6 +42,7 @@ const POST_ROUTES: Record<string, Handler> = {
   'takeover/load': (d, b) => loadTakeover(d, b),
   'tasks/load': (d, b) => loadTask(d, b),
   'tasks/update': (d, b) => updateTaskFromLiff(d, b),
+  'tasks/reopen': (d, b) => reopenTaskFromLiff(d, b),
   'progress/answer': (d, b) => answerProgressFromLiff(d, b),
   'google/start': (d, b) => startGoogleSignIn(d, b),
   'google/status': (d, b) => googleStatus(d, b),

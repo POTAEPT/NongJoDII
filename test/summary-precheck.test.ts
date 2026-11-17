@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionsResult, LlmRequest, LlmUsage } from '@/server/ports'
 import { buildPrecheckRequest, COUNT_HINT, mapPrecheck } from '@/server/summary/precheck'
 import { SUMMARY_TEXT } from '@/server/summary/reply'
+import { SUMMARY_FAILED_TEXT } from '@/server/summary/failure'
+import { mergeTasks, SUMMARY_BUDGET_MS } from '@/server/summary/run-summary'
 import { DECISION_MODEL, TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
@@ -35,10 +37,23 @@ function setup(opts: { draftTasks?: boolean } = {}) {
     ev.groupText({ text: 'โอเค แบ่งกันนะ', userId: 'Upim', timestamp: T0 + MIN }),
   )
   const summarize = () => send(ev.groupText({ text: 'NongJoDII summarize', userId: 'Upim', replyToken: 'rt-cmd', timestamp: T0 + 5 * MIN }))
-  const answer = (titles: string[]) => h.llm.respond(() => ({
-    content: JSON.stringify({ summary: 'คุยเรื่องงาน', tasks: titles.map((title) => ({ title, details: null, assignee: null, due: null, source: null, tags: [] })) }),
-    model: TEXT_MODEL, usage: USAGE,
-  }))
+  /** Moves the test clock, as if a call took `ms`. */
+  const takes = (ms: number) => h.setNow(new Date(h.deps.now().getTime() + ms))
+  /** A text answer; `takesMs` moves the test clock as if the call took that long. Each title
+   *  may carry a source ref as `title@msgN`. */
+  const answer = (titles: string[], takesMs = 0) => h.llm.respond(async () => {
+    takes(takesMs)
+    return {
+      content: JSON.stringify({
+        summary: 'คุยเรื่องงาน',
+        tasks: titles.map((t) => {
+          const [title, source] = t.split('@')
+          return { title, details: null, assignee: null, due: null, source: source ?? null, tags: [] }
+        }),
+      }),
+      model: TEXT_MODEL, usage: USAGE,
+    }
+  })
   const jev = (hasTask: number, count: string | null): DecisionsResult => ({
     model: DECISION_MODEL,
     answers: {
@@ -51,7 +66,7 @@ function setup(opts: { draftTasks?: boolean } = {}) {
   const userOf = (i: number) => (h.llm.requests[i] as LlmRequest).user
   /** A model answer the Summary parser cannot read. */
   const unreadable = () => h.llm.respond(() => ({ content: 'not json {', model: TEXT_MODEL, usage: USAGE }))
-  return { ...h, chat, summarize, answer, jev, replyText, userOf, unreadable }
+  return { ...h, takes, chat, summarize, answer, jev, replyText, userOf, unreadable }
 }
 
 describe('the Summary pre-check (#157)', () => {
@@ -95,7 +110,7 @@ describe('the Summary pre-check (#157)', () => {
     expect(s.replyText()).not.toContain(SUMMARY_TEXT.mayHaveMore)
   })
 
-  it('a retry still short keeps the longer answer and says there may be more; never a third call', async () => {
+  it('a retry still short keeps the first answer\'s Tasks and says there may be more; never a third call', async () => {
     const s = setup()
     await s.chat()
     s.decisions.respond(s.jev(0.9, 'many'))
@@ -105,6 +120,20 @@ describe('the Summary pre-check (#157)', () => {
     expect(s.llm.requests).toHaveLength(2)
     expect(s.store.tables.task_candidates).toHaveLength(2)
     expect(s.replyText()).toContain(SUMMARY_TEXT.mayHaveMore)
+  })
+
+  it('the retry merges: the first answer\'s Tasks stay and only new ones are added, without duplicates', async () => {
+    const s = setup()
+    await s.chat()
+    s.decisions.respond(s.jev(0.9, 'many'))
+    s.answer(['ทำสไลด์', 'Write  Report'])
+    // A shorter retry that drops "ทำสไลด์", repeats the report (other spacing and case) and adds the poster.
+    s.answer(['  write report ', 'ทำโปสเตอร์'])
+    await s.summarize()
+    expect(s.llm.requests).toHaveLength(2)
+    expect(s.userOf(1)).toContain('Keep the tasks above and add any missing ones')
+    expect(s.store.tables.task_candidates.map((c) => c.title)).toEqual(['ทำสไลด์', 'Write  Report', 'ทำโปสเตอร์'])
+    expect(s.replyText()).not.toContain(SUMMARY_TEXT.mayHaveMore)
   })
 
   it('"many" with 3 Tasks is enough: no retry and no "may have more" line (Jev calls a 3-Task chat "many")', async () => {
@@ -182,6 +211,102 @@ describe('the Summary pre-check (#157)', () => {
     s.answer(['ทำสไลด์'])
     await s.summarize()
     expect(s.store.tables.ai_usage.map((u) => u.model).sort()).toEqual([DECISION_MODEL, TEXT_MODEL].sort())
+  })
+})
+
+describe('the Summary time budget (#157)', () => {
+  const SEC = 1000
+  /** A Jev answer that takes `ms` on the test clock. */
+  const slowJev = (s: ReturnType<typeof setup>, result: DecisionsResult, ms: number) =>
+    s.decisions.respond(async () => {
+      s.takes(ms)
+      return result
+    })
+  /** Store work before the AI calls takes `ms` on the test clock. */
+  const slowStore = (s: ReturnType<typeof setup>, ms: number) => {
+    const original = s.store.getGroupSetup.bind(s.store)
+    vi.spyOn(s.store, 'getGroupSetup').mockImplementation(async (groupId) => {
+      s.takes(ms)
+      return original(groupId)
+    })
+  }
+
+  it('each call gets min(its own cap, time left), so the budget shrinks from call to call', async () => {
+    const s = setup()
+    await s.chat()
+    slowJev(s, s.jev(0.9, 'several'), 10 * SEC)
+    s.answer(['ทำสไลด์'], 20 * SEC)
+    s.answer(['ทำสไลด์', 'เขียนรายงาน'])
+    await s.summarize()
+    expect(s.decisions.requests[0].timeoutMs).toBe(15 * SEC)
+    expect(s.llm.requests.map((r) => r.timeoutMs)).toEqual([40 * SEC, 20 * SEC])
+    expect(SUMMARY_BUDGET_MS).toBe(50 * SEC)
+  })
+
+  it('no retry when less than 15 s is left: the first answer stays and the "may have more" line shows', async () => {
+    const s = setup()
+    await s.chat()
+    slowJev(s, s.jev(0.9, 'several'), 10 * SEC)
+    s.answer(['ทำสไลด์'], 26 * SEC)
+    await s.summarize()
+    expect(s.llm.requests).toHaveLength(1)
+    expect(s.store.tables.task_candidates).toHaveLength(1)
+    expect(s.replyText()).toContain(SUMMARY_TEXT.mayHaveMore)
+  })
+
+  it('no plain-prompt second call when less than 15 s is left: the unreadable answer fails as before', async () => {
+    const s = setup()
+    await s.chat()
+    slowJev(s, s.jev(0.9, 'many'), 10 * SEC)
+    s.llm.respond(async () => {
+      s.takes(30 * SEC)
+      return { content: 'not json {', model: TEXT_MODEL, usage: USAGE }
+    })
+    await s.summarize()
+    expect(s.llm.requests).toHaveLength(1)
+    expect(s.store.tables.summaries).toEqual([])
+    expect(s.replyText()).toContain(SUMMARY_FAILED_TEXT.ai_output)
+  })
+
+  it('no pre-check when less than 30 s is left: the old single text call, within the time left', async () => {
+    const s = setup()
+    await s.chat()
+    slowStore(s, 25 * SEC)
+    s.answer(['ทำสไลด์'])
+    await s.summarize()
+    expect(s.decisions.requests).toHaveLength(0)
+    expect(s.llm.requests).toHaveLength(1)
+    expect(s.llm.requests[0].timeoutMs).toBe(25 * SEC)
+    expect(s.userOf(0)).not.toContain('A first reading found')
+    expect(s.store.tables.task_candidates).toHaveLength(1)
+  })
+
+  it('a budget spent before the first text call takes the timeout failure path, with no text call', async () => {
+    const s = setup()
+    await s.chat()
+    slowStore(s, 50 * SEC)
+    await s.summarize()
+    expect(s.llm.requests).toHaveLength(0)
+    expect(s.store.tables.summaries).toEqual([])
+    expect(s.replyText()).toContain(SUMMARY_FAILED_TEXT.ai_timeout)
+  })
+})
+
+describe('mergeTasks (#157)', () => {
+  const task = (title: string, sourceRef: string | null = null) =>
+    ({ title, details: null, assigneeRef: null, due: null, sourceRef, tags: [] })
+
+  it('matches by normalised title, and by source message when both name one', () => {
+    const first = [task('Make Slides', 'msg1'), task('write report')]
+    const retry = [
+      task(' make   slides ', 'msg1'), // same Task
+      task('make slides', 'msg4'), // same title, another message: a separate Task
+      task('Write Report', 'msg2'), // the first has no source: same Task
+      task('book room'), task('Book  Room'), // new, once
+    ]
+    expect(mergeTasks(first, retry).map((t) => [t.title, t.sourceRef])).toEqual([
+      ['Make Slides', 'msg1'], ['write report', null], ['make slides', 'msg4'], ['book room', null],
+    ])
   })
 })
 

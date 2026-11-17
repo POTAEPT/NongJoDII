@@ -1,5 +1,5 @@
 import type { Member, MessageMention, StoredMessage, TaskStatus } from '../ports'
-import { bangkokTodayLabel, formatPromptTime } from '../time/bangkok'
+import { bangkokCalendar, bangkokTodayLabel, formatPromptTime } from '../time/bangkok'
 
 export type PromptRef = { ref: string; lineUserId: string }          // 'm1', 'm2', ...
 export type MessageRef = { ref: string; message: StoredMessage }     // 'msg1', 'msg2', ...
@@ -63,6 +63,8 @@ export function buildSummaryPrompt(p: {
 
   const user = [
     `Group context: ${p.workDescription ?? '-'}`,
+    // #161: weekdays, so "ศุกร์นี้" maps to a date.
+    `Calendar (Asia/Bangkok): ${bangkokCalendar(p.now).join(', ')}`,
     'Members:',
     ...lines,
     ...(existingTasks.length > 0
@@ -97,6 +99,8 @@ export function buildSummaryPrompt(p: {
     '- When nobody took the task, assignee is null. Prefer null to a guess.',
     `- due: ISO 8601 date-time with +07:00 offset when the chat states a deadline, else null. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok).`,
     '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
+    // #161: weekday deadlines came back as the wrong day.
+    '- Work out dates from "Calendar" in the user message. "ศุกร์นี้" or "วันศุกร์" is the first Friday on or after today; "ศุกร์หน้า" is the Friday of the next week (weeks start on Monday); "พรุ่งนี้" is tomorrow; "มะรืน" is the day after tomorrow. A time with no day is today if it is still ahead, else tomorrow. Thai times: "5 โมงเย็น" 17:00, "6 โมงเย็น" 18:00, "เที่ยง" 12:00, "บ่าย 2" 14:00, "2 ทุ่ม" 20:00. A deadline is never before today.',
     '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Pick from "Group tags" first, then reuse "Tags in use"; a new tag only when none fits. Never a person\'s name or nickname. [] when none fits.',
   ].join('\n')
 

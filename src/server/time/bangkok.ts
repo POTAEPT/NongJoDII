@@ -95,6 +95,20 @@ export function bangkokTodayLabel(now: Date): string {
   return `${p.y}-${pad(p.m)}-${pad(p.d)}`
 }
 
+const WEEKDAY_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] // ISO 1..7
+
+/** #161: today and the next `days` days in Bangkok, each with its weekday, for the Summary
+ *  prompt: 'Tue 2026-11-17 (today)', 'Wed 2026-11-18 (tomorrow)', 'Thu 2026-11-19'... A model
+ *  given only the date cannot tell which day "ศุกร์นี้" is. Bangkok has no daylight saving,
+ *  so whole days of 24 hours are exact. */
+export function bangkokCalendar(now: Date, days = 14): string[] {
+  return Array.from({ length: days + 1 }, (_, i) => {
+    const d = new Date(now.getTime() + i * 86_400_000)
+    const label = `${WEEKDAY_EN[bangkokIsoWeekday(d) - 1]} ${bangkokTodayLabel(d)}`
+    return i === 0 ? `${label} (today)` : i === 1 ? `${label} (tomorrow)` : label
+  })
+}
+
 /** ISO weekday in Bangkok: 1 = Monday ... 7 = Sunday, the same numbering as
  *  groups.weekly_summary_weekday. */
 export function bangkokIsoWeekday(now: Date): number {

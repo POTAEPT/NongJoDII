@@ -5,7 +5,7 @@ import { SHARE_REFUSED_TEXT } from '@/server/google/share-refused'
 import { AdapterError, DriveShareRefused, DriveStorageFull } from '@/server/log'
 import { loadDashboard, type DashboardData } from '@/server/dashboard/load'
 import { FILE_NOTICE_TEXT, FILE_SAVED_TEXT } from '@/server/files/card'
-import { BATCH_QUIET_MS, MAX_FILE_BYTES, POST_SAVE_RESERVE_MS, PUSH_WORST_MS, SAVE_HARD_STOP_MS, SAVING_NOTICE_BYTES } from '@/server/files/save'
+import { BATCH_QUIET_MS, MAX_FILE_BYTES, POST_SAVE_RESERVE_MS, PUSH_WORST_MS, SAVE_HARD_STOP_MS, SAVING_NOTICE_BYTES, SLOW_FILE_BYTES } from '@/server/files/save'
 import { driveDeadline, ensureDriveFolders, MAIN_GROUP_FOLDER } from '@/server/google/drive-folders'
 import type { LineEvent } from '@/server/line/types'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -904,6 +904,19 @@ describe('the sender is told why (#99)', () => {
     await h.runDeferred()
     expect(h.line.replies).toEqual([])
     expect(h.store.tables.webhook_events.some((w) => w.webhookEventId.startsWith('file_paused:'))).toBe(false)
+  })
+
+  it('#148: a file above SLOW_FILE_BYTES is warned that it may not save in time; one below is not', async () => {
+    const h = await setup()
+    h.line.contents.set('m-S', { data: bytes('slow'), contentType: 'video/mp4' })
+    h.line.contents.set('m-M', { data: bytes('mid'), contentType: 'video/mp4' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-S', fileName: 'big.mp4', fileSize: SLOW_FILE_BYTES + 1, replyToken: 'rt-S' }))
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-M', fileName: 'mid.mp4', fileSize: SLOW_FILE_BYTES, replyToken: 'rt-M' }))
+    await h.runDeferred()
+    const text = (token: string) => (h.line.replies.find((r) => r.replyToken === token)!.messages[0] as { text: string }).text
+    expect(text('rt-S')).toBe(`${FILE_NOTICE_TEXT.saving('big.mp4')}\n${FILE_NOTICE_TEXT.slowWarning}`)
+    expect(text('rt-M')).toBe(FILE_NOTICE_TEXT.saving('mid.mp4'))
+    expect(FILE_SAVED_TEXT.timeout).toContain('อัปโหลดลง Google Drive เอง')
   })
 
   it('a large file gets "saving…" at once, then its card as a push through the budget', async () => {

@@ -163,6 +163,9 @@ export function cannedAnswer(req: LlmRequest): string {
  *  progress (0.9, else 0.1) and its status; a choice picks the keyword status when offered,
  *  else the first key (the first Task); a score picks the lowest level. */
 export function cannedDecisions(req: DecisionsRequest): Record<string, DecisionAnswer | null> {
+  // #157: the Summary pre-check (has_task, task_count) has no canned reading: no answer, so
+  // the Summary runs as before and the canned Summary decides the Tasks.
+  if ('has_task' in req.questions) return Object.fromEntries(Object.keys(req.questions).map((k) => [k, null]))
   const at = req.state.lastIndexOf(`${CHAT_LINE_LABEL}\n`)
   const line = at >= 0 ? req.state.slice(at + CHAT_LINE_LABEL.length + 1) : ''
   const keyword = looksLikeProgress(line)

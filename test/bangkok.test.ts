@@ -98,9 +98,14 @@ describe('findWeekday', () => {
   })
 
   it('never reads a short form inside another word', () => {
-    for (const text of ['ไปศึกษาเพิ่ม', 'สั่งอาหาร', 'ถามอาจารย์', 'เดือนพฤศจิกายน', 'พฤษภาคม', 'ศ.ดร.สมชาย', 'I sat on the sun']) {
+    for (const text of ['ไปศึกษาเพิ่ม', 'สั่งอาหาร', 'ถามอาจารย์', 'เดือนพฤศจิกายน', 'พฤษภาคม', 'ศ.ดร.สมชาย', 'รายงานปี พ.ศ. 2569', 'ค.ศ. 2026', 'I sat on the sun']) {
       expect(findWeekday(text)).toBeNull()
     }
+  })
+
+  it('a tagged name that is a day word is a person, not a weekday', () => {
+    expect(findWeekday('ฝาก @อาทิตย์ ส่งวันพฤหัส')).toEqual({ weekday: 4, nextWeek: false })
+    expect(findWeekday('@Sun ส่ง Fri')).toEqual({ weekday: 5, nextWeek: false })
   })
 
   it('reads หน้า as next week only right at the day, not "10 หน้า" pages', () => {

@@ -137,8 +137,9 @@ const EN_DAY: [string, number][] = [
 const DAY_BY_WORD = new Map<string, number>([...THAI_DAY_LONG, ...THAI_DAY_SHORT, ...EN_DAY])
 // A short form ("พฤ", "ศ", "อา") is a day only on its own: after "วัน", the start, or a
 // non-Thai character, and before "นี้" / "หน้า", the end, or a non-Thai character (one dot
-// allowed). So "ศึกษา", "อาหาร", "อาจารย์", "พฤศจิกายน" and "ศ.ดร." are not days.
-const SHORT = String.raw`(?:(?<=วัน)|(?<![${TH}]))(?:${THAI_DAY_SHORT.map(([w]) => w).join('|')})(?=\.?(?:\s*(?:หน้า|นี้)|$|[^${TH}.]))`
+// allowed); never after a dot. So "ศึกษา", "อาหาร", "อาจารย์", "พฤศจิกายน", "ศ.ดร." and "พ.ศ." are not
+// days.
+const SHORT = String.raw`(?:(?<=วัน)|(?<![${TH}.]))(?:${THAI_DAY_SHORT.map(([w]) => w).join('|')})(?=\.?(?:\s*(?:หน้า|นี้)|$|[^${TH}.]))`
 const DAY_WORD = new RegExp(
   String.raw`(?:${THAI_DAY_LONG.map(([w]) => w).join('|')})|${SHORT}|(?<![A-Za-z])(?:${EN_DAY.map(([w]) => w).join('|')})(?![A-Za-z])`,
   'gi',
@@ -176,6 +177,8 @@ export function findWeekday(text: string): { weekday: number; nextWeek: boolean 
     const after = text.slice(m.index + word.length)
     // English short forms only when capitalized ("Fri", "SAT"), so "I sat" or "the sun" are no days.
     if (/^[a-z]{3,5}$/.test(word)) continue
+    // A tag of someone whose LINE name is a day word ("@อาทิตย์", "@Sun") is a person.
+    if (before.endsWith('@')) continue
     if (word === 'อาทิตย์' && !before.endsWith('วัน') && /^\s*(?:หน้า|นี้|ที่แล้ว|ก่อน)/.test(after)) continue
     const day = DAY_BY_WORD.get(word.toLowerCase())
     if (day === undefined) continue

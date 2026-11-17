@@ -104,7 +104,7 @@ export function buildSummaryPrompt(p: {
     `- ${PROJECT_WORK_ONLY}`,
     '- Summarize and take tasks ONLY from the "Chat" section. "Earlier chat" was summarized before: use it only to understand the new chat, and never take a task from it.',
     '- Never propose a task that is already in "Existing tasks", whatever its status and even if the chat words it differently.',
-    '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname in those fields.',
+    '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Always write the braces: never a bare m2 or ม2. Never write a person\'s name or nickname in those fields.',
     '- Never write a message ref (such as msg14) in summary, title or details; readers never see message refs. Use message refs only in source.',
     '- In the chat, @{m2} means the sender tagged that member; trust a tag over a name, since two members can share a LINE name.',
     '- assignee: the member ref (such as "m2") of the person who will do it. Match people by tag, LINE name or nickname.',
@@ -151,10 +151,40 @@ function memberLine(ref: string, displayName: string | null, nicknames: string[]
   return `${ref}: LINE name "${displayName ?? 'unknown'}"; nicknames: ${nick}; role: ${role ?? '-'}`
 }
 
-/** Replaces every {mN} with the LINE name for that ref; a ref with a null name or
- *  an unknown ref becomes 'สมาชิก'. Text outside {mN} is left exactly as is. */
+// A member ref, braced as the prompt asks ("{m2}", also "{ม2}"), or written bare despite it
+// (live 2026-11-17: "m1", "ม1"): "ม.2", "[m2]", "(m2)" and a range "m1-m3". One pattern, one
+// pass, so a LINE name put in for a ref is never read as a ref again.
+const ONE_REF = String.raw`(?:m|ม\.?)(\d+)`
+const MEMBER_REF = new RegExp(
+  String.raw`\{(?:m|ม)(\d+)\}|(\[)?(?<![A-Za-z0-9])${ONE_REF}(?:[ \t]*[-–][ \t]*${ONE_REF})?(?!\d)(\])?`, 'g',
+)
+const RANGE_MAX = 20
+
+/** Replaces every member ref with the LINE name for that ref; a null name becomes 'สมาชิก'.
+ *  A braced ref that is not in this prompt also becomes 'สมาชิก'. A bare ref ("m1", "ม1",
+ *  "ม.1", "[m1]" without its brackets, "(m1)" keeping them) is swapped only when its number
+ *  is a ref in this prompt, so other words and numbers stay; a range "m1-m3" of known refs
+ *  lists each name. Other text is left exactly as is. */
 export function substituteMemberRefs(text: string, nameByRef: Map<string, string | null>): string {
-  return text.replace(/\{(m\d+)\}/g, (_, ref: string) => nameByRef.get(ref) ?? 'สมาชิก')
+  const name = (n: string) => nameByRef.get(`m${n}`) ?? 'สมาชิก'
+  const known = (n: string) => nameByRef.has(`m${n}`)
+  return text.replace(MEMBER_REF, (whole: string, braced?: string, open?: string, a?: string, b?: string, close?: string) => {
+    if (braced !== undefined) return name(braced)
+    if (a === undefined) return whole
+    const lo = Number(a)
+    const hi = b === undefined ? lo : Number(b)
+    let out: string
+    if (b !== undefined && lo < hi && hi - lo <= RANGE_MAX
+      && Array.from({ length: hi - lo + 1 }, (_, i) => String(lo + i)).every(known)) {
+      out = Array.from({ length: hi - lo + 1 }, (_, i) => name(String(lo + i))).join(', ')
+    } else {
+      const inner = whole.slice(open ? 1 : 0, close ? -1 : undefined)
+      const swapped = inner.replace(new RegExp(ONE_REF, 'g'), (t: string, n: string) => (known(n) ? name(n) : t))
+      if (swapped === inner) return whole
+      out = swapped
+    }
+    return open && close ? out : `${open ?? ''}${out}${close ?? ''}`
+  })
 }
 
 // A message ref the model wrote into reader-facing text despite the rule, with an

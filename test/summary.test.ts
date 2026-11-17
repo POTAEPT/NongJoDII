@@ -112,6 +112,19 @@ describe('Summary command', () => {
     expect(reply).toContain('จาก Pim Sirin เวลา')
   })
 
+  it('a member ref the model wrote without braces never reaches the reply (live 2026-11-17)', async () => {
+    const t = setup()
+    await seedChat(t)
+    t.respond((ref) => {
+      const thai = ref('Bank T.').replace('m', 'ม')
+      return { summary: `${ref('Pim Sirin')} รับทำสไลด์ ส่วน${thai} ดูเรื่องห้อง`, tasks: [{ title: `${ref('Pim Sirin')} ทำสไลด์` }] }
+    })
+    await t.command()
+    expect(t.store.tables.summaries[0].summaryText).toBe('Pim Sirin รับทำสไลด์ ส่วนBank T. ดูเรื่องห้อง')
+    expect(t.store.tables.task_candidates[0].title).toBe('Pim Sirin ทำสไลด์')
+    expect(textOf(t.line.replies[0].messages)).not.toMatch(/(?<![A-Za-z0-9])(?:m|ม)\d/)
+  })
+
   it('a LINE name that looks like a message ref is kept', async () => {
     const t = setup()
     t.store.seedMember({ groupId: t.group.id, lineUserId: 'Umsg', displayName: 'msg5' })

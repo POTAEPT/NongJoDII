@@ -18,6 +18,8 @@ Every `/demo` page and `/demo/api/**` route answers 404 unless `process.env.DEMO
 
 `/demo/api/<path>` has the same body and answer as `/api/<path>` for: dashboard/load, me/load, me/save, review/load, review/notify, review/submit, settings/load, settings/stop-using, settings/submit, setup/confirm-owner, setup/load, setup/resend-card, setup/submit, takeover/answer, takeover/load, tasks/load, tasks/update, progress/answer, google/start, google/status, google/disconnect. It also serves `GET /demo/api/google/callback`, and its "back to LINE" link points to `<origin>/demo?view=google&id=done|back`.
 
+The demo's origin (the Google redirect URI `<origin>/demo/api/google/callback` and the card links' `appBaseUrl`) follows the requests: every `/demo/api/**` request sets it to its own origin, so a server on `next dev -p 3001` signs in through `:3001`. Before the first request it is `http://localhost:<PORT or 3000>`. `DEMO_BASE_URL`, when set, wins (a tunnel URL, for example). Google accepts only a redirect URI listed on the OAuth client, so each port used for the demo needs its own entry there.
+
 ## Sim API (`/demo/api/sim/*`, JSON in and out)
 
 | Route | Body | Effect |

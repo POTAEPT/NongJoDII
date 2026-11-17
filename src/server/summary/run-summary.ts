@@ -332,13 +332,35 @@ export function retryUser(user: string, first: ParsedTask[], countHint: string):
 /** #157: the retry merges: every first-answer Task stays, and a retry Task is added unless it is
  *  already there. Two Tasks are the same when their titles match after trim, space collapse and
  *  lowercase, and, when both name a source message, it is the same message. */
+/** Share of the shorter title's character bigrams two Tasks must have in common to be one. */
+export const MERGE_TITLE_OVERLAP = 0.6
+
 export function mergeTasks(first: ParsedTask[], retry: ParsedTask[]): ParsedTask[] {
-  const key = (title: string) => title.trim().replace(/\s+/g, ' ').toLowerCase()
+  // A retry often repeats a first-answer Task in new words, with its source on a later line
+  // of the same request (the deadline line) or a look-alike character (U+2011 for "-").
+  // Two Tasks are the same when they could be for the same person (both assignees named and
+  // equal, or either unnamed) and either their folded titles match, or they share a source
+  // line, or their titles overlap strongly (character bigrams; Thai has no word spaces).
+  const key = (title: string) => title.normalize('NFKC').toLowerCase()
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+  const bigrams = (k: string) => new Set(Array.from({ length: Math.max(0, k.length - 1) }, (_, i) => k.slice(i, i + 2)))
+  const overlap = (a: string, b: string) => {
+    const x = bigrams(key(a)); const y = bigrams(key(b))
+    if (x.size === 0 || y.size === 0) return 0
+    let both = 0
+    for (const g of x) if (y.has(g)) both++
+    return both / Math.min(x.size, y.size)
+  }
+  const samePerson = (a: ParsedTask, b: ParsedTask) =>
+    a.assigneeRef === null || b.assigneeRef === null || a.assigneeRef === b.assigneeRef
+  const sameTask = (a: ParsedTask, b: ParsedTask) => samePerson(a, b) && (
+    key(a.title) === key(b.title)
+    || (a.sourceRef !== null && a.sourceRef === b.sourceRef)
+    || overlap(a.title, b.title) >= MERGE_TITLE_OVERLAP)
   const merged = [...first]
   for (const task of retry) {
-    const same = merged.some((t) =>
-      key(t.title) === key(task.title) && (t.sourceRef === null || task.sourceRef === null || t.sourceRef === task.sourceRef))
-    if (!same) merged.push(task)
+    if (!merged.some((t) => sameTask(t, task))) merged.push(task)
   }
   return merged
 }

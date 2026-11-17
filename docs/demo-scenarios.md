@@ -20,7 +20,7 @@ The full simulator API is in `docs/demo-contract.md`. The shape the player reads
 | --- | --- | --- |
 | `name` | yes | The file name without `.json`. |
 | `description` | yes | One Thai sentence: what happens, then "ผลที่คาด:" and the expected result. The Scripts tab shows it. |
-| `messages[]` | yes | The chat, in order. Each item: `id` (`m1`, `m2`, ...), `persona` (a persona key), `minute` (0, 1, 2, ...: order only, not real time), `text`. |
+| `messages[]` | yes | The chat, in order. Each item: `id` (`m1`, `m2`, ...), `persona` (a persona key), `minute` (0, 1, 2, ...: order only, not real time), `text`. For an upload, use `type: "file"` or `"image"` with `file` (a file in `public/demo/files/`) and, optionally, `fileName` (the name the chat shows) instead of `text`. `replyTo: "m2"` sends the line as a quote-reply to message `m2` (for "NongJoDII ขอไฟล์"). |
 | `summaryCommand` | usually | `{persona, minute, text}`. It is sent after the last message. Use `NongJoDII สรุปหน่อย`. Leave it out only when the scenario stops before the Summary. |
 | `personas` | no | The four seeded people exist in every reset. List a new key here only to bring in an extra person (a new persona). |
 | `feature`, `startAt`, `group`, `expectedTasks`, `fakeModelAnswer`, `expect` | no | Notes in the e2e scenario shape. The player ignores them. Keep `expectedTasks` accurate anyway: people read it to know what the scenario should produce. |
@@ -52,6 +52,16 @@ The demo server must be running: `DEMO_MODE=1 infisical run --env=dev -- npm run
 1. `curl -s localhost:3000/demo/api/sim/scripts`. Your `name` is listed. If it is missing, the file is not valid JSON or has no `messages`: the Log tab shows the reason.
 2. In `/demo`, press Reset (the set-up groups of `src/app/demo/groups/`), pick the group in the presenter panel's group picker, then press Play on your scenario. The same can be done by API: `POST /demo/api/sim/load-script {"name":"<NN>-<short-name>", "group":"<lineGroupId>"}` (without `group` it plays into the selected group).
 3. Wait for the bot's Summary card. Press "ตรวจและยืนยันงาน", then compare the Task candidates with step 1: same count, right people, deadlines read correctly. The AI tab shows whether the answer came from OpenRouter or from the canned fallback.
+
+## Files on stage
+
+`04-file-saver` shows the File saver (#4) and the file request (#33). Jeff sends a PDF and Bomb sends an image (`public/demo/files/quotation.pdf`, `cafe-logo.png`). Then Nont quote-replies to the PDF with "NongJoDII ขอไฟล์". It has no Summary.
+
+1. Reset, then connect Google Drive as Nont (Google tab, or "เชื่อมต่อ Google Drive" in the 1:1 Rich Menu). Reset clears the connection, so connect again after every Reset. The redirect URI `http://localhost:<port>/demo/api/google/callback` must be listed on the Google OAuth client.
+2. Select "ลูกค้า ร้านกาแฟ", then press Play on `04-file-saver`.
+3. The bot answers each upload with its Drive link and answers the request with the PDF's link again. Without Drive connected, it says once that it cannot save files yet, and answers the request with "ข้อความนี้ไม่มีไฟล์ที่น้องจดดีบันทึกไว้".
+
+To add a file, put it in `public/demo/files/` (a plain name; the type comes from the extension) and point a message's `file` at it.
 
 ## New group on stage
 

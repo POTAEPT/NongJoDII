@@ -149,7 +149,7 @@ describe('/demo full in-process run', () => {
     fresh()
     const res = await runSimAction('scripts', 'GET', null)
     expect((res.body as { scripts: Array<{ name: string }> }).scripts.map((s) => s.name)).toEqual([
-      '01-clear-task', '02-casual-no-task', '03-several-tasks',
+      '01-clear-task', '02-casual-no-task', '03-several-tasks', '04-file-saver',
     ])
   })
 

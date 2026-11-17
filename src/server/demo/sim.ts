@@ -11,7 +11,7 @@ import { getDemo, resetDemo, seedLiveMember, type Demo } from './demo-deps'
 import { deleteGroupFile, fileStem, groupsDir, readGroupFiles, writeGroupFile, type GroupFile } from './group-files'
 import { recordSetUpFiles } from './setup-files'
 import { signedWebhookRequest } from './sign'
-import type { ChatItem, DemoDirectInfo, DemoGroupInfo, DemoPersona, DemoScript, DemoState } from './types'
+import type { ChatItem, DemoDirectInfo, DemoGroupInfo, DemoPersona, DemoScript, DemoScriptMessage, DemoState } from './types'
 import { DEMO_LIFF_ID, demoGroupId, demoUserId, type DemoGroup } from './world'
 
 // The sim API (docs/demo-contract.md): each function builds the LINE event a real group
@@ -798,8 +798,57 @@ function asScript(x: unknown): DemoScript | null {
   if (typeof x !== 'object' || x === null) return null
   const s = x as DemoScript
   if (!Array.isArray(s.messages)) return null
-  if (!s.messages.every((m) => typeof m === 'object' && m !== null && typeof m.persona === 'string' && typeof m.text === 'string')) return null
+  const ids = new Set<string>()
+  for (const m of s.messages) {
+    if (!isScriptMessage(m, ids)) return null
+    if (typeof m.id === 'string') ids.add(m.id)
+  }
   return s
+}
+
+/** The files a scenario can send: public/demo/files/<plain name>. */
+const DEFAULT_SCRIPT_FILES_DIR = path.join(process.cwd(), 'public', 'demo', 'files')
+let scriptFilesDir = DEFAULT_SCRIPT_FILES_DIR
+/** Tests point it at a temp folder; no argument restores the default. */
+export function setScriptFilesDir(dir?: string): void {
+  scriptFilesDir = dir ?? DEFAULT_SCRIPT_FILES_DIR
+}
+const SCRIPT_FILE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/
+const CONTENT_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.txt': 'text/plain', '.csv': 'text/csv',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
+
+/** A text line needs text; an image or file needs a plain file name (no folders, no ..); a
+ *  replyTo must name an earlier message's id. */
+function isScriptMessage(m: unknown, earlier: Set<string>): m is DemoScriptMessage {
+  if (typeof m !== 'object' || m === null) return false
+  const x = m as DemoScriptMessage
+  if (typeof x.persona !== 'string') return false
+  if (x.replyTo !== undefined && (typeof x.replyTo !== 'string' || !earlier.has(x.replyTo))) return false
+  const type = x.type ?? 'text'
+  if (type === 'text') return typeof x.text === 'string'
+  if (type !== 'image' && type !== 'file') return false
+  if (x.fileName !== undefined && typeof x.fileName !== 'string') return false
+  return typeof x.file === 'string' && SCRIPT_FILE.test(x.file) && !x.file.includes('..')
+}
+
+/** The bytes of a scenario's file, as POST send takes them; null when it cannot be read. */
+async function scriptFile(m: DemoScriptMessage): Promise<{ fileName: string; contentType: string; dataBase64: string } | null> {
+  try {
+    const data = await readFile(path.join(scriptFilesDir, m.file as string))
+    const ext = path.extname(m.file as string).toLowerCase()
+    return {
+      fileName: m.fileName || (m.file as string),
+      contentType: CONTENT_TYPES[ext] ?? 'application/octet-stream',
+      dataBase64: data.toString('base64'),
+    }
+  } catch {
+    return null
+  }
 }
 
 async function loadScript(demo: Demo, g: DemoGroup, b: Record<string, unknown>): Promise<SimResult> {
@@ -817,8 +866,16 @@ async function loadScript(demo: Demo, g: DemoGroup, b: Record<string, unknown>):
   for (const [key, sp] of Object.entries(script.personas ?? {})) {
     if (!demo.world.persona(key)) upsertPersona(demo, { key, lineName: sp.lineName, role: sp.role, owner: sp.owner })
   }
-  const steps = [...script.messages, ...(script.summaryCommand ? [script.summaryCommand] : [])]
+  const steps: DemoScriptMessage[] = [...script.messages, ...(script.summaryCommand ? [script.summaryCommand] : [])]
   for (const s of steps) if (!demo.world.persona(s.persona)) return bad(`script uses unknown persona ${s.persona}`)
+  // Every file is read before anything plays, so a missing one never cuts a scene halfway.
+  const files = new Map<DemoScriptMessage, NonNullable<Awaited<ReturnType<typeof scriptFile>>>>()
+  for (const s of steps) {
+    if ((s.type ?? 'text') === 'text') continue
+    const f = await scriptFile(s)
+    if (!f) return bad(`script file public/demo/files/${s.file} cannot be read`)
+    files.set(s, f)
+  }
   // Every speaker must be in the target group: one who is not joins it first (memberJoined).
   const outsiders = [...new Set(steps.map((s) => s.persona))].filter((k) => !g.members.has(k))
 
@@ -835,12 +892,19 @@ async function loadScript(demo: Demo, g: DemoGroup, b: Record<string, unknown>):
       const row = storeRow(demo, g)
       if (row) seedLiveMember(demo.store, row.id, p, true)
     }
+    // A script id -> the LINE message id it got, for replyTo.
+    const sent = new Map<string, string>()
     for (const s of steps) {
       await new Promise((resolve) => setTimeout(resolve, delayMs))
       // A reset stops the player.
       if (getDemo().generation !== demo.generation) return
-      const res = await send(demo, g, { persona: s.persona, type: 'text', text: s.text })
+      const quoted = s.replyTo ? sent.get(s.replyTo) : undefined
+      const file = files.get(s)
+      const res = await send(demo, g, file
+        ? { persona: s.persona, type: s.type, ...file }
+        : { persona: s.persona, type: 'text', text: s.text, ...(quoted ? { quotedMessageId: quoted } : {}) })
       if (res.status !== 200) demo.world.addLog('error', `script ${name}: ${JSON.stringify(res.body)}`)
+      else if (s.id) sent.set(s.id, (res.body as { messageId: string }).messageId)
     }
     demo.world.addLog('event', `[${g.name}] script ${name}: done`)
   })

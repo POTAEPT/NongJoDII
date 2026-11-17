@@ -1,0 +1,19 @@
+{
+  "name": "04-file-saver",
+  "feature": "File saver (#4) and file request (#33)",
+  "description": "เจฟส่งใบเสนอราคา PDF บอมส่งรูปโลโก้ แล้ว Nont ตอบกลับไฟล์ PDF ว่า \"NongJoDII ขอไฟล์\" ผลที่คาด: บอทตอบลิงก์ Google Drive ของทั้งสองไฟล์ และตอบลิงก์ใบเสนอราคาอีกครั้งเมื่อขอ (ต้องเชื่อม Google Drive ก่อน)",
+  "group": {
+    "lineGroupId": "Cdemo0000000000000000000000000003",
+    "name": "ลูกค้า ร้านกาแฟ",
+    "workDescription": "ทำแบรนด์และเพจให้ร้านกาแฟเปิดใหม่"
+  },
+  "messages": [
+    { "id": "m1", "persona": "jeff", "minute": 0, "text": "ลูกค้าแก้ใบเสนอราคามาแล้วครับ" },
+    { "id": "m2", "persona": "jeff", "minute": 1, "type": "file", "file": "quotation.pdf", "fileName": "ใบเสนอราคา-ร้านกาแฟ.pdf" },
+    { "id": "m3", "persona": "bomb", "minute": 2, "text": "นี่โลโก้แบบโทนน้ำตาลที่ลูกค้าขอค่ะ" },
+    { "id": "m4", "persona": "bomb", "minute": 3, "type": "image", "file": "cafe-logo.png", "fileName": "logo-v2.png" },
+    { "id": "m5", "persona": "nont", "minute": 5, "text": "ดีเลย ขอบคุณทั้งคู่นะ" },
+    { "id": "m6", "persona": "nont", "minute": 30, "text": "NongJoDII ขอไฟล์", "replyTo": "m2" }
+  ],
+  "expectedTasks": []
+}

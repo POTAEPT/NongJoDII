@@ -86,13 +86,26 @@ export type DemoState = {
 
 /** A script in the e2e scenario shape (e2e/scenario-types.ts). The player uses personas,
  *  messages (in order) and summaryCommand; the other fields are kept for reference. */
+/** One line of a scenario. type 'text' (the default) needs text. 'image' and 'file' send
+ *  public/demo/files/<file> as that person's upload (the File saver, #4); fileName is the
+ *  name the chat shows (default: file). replyTo: the id of an earlier message of the same
+ *  script, sent as a LINE quote-reply (e.g. "NongJoDII ขอไฟล์" on a file, #33). */
+export type DemoScriptMessage = {
+  id?: string; persona: string; minute?: number
+  type?: 'text' | 'image' | 'file'
+  text?: string
+  file?: string
+  fileName?: string
+  replyTo?: string
+}
+
 export type DemoScript = {
   name: string
   description?: string
   feature?: string
   group?: { lineGroupId?: string; name?: string; workDescription?: string }
   personas?: Record<string, { lineName: string; role: string | null; owner?: boolean; lineUserId?: string }>
-  messages: Array<{ id?: string; persona: string; minute?: number; text: string }>
+  messages: DemoScriptMessage[]
   summaryCommand?: { persona: string; minute?: number; text: string } | null
   [k: string]: unknown
 }

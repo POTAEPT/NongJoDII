@@ -52,3 +52,14 @@ The demo server must be running: `DEMO_MODE=1 infisical run --env=dev -- npm run
 1. `curl -s localhost:3000/demo/api/sim/scripts`. Your `name` is listed. If it is missing, the file is not valid JSON or has no `messages`: the Log tab shows the reason.
 2. In `/demo`, press Reset (the set-up groups of `src/app/demo/groups/`), pick the group in the presenter panel's group picker, then press Play on your scenario. The same can be done by API: `POST /demo/api/sim/load-script {"name":"<NN>-<short-name>", "group":"<lineGroupId>"}` (without `group` it plays into the selected group).
 3. Wait for the bot's Summary card. Press "ตรวจและยืนยันงาน", then compare the Task candidates with step 1: same count, right people, deadlines read correctly. The AI tab shows whether the answer came from OpenRouter or from the canned fallback.
+
+## New group on stage
+
+How a group joins the bot in the demo, the same steps as in LINE (#151, #159):
+
+1. **สร้างกลุ่ม** in the presenter panel: a name and the members. The bot joins and posts its setup card, which asks everyone to say hi. The bot knows no one yet, and the group picker shows "ยังไม่ตั้งค่า".
+2. **ให้ทุกคนทักทาย** (under the group picker, shown while the bot does not know some members): each of them sends one greeting, and the bot learns them.
+3. Tap **ตั้งค่า** on the setup card. In the form, pick a new Project or "attach to your Project" (a Project Nont owns: the group becomes its Sub group), then send it.
+4. A new Project waits for its Owner: when someone else is named Owner, that persona confirms on the card that follows. A Sub group attached by the Project's Owner is confirmed at once.
+5. Open the Dashboard as Nont: the group is listed. Its file in `src/app/demo/groups/` now records the outcome, so Reset brings it back set up.
+

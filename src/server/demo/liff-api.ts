@@ -18,6 +18,7 @@ import { loadTask } from '@/server/tasks/load'
 import { reopenTaskFromLiff } from '@/server/tasks/reopen'
 import { updateTaskFromLiff } from '@/server/tasks/update'
 import { getDemo } from './demo-deps'
+import { recordSetUpFiles } from './setup-files'
 
 // /demo/api/<path>: the same body and answer as /api/<path>, through the same server
 // functions, with the demo composition (and its background defer instead of after()).
@@ -63,6 +64,8 @@ export async function demoLiffPost(path: string, request: Request): Promise<Resp
   }
   const demo = getDemo()
   const result = await handler(demo.deps, body, demo.defer)
+  // setup/submit (attach) and setup/confirm-owner complete a group's setup.
+  recordSetUpFiles(demo)
   return Response.json(result.body, { status: result.status })
 }
 

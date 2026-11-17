@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadDashboard, type DashboardData } from '@/server/dashboard/load'
 import { DemoLlm } from '@/server/demo/demo-llm'
 import { resetDemo, type Demo } from '@/server/demo/demo-deps'
+import { demoLiffPost } from '@/server/demo/liff-api'
 import { FALLBACK_GROUPS, readGroupFiles, setGroupsDir } from '@/server/demo/group-files'
 import { runSimAction, simState } from '@/server/demo/sim'
 import type { ChatItem } from '@/server/demo/types'
@@ -40,6 +41,26 @@ async function sim(action: string, body: unknown = {}) {
 }
 
 const NONT = 'Udemo0000000000000000000000000a01'
+const JEFF = 'Udemo0000000000000000000000000a04'
+
+/** A demo LIFF call, as the drawer makes it (the setup outcome is recorded after it). */
+async function liff(p: string, body: unknown) {
+  const res = (await demoLiffPost(p, new Request('http://localhost/demo/api/x', { method: 'POST', body: JSON.stringify(body) })))!
+  const json: unknown = await res.json()
+  expect(res.status, JSON.stringify(json)).toBe(200)
+  return json
+}
+
+/** The setup form as Nont sends it for a group the bot knows Nont and Jeff in. */
+function setupBody(groupId: string, p: Record<string, unknown> = {}) {
+  return {
+    idToken: `demo:${NONT}`, groupId, workDescription: 'งานทดสอบ',
+    features: { summarize: true, saveFiles: true, trackRemind: true, weeklySummary: true },
+    dailyReminderTime: '09:00', weeklySummaryWeekday: 1, weeklySummaryTime: '09:00',
+    members: [{ lineUserId: NONT, nicknames: ['นนท์'], role: 'manager' }, { lineUserId: JEFF, nicknames: ['เจฟ'], role: 'marketing' }],
+    ownerLineUserId: NONT, tagSet: ['งาน'], ...p,
+  }
+}
 const reviewCards = (chat: ChatItem[]) =>
   chat.filter((c) => c.from === 'bot' && c.message.type === 'flex' && JSON.stringify(c.message).includes('view=review'))
 
@@ -130,43 +151,77 @@ describe('/demo with many groups', () => {
     expect((await runSimAction('select-group', 'POST', { group: 'Cnope' })).status).toBe(404)
   })
 
-  it('create-group new-project: the bot joins, learns the members silently, and the setup form lists them', async () => {
+  it('create-group: the bot joins with the say-hi card and knows no one; say-hi makes everyone live', async () => {
     const demo = fresh()
-    const { lineGroupId } = await sim('create-group', { name: 'ทีมอีเวนต์', members: ['nont', 'jeff'], mode: 'new-project' })
+    const { lineGroupId } = await sim('create-group', { name: 'ทีมอีเวนต์', members: ['nont', 'jeff'] })
     await demo.idle()
-    const state = simState(demo)
+    let state = simState(demo)
     expect(state.selectedGroup).toBe(lineGroupId)
     expect(state.group).toEqual({ lineGroupId, name: 'ทีมอีเวนต์', botInGroup: true })
     expect(state.chat.filter((c) => c.from === 'user')).toHaveLength(0)
-    expect(JSON.stringify(state.chat)).toContain('https://liff.line.me/demo-liff?view=setup')
+    const card = JSON.stringify(state.chat)
+    expect(card).toContain('https://liff.line.me/demo-liff?view=setup')
+    expect(card).toContain('ทักน้องจดดี')
+    const info = () => simState(demo).groups.find((g) => g.lineGroupId === lineGroupId)!
+    expect(info()).toMatchObject({ projectName: null, unknownMembers: ['nont', 'jeff'] })
 
     const row = demo.store.tables.groups.find((g) => g.lineGroupId === lineGroupId)!
     expect(row.projectId).toBeNull()
-    expect(row.name).toBe('ทีมอีเวนต์')
-    const res = await loadSetup(demo.deps, { idToken: `demo:${NONT}`, groupId: row.id })
-    expect(res.status).toBe(200)
-    expect((res.body as SetupLoad).members.map((m) => m.displayName).sort()).toEqual(['Jeff', 'Nont'])
+    expect(demo.store.tables.group_members.filter((m) => m.groupId === row.id)).toEqual([])
+    const before = await loadSetup(demo.deps, { idToken: `demo:${NONT}`, groupId: row.id })
+    expect(before.status).toBe(200)
+    // Opening the form makes the opener known, as in LINE; Jeff is not yet.
+    expect((before.body as SetupLoad).members.map((m) => m.displayName)).toEqual(['Nont'])
+
+    expect(await sim('say-hi', { group: lineGroupId })).toEqual({ greeted: ['jeff'] })
+    await demo.idle()
+    state = simState(demo)
+    const greetings = state.chat.filter((c) => c.from === 'user').map((c) => (c.message as { text: string }).text)
+    expect(greetings).toHaveLength(1)
+    expect(info().unknownMembers).toEqual([])
+    const after = await loadSetup(demo.deps, { idToken: `demo:${NONT}`, groupId: row.id })
+    expect((after.body as SetupLoad).members.map((m) => m.displayName).sort()).toEqual(['Jeff', 'Nont'])
+    // Nobody left to greet: say-hi sends nothing.
+    expect(await sim('say-hi', { group: lineGroupId })).toEqual({ greeted: [] })
+    expect(demo.world.log.filter((l) => l.kind === 'error')).toEqual([])
   })
 
-  it('create-group sub-group: attached to the parent Project with its Owner; the Dashboard as Nont lists 4 groups', async () => {
+  it('create-group has no Sub group shortcut: attaching goes through setup/submit, and the Dashboard lists the group', async () => {
     const demo = fresh()
     const coffee = groupId(demo, 'ลูกค้า ร้านกาแฟ')
-    // A Sub group needs the Project's Owner among its members (one admin per Project).
-    expect((await runSimAction('create-group', 'POST', { name: 'x', members: ['bomb'], mode: 'sub-group', parentGroup: coffee })).status).toBe(400)
-    expect((await runSimAction('create-group', 'POST', { name: 'x', members: ['nont'], mode: 'sub-group', parentGroup: 'Cnope' })).status).toBe(404)
-    expect((await runSimAction('create-group', 'POST', { name: '', members: ['nont'], mode: 'new-project' })).status).toBe(400)
+    expect((await runSimAction('create-group', 'POST', { name: 'x', members: ['nont'], mode: 'sub-group', parentGroup: coffee })).status).toBe(400)
+    expect((await runSimAction('create-group', 'POST', { name: '', members: ['nont'] })).status).toBe(400)
+    expect((await runSimAction('create-group', 'POST', { name: 'x', members: ['nope'] })).status).toBe(404)
 
-    const { lineGroupId } = await sim('create-group', { name: 'ถ่ายรูปเมนู', members: ['nont', 'jeff'], mode: 'sub-group', parentGroup: coffee })
+    const { lineGroupId } = await sim('create-group', { name: 'ถ่ายรูปเมนู', members: ['nont', 'jeff'] })
+    await sim('say-hi')
     await demo.idle()
-    const info = simState(demo).groups.find((g) => g.lineGroupId === lineGroupId)!
-    expect(info).toMatchObject({ isSubGroup: true, projectName: 'ลูกค้า ร้านกาแฟ', botInGroup: true })
     const row = demo.store.tables.groups.find((g) => g.lineGroupId === lineGroupId)!
+    expect((await dashboardAs(demo, NONT)).groups.map((g) => g.name)).not.toContain('ถ่ายรูปเมนู')
     const parent = demo.store.tables.groups.find((g) => g.lineGroupId === coffee)!
-    expect(row.projectId).toBe(parent.projectId)
-    expect(row.nominatedOwnerLineUserId).toBe(NONT)
+    await liff('setup/submit', setupBody(row.id, { attachProjectId: parent.projectId }))
+    await demo.idle()
+    expect(demo.store.tables.groups.find((g) => g.id === row.id)).toMatchObject({ projectId: parent.projectId, nominatedOwnerLineUserId: NONT })
+    expect(simState(demo).groups.find((g) => g.lineGroupId === lineGroupId)).toMatchObject({ isSubGroup: true, projectName: 'ลูกค้า ร้านกาแฟ' })
     const data = await dashboardAs(demo, NONT)
     expect(data.groups.map((g) => g.name)).toContain('ถ่ายรูปเมนู')
     expect(data.groups).toHaveLength(4)
+  })
+
+  it('a new Project through the setup form: listed on the Dashboard once the Owner confirms', async () => {
+    const demo = fresh()
+    const { lineGroupId } = await sim('create-group', { name: 'ทีมอีเวนต์', members: ['nont', 'jeff'] })
+    await sim('say-hi')
+    await demo.idle()
+    const row = demo.store.tables.groups.find((g) => g.lineGroupId === lineGroupId)!
+    // Nont names Jeff the Owner: the group waits for Jeff to confirm.
+    await liff('setup/submit', setupBody(row.id, { ownerLineUserId: JEFF }))
+    await demo.idle()
+    expect((await dashboardAs(demo, NONT)).groups.map((g) => g.name)).not.toContain('ทีมอีเวนต์')
+    await liff('setup/confirm-owner', { idToken: `demo:${JEFF}`, groupId: row.id })
+    await demo.idle()
+    expect(simState(demo).groups.find((g) => g.lineGroupId === lineGroupId)).toMatchObject({ isSubGroup: false, projectName: 'ทีมอีเวนต์' })
+    expect((await dashboardAs(demo, NONT)).groups.map((g) => g.name)).toContain('ทีมอีเวนต์')
   })
 
   it('plays a script into a chosen group: speakers outside it join first, only that group gets the Summary', async () => {
@@ -255,58 +310,95 @@ describe('/demo group files (src/app/demo/groups)', () => {
     ])
   })
 
-  it('create-group writes a file; after a reset the group is back, set up and empty', async () => {
+  it('create-group saves a not-set-up file; Reset brings it back with the setup card and no known Member', async () => {
     let demo = fresh()
-    const coffee = groupId(demo, 'ลูกค้า ร้านกาแฟ')
-    const made = await sim('create-group', { name: 'ทีมอีเวนต์', members: ['jeff', 'nont'], mode: 'new-project' })
-    const sub = await sim('create-group', { name: 'Menu Photos!', members: ['nont', 'jeff'], mode: 'sub-group', parentGroup: coffee })
+    const made = await sim('create-group', { name: 'ทีมอีเวนต์', members: ['jeff', 'nont'] })
+    await sim('say-hi')
     await demo.idle()
-    expect([made.file, sub.file]).toEqual(['04-group.json', '05-menu-photos.json'])
+    expect(made.file).toBe('04-group.json')
     expect(JSON.parse(await readFile(path.join(dir, '04-group.json'), 'utf8'))).toEqual({
-      name: 'ทีมอีเวนต์', lineGroupId: made.lineGroupId, members: ['jeff', 'nont'], owner: 'nont', mode: 'new-project',
-    })
-    expect(JSON.parse(await readFile(path.join(dir, '05-menu-photos.json'), 'utf8'))).toMatchObject({
-      lineGroupId: sub.lineGroupId, owner: 'nont', mode: 'sub-group', parent: '03-cafe.json',
+      name: 'ทีมอีเวนต์', lineGroupId: made.lineGroupId, members: ['jeff', 'nont'], setUp: false,
     })
     // A refused create writes nothing.
-    expect((await runSimAction('create-group', 'POST', { name: 'x', members: ['bomb'], mode: 'sub-group', parentGroup: coffee })).status).toBe(400)
-    expect((await readdir(dir)).sort()).toEqual([...SEED_FILES, '04-group.json', '05-menu-photos.json'])
+    expect((await runSimAction('create-group', 'POST', { name: 'x', members: ['nope'] })).status).toBe(404)
+    expect((await readdir(dir)).sort()).toEqual([...SEED_FILES, '04-group.json'])
+
+    demo = fresh()
+    const info = simState(demo).groups.find((g) => g.lineGroupId === made.lineGroupId)!
+    expect(info).toMatchObject({ botInGroup: true, projectName: null, file: '04-group.json', unknownMembers: ['nont', 'jeff'] })
+    const g = demo.world.groupById(made.lineGroupId as string)!
+    expect(JSON.stringify(g.chat)).toContain('https://liff.line.me/demo-liff?view=setup')
+    const row = demo.store.tables.groups.find((r) => r.lineGroupId === made.lineGroupId)!
+    expect(row).toMatchObject({ projectId: null, ownerConfirmedAt: null, name: 'ทีมอีเวนต์' })
+    expect(demo.store.tables.group_members.filter((m) => m.groupId === row.id)).toEqual([])
+    expect((await dashboardAs(demo, NONT)).groups).toHaveLength(3)
+    expect(demo.world.log.filter((l) => l.kind === 'error')).toEqual([])
+    // The setup card's link opens the form for this row.
+    await sim('say-hi')
+    await demo.idle()
+    expect((await loadSetup(demo.deps, { idToken: `demo:${NONT}`, groupId: row.id })).status).toBe(200)
+    // A new group never takes an id a file holds.
+    const third = await sim('create-group', { name: 'อีกกลุ่ม', members: ['nont'] })
+    expect(third.lineGroupId).not.toBe(made.lineGroupId)
+    expect(third.file).toBe('05-group.json')
+  })
+
+  it('the setup outcome is recorded in the file: Reset brings back a new Project and a Sub group set up', async () => {
+    let demo = fresh()
+    const coffee = groupId(demo, 'ลูกค้า ร้านกาแฟ')
+    const made = await sim('create-group', { name: 'ทีมอีเวนต์', members: ['jeff', 'nont'] })
+    await sim('say-hi')
+    const sub = await sim('create-group', { name: 'Menu Photos!', members: ['nont', 'jeff'] })
+    await sim('say-hi')
+    await demo.idle()
+    const rowOf = (id: unknown) => demo.store.tables.groups.find((r) => r.lineGroupId === id)!
+    // Saved but not confirmed yet: the file still says not set up.
+    await liff('setup/submit', setupBody(rowOf(made.lineGroupId).id, { ownerLineUserId: JEFF }))
+    await demo.idle()
+    expect(JSON.parse(await readFile(path.join(dir, '04-group.json'), 'utf8'))).toMatchObject({ setUp: false })
+    await liff('setup/confirm-owner', { idToken: `demo:${JEFF}`, groupId: rowOf(made.lineGroupId).id })
+    await liff('setup/submit', setupBody(rowOf(sub.lineGroupId).id, { attachProjectId: rowOf(coffee).projectId }))
+    await demo.idle()
+    expect(JSON.parse(await readFile(path.join(dir, '04-group.json'), 'utf8'))).toEqual({
+      name: 'ทีมอีเวนต์', lineGroupId: made.lineGroupId, members: ['jeff', 'nont'], owner: 'jeff', mode: 'new-project',
+    })
+    expect(JSON.parse(await readFile(path.join(dir, '05-menu-photos.json'), 'utf8'))).toEqual({
+      name: 'Menu Photos!', lineGroupId: sub.lineGroupId, members: ['nont', 'jeff'], owner: 'nont', mode: 'sub-group', parent: '03-cafe.json',
+    })
 
     demo = fresh()
     const state = simState(demo)
     expect(state.groups.map((g) => g.name)).toEqual(['ทีมพิตช์ NongJoDII', 'ทีม Dev', 'ลูกค้า ร้านกาแฟ', 'ทีมอีเวนต์', 'Menu Photos!'])
-    expect(state.selectedGroup).toBe(groupId(demo, 'ทีมพิตช์ NongJoDII'))
     expect(state.groups.find((g) => g.lineGroupId === made.lineGroupId)).toMatchObject({
-      botInGroup: true, projectName: 'ทีมอีเวนต์', isSubGroup: false, lastMessage: null, unread: 0, members: 3, file: '04-group.json',
+      botInGroup: true, projectName: 'ทีมอีเวนต์', isSubGroup: false, lastMessage: null, members: 3, unknownMembers: [],
     })
     expect(state.groups.find((g) => g.lineGroupId === sub.lineGroupId)).toMatchObject({
-      botInGroup: true, projectName: 'ลูกค้า ร้านกาแฟ', isSubGroup: true, lastMessage: null, file: '05-menu-photos.json',
+      botInGroup: true, projectName: 'ลูกค้า ร้านกาแฟ', isSubGroup: true, lastMessage: null, unknownMembers: [],
     })
-    for (const id of [made.lineGroupId, sub.lineGroupId]) {
-      const row = demo.store.tables.groups.find((g) => g.lineGroupId === id)!
-      expect(row).toMatchObject({ nominatedOwnerLineUserId: NONT })
+    for (const [id, owner] of [[made.lineGroupId, JEFF], [sub.lineGroupId, NONT]]) {
+      const row = rowOf(id)
+      expect(row).toMatchObject({ nominatedOwnerLineUserId: owner })
       expect(row.ownerConfirmedAt).not.toBeNull()
       const live = demo.store.tables.group_members.filter((m) => m.groupId === row.id && m.leftAt === null)
       expect(live.map((m) => [m.lineUserId, m.nicknames, m.role]).sort()).toEqual([
-        ['Udemo0000000000000000000000000a01', ['นนท์'], 'manager'],
-        ['Udemo0000000000000000000000000a04', ['เจฟ'], 'marketing'],
+        [NONT, ['นนท์'], 'manager'],
+        [JEFF, ['เจฟ'], 'marketing'],
       ])
-      expect(demo.store.tables.tasks.filter((t) => t.groupId === row.id)).toEqual([])
-      expect(demo.world.groupById(id as string)!.chat).toEqual([])
     }
     expect((await dashboardAs(demo, NONT)).groups).toHaveLength(5)
     expect(demo.world.log.filter((l) => l.kind === 'error')).toEqual([])
-    // A new group never takes an id a file holds.
-    const third = await sim('create-group', { name: 'อีกกลุ่ม', members: ['nont'], mode: 'new-project' })
-    expect([made.lineGroupId, sub.lineGroupId]).not.toContain(third.lineGroupId)
-    expect(third.file).toBe('06-group.json')
   })
 
   it('delete-group: refused while a Sub group file names it as parent, works otherwise', async () => {
     let demo = fresh()
     const main = groupId(demo, 'ทีมพิตช์ NongJoDII')
     const coffee = groupId(demo, 'ลูกค้า ร้านกาแฟ')
-    const sub = await sim('create-group', { name: 'ถ่ายรูปเมนู', members: ['nont', 'jeff'], mode: 'sub-group', parentGroup: coffee })
+    const sub = await sim('create-group', { name: 'ถ่ายรูปเมนู', members: ['nont', 'jeff'] })
+    await sim('say-hi')
+    await demo.idle()
+    const subRow = demo.store.tables.groups.find((r) => r.lineGroupId === sub.lineGroupId)!
+    const coffeeProject = demo.store.tables.groups.find((r) => r.lineGroupId === coffee)!.projectId
+    await liff('setup/submit', setupBody(subRow.id, { attachProjectId: coffeeProject }))
     await demo.idle()
 
     const refused = await runSimAction('delete-group', 'POST', { group: main })

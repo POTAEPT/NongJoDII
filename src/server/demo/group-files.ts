@@ -3,7 +3,8 @@ import path from 'node:path'
 
 // The seeded groups as files (docs/demo-contract.md, "Groups"): one JSON file per group in
 // src/app/demo/groups/, read on every reset (and on the first build after a server start),
-// sorted by file name. "สร้างกลุ่ม" writes one; delete-group removes one. Synchronous: a reset
+// sorted by file name. "สร้างกลุ่ม" writes one (not set up), setup-files.ts records its setup
+// once it completes, and delete-group removes one. Synchronous: a reset
 // builds the demo synchronously.
 
 /** A time relative to the reset instant: days, hours and minutes added to it; `hour` then
@@ -31,9 +32,13 @@ export type GroupFile = {
   lineGroupId: string
   /** Persona keys. */
   members: string[]
+  /** false: the bot is in the group but its setup form was never completed ("สร้างกลุ่ม"
+   *  writes this). Reset brings it back with the bot's setup card and no known Members; owner
+   *  and mode are then unused. Absent or true: set up, as owner and mode say. */
+  setUp?: boolean
   /** Persona key of the confirmed Owner. A Sub group's Owner is its Project's Owner. */
-  owner: string
-  mode: 'new-project' | 'sub-group'
+  owner?: string
+  mode?: 'new-project' | 'sub-group'
   /** sub-group: the parent's file name (with or without .json). */
   parent?: string
   workDescription?: string | null
@@ -119,9 +124,12 @@ export function asGroupFile(x: unknown): GroupFile | string {
   if (typeof x.name !== 'string' || x.name.trim() === '' || x.name.length > NAME_MAX) return `name must be 1-${NAME_MAX} characters`
   if (typeof x.lineGroupId !== 'string' || !LINE_GROUP_ID.test(x.lineGroupId)) return 'lineGroupId must be C followed by letters or digits'
   if (!Array.isArray(x.members) || x.members.length === 0 || !x.members.every((m) => typeof m === 'string')) return 'members must be a non-empty list of persona keys'
-  if (typeof x.owner !== 'string') return 'owner (a persona key) is required'
-  if (x.mode !== 'new-project' && x.mode !== 'sub-group') return "mode must be 'new-project' or 'sub-group'"
-  if (x.mode === 'sub-group' && (typeof x.parent !== 'string' || !GROUP_FILE_NAME.test(fileStem(x.parent)))) return 'a sub-group needs parent (a file name)'
+  if (x.setUp !== undefined && typeof x.setUp !== 'boolean') return 'setUp must be true or false'
+  if (x.setUp !== false) {
+    if (typeof x.owner !== 'string') return 'owner (a persona key) is required'
+    if (x.mode !== 'new-project' && x.mode !== 'sub-group') return "mode must be 'new-project' or 'sub-group'"
+    if (x.mode === 'sub-group' && (typeof x.parent !== 'string' || !GROUP_FILE_NAME.test(fileStem(x.parent)))) return 'a sub-group needs parent (a file name)'
+  }
   if (x.workDescription !== undefined && x.workDescription !== null && typeof x.workDescription !== 'string') return 'workDescription must be text'
   if (x.weekly !== undefined) {
     const w = x.weekly
@@ -174,6 +182,12 @@ export function writeGroupFile(dir: string, def: GroupFile): string {
       n += 1
     }
   }
+}
+
+/** Replaces an existing group file's content (the setup outcome, setup-files.ts). */
+export function rewriteGroupFile(dir: string, file: string, def: GroupFile): void {
+  if (!GROUP_FILE_NAME.test(fileStem(file))) throw new Error(`bad group file name ${file}`)
+  writeFileSync(path.join(dir, `${fileStem(file)}.json`), `${JSON.stringify(def, null, 2)}\n`)
 }
 
 /** Removes a group file; a file already gone is fine. */

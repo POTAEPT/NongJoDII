@@ -158,7 +158,7 @@ function ResetButton({ busy, onConfirm }: { busy: boolean; onConfirm: (setup: bo
           <DialogClose asChild>
             <Button variant="outline" className="h-auto flex-col items-start gap-0.5 px-4 py-3 text-left whitespace-normal" onClick={() => onConfirm(true)}>
               <span className="text-[15px] font-semibold">กลุ่มที่บันทึกไว้ ตั้งค่าแล้ว (พร้อมสรุป)</span>
-              <span className="text-[13px] font-normal text-[#5F6B7E]">ทีมพิตช์, ทีม Dev (Sub group), ลูกค้า ร้านกาแฟ และกลุ่มที่สร้างเพิ่ม · Nont เป็น Owner · มีงานใน Dashboard แล้ว</span>
+              <span className="text-[13px] font-normal text-[#5F6B7E]">ทีมพิตช์, ทีม Dev (Sub group), ลูกค้า ร้านกาแฟ · Nont เป็น Owner · มีงานใน Dashboard แล้ว · กลุ่มที่สร้างเพิ่มกลับมาตามที่ตั้งค่าไว้ (หรือยังไม่ตั้งค่า)</span>
             </Button>
           </DialogClose>
           <DialogClose asChild>
@@ -184,25 +184,48 @@ function GroupBar({ onOpenGroup }: { onOpenGroup: (lineGroupId: string) => void 
   if (!state) return null
   const selected = state.groups.find((g) => g.lineGroupId === state.selectedGroup)
   return (
-    <div className="flex items-center gap-2">
-      <span className="shrink-0 text-[14px] text-[#5F6B7E]">กลุ่มที่เลือก</span>
-      <Select value={state.selectedGroup} onValueChange={onOpenGroup}>
-        <SelectTrigger className="h-10! min-w-0 flex-1 text-[15px]"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          {state.groups.map((g) => (
-            <SelectItem key={g.lineGroupId} value={g.lineGroupId}>
-              {g.name}
-              <span className="text-[#8A94A6]">
-                {g.projectName ? (g.isSubGroup ? ` · Sub group ของ ${g.projectName}` : ' · กลุ่มหลัก') : ' · ยังไม่ตั้งค่า'}
-              </span>
-              {g.unread > 0 && <Badge className="ml-1 h-5 rounded-full bg-(--line-green) px-1.5 text-[11px] text-white">{g.unread}</Badge>}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {selected && !selected.botInGroup && <Badge variant="outline" className="text-[#A15C00]">บอทไม่อยู่</Badge>}
-      {selected && <DeleteGroupDialog group={selected} onlyOne={state.groups.length <= 1} />}
-      <CreateGroupDialog />
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-[14px] text-[#5F6B7E]">กลุ่มที่เลือก</span>
+        <Select value={state.selectedGroup} onValueChange={onOpenGroup}>
+          <SelectTrigger className="h-10! min-w-0 flex-1 text-[15px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {state.groups.map((g) => (
+              <SelectItem key={g.lineGroupId} value={g.lineGroupId}>
+                {g.name}
+                <span className="text-[#8A94A6]">
+                  {g.projectName ? (g.isSubGroup ? ` · Sub group ของ ${g.projectName}` : ' · กลุ่มหลัก') : ' · ยังไม่ตั้งค่า'}
+                </span>
+                {g.unread > 0 && <Badge className="ml-1 h-5 rounded-full bg-(--line-green) px-1.5 text-[11px] text-white">{g.unread}</Badge>}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {selected && !selected.botInGroup && <Badge variant="outline" className="text-[#A15C00]">บอทไม่อยู่</Badge>}
+        {selected && <DeleteGroupDialog group={selected} onlyOne={state.groups.length <= 1} />}
+        <CreateGroupDialog />
+      </div>
+      {selected && <GroupHints group={selected} />}
+    </div>
+  )
+}
+
+/** Under the picker: the Dashboard rule for a group with no Project yet, and "ให้ทุกคนทักทาย"
+ *  while the bot does not know some members (it learns people from their messages, #151). */
+function GroupHints({ group }: { group: DemoGroupInfo }) {
+  const { busy, run } = useRun()
+  const unknown = group.botInGroup ? group.unknownMembers.length : 0
+  if (group.projectName !== null && unknown === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[14px] text-[#5F6B7E]">
+      {group.projectName === null && <span className="min-w-0 flex-1">กลุ่มนี้จะขึ้นใน Dashboard หลังส่งฟอร์มตั้งค่าและเจ้าของยืนยัน</span>}
+      {unknown > 0 && (
+        <Button size="sm" variant="outline" className="ml-auto h-9 gap-1.5 text-[14px]" disabled={busy !== null}
+          title={`น้องจดดียังไม่รู้จัก ${unknown} คนในกลุ่มนี้`}
+          onClick={() => run('say-hi', () => demoApi.sayHi(group.lineGroupId), 'ทุกคนทักทายแล้ว')}>
+          👋 ให้ทุกคนทักทาย ({unknown})
+        </Button>
+      )}
     </div>
   )
 }
@@ -247,15 +270,11 @@ function CreateGroupDialog() {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [members, setMembers] = useState<string[]>(['nont'])
-  const [mode, setMode] = useState<'new-project' | 'sub-group'>('new-project')
-  const [parent, setParent] = useState<string>('')
   if (!state) return null
-  const parents = state.groups.filter((g) => g.projectName !== null)
-  const parentId = parent || parents[0]?.lineGroupId || ''
   const toggle = (key: string) => setMembers((m) => (m.includes(key) ? m.filter((k) => k !== key) : [...m, key]))
-  const canSubmit = name.trim() !== '' && members.length > 0 && (mode === 'new-project' || parentId !== '')
+  const canSubmit = name.trim() !== '' && members.length > 0
   const submit = () => run('create-group', async () => {
-    await demoApi.createGroup({ name: name.trim(), members, mode, ...(mode === 'sub-group' ? { parentGroup: parentId } : {}) })
+    await demoApi.createGroup({ name: name.trim(), members })
     setOpen(false)
     setName('')
   }, `สร้างกลุ่ม ${name.trim()} แล้ว`)
@@ -267,7 +286,7 @@ function CreateGroupDialog() {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>สร้างกลุ่ม LINE ใหม่</DialogTitle>
-          <DialogDescription>น้องจดดีเข้ากลุ่มทันทีและรู้จักสมาชิกทุกคน กลุ่มถูกบันทึกเป็นไฟล์ จึงกลับมาหลัง Reset (ตั้งค่าแล้ว แชตว่าง)</DialogDescription>
+          <DialogDescription>น้องจดดีเข้ากลุ่มและส่งการ์ดตั้งค่า เหมือนใน LINE จากนั้นกด “ให้ทุกคนทักทาย” แล้วเปิดการ์ดเพื่อเลือกโปรเจกต์ใหม่หรือ Sub group ในฟอร์มตั้งค่า กลุ่มถูกบันทึกเป็นไฟล์ จึงกลับมาหลัง Reset</DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-4" onSubmit={(e) => {
           e.preventDefault()
@@ -288,27 +307,6 @@ function CreateGroupDialog() {
                 </label>
               ))}
             </div>
-          </fieldset>
-          <fieldset className="flex flex-col gap-2">
-            <legend className="mb-1.5 text-[14px]">กลุ่มนี้คือ</legend>
-            <label className="flex cursor-pointer items-start gap-2 text-[15px]">
-              <input type="radio" name="mode" className="mt-1 accent-[#1F5FB0]" checked={mode === 'new-project'} onChange={() => setMode('new-project')} />
-              <span>โปรเจกต์ใหม่<span className="block text-[13px] text-[#5F6B7E]">บอทส่งการ์ดตั้งค่า กรอกฟอร์มต่อในมือถือ</span></span>
-            </label>
-            <label className="flex cursor-pointer items-start gap-2 text-[15px]">
-              <input type="radio" name="mode" className="mt-1 accent-[#1F5FB0]" checked={mode === 'sub-group'} onChange={() => setMode('sub-group')} disabled={parents.length === 0} />
-              <span className="flex-1">Sub group ของโปรเจกต์ในกลุ่ม
-                <span className="block text-[13px] text-[#5F6B7E]">Owner ของโปรเจกต์ต้องอยู่ในกลุ่มนี้ด้วย</span>
-              </span>
-            </label>
-            {mode === 'sub-group' && (
-              <Select value={parentId} onValueChange={setParent}>
-                <SelectTrigger className="h-10! text-[15px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {parents.map((g) => <SelectItem key={g.lineGroupId} value={g.lineGroupId}>{g.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            )}
           </fieldset>
           <DialogFooter>
             <DialogClose asChild><Button type="button" variant="ghost">ยกเลิก</Button></DialogClose>

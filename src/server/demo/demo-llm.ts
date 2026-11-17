@@ -273,7 +273,9 @@ const THAI_NUM: Record<string, number> = {
   หนึ่ง: 1, สอง: 2, สาม: 3, สี่: 4, ห้า: 5, หก: 6, เจ็ด: 7, แปด: 8, เก้า: 9, สิบ: 10, สิบเอ็ด: 11,
 }
 
-/** A deadline in Thai chat words, as ISO 8601 with +07:00; null when none is said. */
+/** A deadline in Thai chat words, as ISO 8601 with +07:00; null when none is said. A day
+ *  with no time is the date only ("YYYY-MM-DD"), as the Summary prompt asks the real model,
+ *  so the Summary stores 23:59 that day (summary/parse-output.ts). */
 export function findDue(text: string, today: string): string | null {
   const base = new Date(`${today}T00:00:00Z`)
   let days: number | null = null
@@ -290,7 +292,7 @@ export function findDue(text: string, today: string): string | null {
     }
   }
   if (days === null) return null
-  let hh = 17
+  let hh: number | null = null
   let mm = 0
   const clock = /(\d{1,2})[:.](\d{2})/.exec(text)
   const evening = /(\d{1,2}|หนึ่ง|สอง|สาม|สี่|ห้า|หก)\s*โมงเย็น/.exec(text)
@@ -309,13 +311,11 @@ export function findDue(text: string, today: string): string | null {
   } else if (noon) {
     hh = 12
   }
-  if (hh > 23 || mm > 59) {
-    hh = 17
-    mm = 0
-  }
   const d = new Date(base.getTime() + days * 86_400_000)
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(hh)}:${pad(mm)}:00+07:00`
+  const date = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+  if (hh === null || hh > 23 || mm > 59) return date
+  return `${date}T${pad(hh)}:${pad(mm)}:00+07:00`
 }
 
 function stripRefs(text: string): string {

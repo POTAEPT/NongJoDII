@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionsResult, LlmRequest, LlmUsage } from '@/server/ports'
 import { buildPrecheckRequest, COUNT_HINT, mapPrecheck } from '@/server/summary/precheck'
+import { buildSummaryPrompt, COUNT_IS_PROJECT_WORK, PROJECT_WORK_ONLY } from '@/server/summary/prompt'
 import { SUMMARY_TEXT } from '@/server/summary/reply'
 import { SUMMARY_FAILED_TEXT } from '@/server/summary/failure'
 import { mergeTasks, SUMMARY_BUDGET_MS } from '@/server/summary/run-summary'
 import { DECISION_MODEL, TEXT_MODEL } from '@/server/usage/pricing'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
+import { refOf } from './fakes/prompt-reader'
 import { ev, makeTestDeps, seedOwnedGroup, signedRequest, webhookBody } from './harness'
 
 // #157: one TypeSafe Jev call reads the Summary's chat first: no work means the summary only
@@ -66,7 +68,7 @@ function setup(opts: { draftTasks?: boolean } = {}) {
   const userOf = (i: number) => (h.llm.requests[i] as LlmRequest).user
   /** A model answer the Summary parser cannot read. */
   const unreadable = () => h.llm.respond(() => ({ content: 'not json {', model: TEXT_MODEL, usage: USAGE }))
-  return { ...h, takes, chat, summarize, answer, jev, replyText, userOf, unreadable }
+  return { ...h, send, takes, chat, summarize, answer, jev, replyText, userOf, unreadable }
 }
 
 describe('the Summary pre-check (#157)', () => {
@@ -322,5 +324,84 @@ describe('mapPrecheck and the request (#157)', () => {
     expect(req.model).toBe(DECISION_MODEL)
     expect(req.state).toContain('msg1 [2026-11-12 09:00] m1: ทำสไลด์ด้วย')
     expect(Object.keys(req.questions)).toEqual(['has_task', 'task_count'])
+  })
+})
+
+describe('casual chat is not work, and a day with no time is due 23:59', () => {
+  it('the pre-check criteria say snacks, drinks and jokes are not work, for both questions', () => {
+    const req = buildPrecheckRequest('msg1 [2026-11-12 09:00] m1: 555 เดี๋ยวสั่งชานมด้วย')
+    const hasTask = JSON.stringify(req.questions.has_task)
+    const count = JSON.stringify(req.questions.task_count)
+    for (const q of [hasTask, count]) {
+      expect(q).toContain('snacks, drinks or food orders')
+      expect(q).toContain('jokes or lines said for a laugh (such as a line with 555)')
+    }
+    expect(count).toContain('project or study work')
+    expect(hasTask).toContain('book a meeting room')
+  })
+
+  it('the Summary prompt lists only project work as tasks, and asks for a date-only due', () => {
+    const p = buildSummaryPrompt({
+      now: new Date(T0), workDescription: 'โปรเจกต์วิชาการตลาด', members: [], messages: [],
+      precheck: { noTask: false, countHint: COUNT_HINT.several },
+    })
+    expect(p.system).toContain(PROJECT_WORK_ONLY)
+    expect(PROJECT_WORK_ONLY).toContain('ONLY work toward the group\'s project or study goals')
+    expect(PROJECT_WORK_ONLY).toContain('never call such casual items unassigned')
+    expect(p.user).toContain(COUNT_IS_PROJECT_WORK)
+    expect(p.system).toContain('the date only, "YYYY-MM-DD" (the day ends at 23:59)')
+  })
+
+  // The live chat of 2026-11-17 (production, with the Jev pre-check). The prompt fixes the
+  // real model; code never drops a Task by keyword, so the fake model's 4 Tasks all pass.
+  it('the live chat: 4 Tasks pass through, and day-only and T00:00 dues become 23:59', async () => {
+    const s = setup()
+    await s.send(
+      ev.groupText({ text: 'เราทำสไลด์พรีเซนต์ให้ ส่งวันศุกร์', userId: 'Upim', timestamp: T0 }),
+      ev.groupText({ text: 'ผมทำรายงานให้ ส่งวันพฤหัส', userId: 'Ubank', timestamp: T0 + MIN }),
+      ev.groupText({ text: 'อย่าลืมจองห้องประชุมด้วย', userId: 'Upim', timestamp: T0 + 2 * MIN }),
+      ev.groupText({ text: '555 เดี๋ยวสั่งชานมด้วย', userId: 'Ubank', timestamp: T0 + 3 * MIN }),
+    )
+    s.decisions.respond(s.jev(0.9, 'several'))
+    s.llm.respond((req: LlmRequest) => ({
+      content: JSON.stringify({
+        summary: 'แบ่งงานสไลด์และรายงาน',
+        tasks: [
+          { title: 'ทำสไลด์พรีเซนต์', details: null, assignee: refOf(req, 'Pim'), due: '2026-11-20', source: 'msg1', tags: [] },
+          { title: 'จัดทำรายงาน', details: null, assignee: refOf(req, 'Bank'), due: '2026-11-19T00:00:00+07:00', source: 'msg2', tags: [] },
+          { title: 'จองห้องประชุม', details: null, assignee: null, due: null, source: 'msg3', tags: [] },
+          { title: 'สั่งชานม', details: null, assignee: null, due: null, source: 'msg4', tags: [] },
+        ],
+      }),
+      model: TEXT_MODEL, usage: USAGE,
+    }))
+    await s.summarize()
+
+    expect(JSON.stringify(s.decisions.requests[0].questions)).toContain('milk tea')
+    expect(s.llm.requests).toHaveLength(1) // "several" needs 2: no retry
+    expect(s.llm.requests[0].system).toContain(PROJECT_WORK_ONLY)
+    expect(s.store.tables.task_candidates.map((c) => [c.title, c.suggestedAssigneeLineUserId, c.suggestedDueAt])).toEqual([
+      ['ทำสไลด์พรีเซนต์', 'Upim', new Date('2026-11-20T23:59:00+07:00')],
+      ['จัดทำรายงาน', 'Ubank', new Date('2026-11-19T23:59:00+07:00')],
+      ['จองห้องประชุม', null, null],
+      ['สั่งชานม', null, null],
+    ])
+    expect(s.replyText()).toContain('ศ. 20 พ.ย. 23:59')
+    expect(s.replyText()).toContain('พฤ. 19 พ.ย. 23:59')
+  })
+
+  it('a T00:00 due stays 00:00 when its message says เที่ยงคืน', async () => {
+    const s = setup()
+    await s.send(ev.groupText({ text: 'ส่งรายงานวันพฤหัสตอนเที่ยงคืนนะ', userId: 'Ubank', timestamp: T0 }))
+    s.decisions.respond(s.jev(0.9, 'one'))
+    s.llm.respond(() => ({
+      content: JSON.stringify({
+        summary: 'ส่งรายงาน',
+        tasks: [{ title: 'ส่งรายงาน', details: null, assignee: null, due: '2026-11-19T00:00:00+07:00', source: 'msg1', tags: [] }],
+      }),
+      model: TEXT_MODEL, usage: USAGE,
+    }))
+    await s.summarize()
+    expect(s.store.tables.task_candidates[0].suggestedDueAt).toEqual(new Date('2026-11-19T00:00:00+07:00'))
   })
 })

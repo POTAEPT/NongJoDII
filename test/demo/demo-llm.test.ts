@@ -112,7 +112,7 @@ describe('DemoLlm', () => {
 
   it('reads Thai deadlines', () => {
     expect(findDue('ส่งพรุ่งนี้ 18:00', '2026-11-16')).toBe('2026-11-17T18:00:00+07:00')
-    expect(findDue('ก่อนวันศุกร์นี้นะ', '2026-11-16')).toBe('2026-11-20T17:00:00+07:00')
+    expect(findDue('ก่อนวันศุกร์นี้นะ', '2026-11-16')).toBe('2026-11-20') // a day, no time: 23:59 once parsed
     expect(findDue('วันพฤหัส บ่ายโมง', '2026-11-16')).toBe('2026-11-19T13:00:00+07:00')
     expect(findDue('เที่ยงนี้กินอะไรดี', '2026-11-16')).toBeNull()
   })

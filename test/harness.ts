@@ -9,6 +9,7 @@ import { FakeStore } from './fakes/fake-store'
 
 export const TEST_SECRET = 'test-channel-secret'
 export const TEST_LIFF_ID = '2000000000-abcdefgh'
+export const TEST_APP_BASE_URL = 'https://nongjodii.test'
 export const TEST_KEY = Buffer.alloc(32, 7)
 export const TEST_TICK_SECRET = 'test-tick-secret'
 /** Default clock: 10:00 in Bangkok. */
@@ -47,7 +48,10 @@ export function makeTestDeps(opts?: { now?: Date }): {
     sleep: async (ms) => {
       current = new Date(current.getTime() + ms)
     },
-    config: { lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET },
+    config: {
+      lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET,
+      appBaseUrl: TEST_APP_BASE_URL,
+    },
   }
   return {
     deps, line, llm, decisions, google, store,

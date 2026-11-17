@@ -38,9 +38,10 @@ export async function loadReview(deps: Deps, body: unknown): Promise<ApiResult> 
   const gate = await openSummary(deps, body)
   if (!gate.ok) return gate.result
   const { summary } = gate
-  const [candidates, members] = await Promise.all([
+  const [candidates, members, setup] = await Promise.all([
     deps.store.listCandidates(summary.id),
     deps.store.listLiveMembers(summary.groupId),
+    deps.store.getGroupSetup(summary.groupId),
   ])
   const view: ReviewView = {
     summaryId: summary.id,
@@ -53,6 +54,7 @@ export async function loadReview(deps: Deps, body: unknown): Promise<ApiResult> 
     })),
     // LINE names only; nicknames never leave the AI prompt.
     members: members.map((m) => ({ lineUserId: m.lineUserId, displayName: m.displayName ?? FALLBACK_NAME })),
+    tagSet: setup?.tagSet ?? [],
   }
   return { status: 200, body: view }
 }

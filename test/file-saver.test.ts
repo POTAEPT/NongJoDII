@@ -423,8 +423,14 @@ describe('file saver (#4)', () => {
     expect(h.store.tables.files).toHaveLength(1)
     expect(h.store.tables.files[0].messageId).toBe(messageId(h, 'm-b'))
     expect(h.line.replies).toHaveLength(2)
-    expect(flexText(h.line.replies[1].messages[0])).toContain('เคยบันทึกไว้แล้ว')
-    expect(JSON.stringify(h.line.replies[1].messages[0])).toContain(h.google.uploads[0].webViewLink)
+    // #141: its own title, not the new-save one, so it does not read as a second copy.
+    const dup = h.line.replies[1].messages[0]
+    expect(flexText(dup)).toContain(FILE_SAVED_TEXT.fileDuplicateTitle)
+    expect(flexText(dup)).toContain(FILE_SAVED_TEXT.duplicate)
+    expect(flexText(dup)).not.toContain(FILE_SAVED_TEXT.fileTitle)
+    expect(dup.type === 'flex' && dup.altText.startsWith(FILE_SAVED_TEXT.fileDuplicateTitle)).toBe(true)
+    expect(flexText(h.line.replies[0].messages[0])).toContain(FILE_SAVED_TEXT.fileTitle)
+    expect(JSON.stringify(dup)).toContain(h.google.uploads[0].webViewLink)
 
     // #33: quoting the re-sent message gives the stored link.
     await send(h, ev.groupText({ groupId: SUB, text: 'NongJoDII ขอไฟล์', quotedMessageId: 'm-b', replyToken: 'rt-ask' }))

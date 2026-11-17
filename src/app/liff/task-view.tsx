@@ -202,7 +202,8 @@ export function TaskView({ liff, idToken, id }: LiffViewProps) {
             placeholder="ยังไม่มีรายละเอียด" onChange={(e) => set({ details: e.target.value })} />
         </Field>
         <Field label="แท็ก">
-          <TagsEditor tags={form.tags} disabled={submitting} onChange={(tags) => set({ tags })} />
+          <TagsEditor tags={form.tags} disabled={submitting} suggestions={load.data.tagSet}
+            onChange={(tags) => set({ tags })} />
         </Field>
         <div>
           <span className="mb-2 block text-sm font-semibold">ผู้รับ</span>

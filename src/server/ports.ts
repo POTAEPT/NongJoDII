@@ -798,7 +798,11 @@ export interface StorePort {
 }
 
 // ---- Composition ----
-export type HandlerConfig = { lineChannelSecret: string; liffId: string; tokenEncryptionKey: Buffer; tickSecret: string }
+export type HandlerConfig = {
+  lineChannelSecret: string; liffId: string; tokenEncryptionKey: Buffer; tickSecret: string
+  /** The app's public origin, no trailing slash (#133: the help card links to /guide). */
+  appBaseUrl: string
+}
 export type Deps = {
   line: LinePort; llm: LlmPort; google: GooglePort; store: StorePort
   /** The decision model (progress, #7): OpenRouter's Decisions API, not chat completions. */

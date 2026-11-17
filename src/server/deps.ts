@@ -38,6 +38,7 @@ export function getDeps(): Deps {
       liffId: config.liffId,
       tokenEncryptionKey: config.tokenEncryptionKey,
       tickSecret: config.tickSecret,
+      appBaseUrl: config.appBaseUrl,
     },
   }
   return cached

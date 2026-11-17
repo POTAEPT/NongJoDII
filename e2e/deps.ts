@@ -8,7 +8,7 @@ import { FakeDecisions } from '../test/fakes/fake-decisions'
 import { FakeGoogle } from '../test/fakes/fake-google'
 import { FakeLine } from '../test/fakes/fake-line'
 import { FakeLlm } from '../test/fakes/fake-llm'
-import { TEST_KEY, TEST_LIFF_ID, TEST_SECRET, TEST_TICK_SECRET } from '../test/harness'
+import { TEST_KEY, TEST_LIFF_ID, TEST_SECRET, TEST_TICK_SECRET, TEST_APP_BASE_URL } from '../test/harness'
 
 const DEFAULT_SUPABASE_URL = 'http://127.0.0.1:54321'
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost'])
@@ -109,7 +109,7 @@ export function makeE2eDeps(opts: { now: Date }): E2eDeps {
     sleep: async (ms) => {
       clock.advance(ms)
     },
-    config: { lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET },
+    config: { lineChannelSecret: TEST_SECRET, liffId: TEST_LIFF_ID, tokenEncryptionKey: TEST_KEY, tickSecret: TEST_TICK_SECRET, appBaseUrl: TEST_APP_BASE_URL },
   }
 
   return {

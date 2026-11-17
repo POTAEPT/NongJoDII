@@ -23,6 +23,7 @@ export function initialSettingsForm(view: SettingsLoad): SetupForm {
     })),
     ownerLineUserId: view.owner?.lineUserId ?? '',
     tagSet: [...(view.values.tagSet ?? [])],
+    attachProjectId: null, // #146: the setup form only
   }
 }
 
@@ -70,4 +71,15 @@ export function validateMyRow(form: SetupForm, me: string): string | null {
 export function toMyProfileBody(form: SetupForm, me: string): { nicknames: string[]; role: string } | null {
   const m = form.members.find((x) => x.lineUserId === me)
   return m ? { nicknames: cleanNicknames(m.nicknames), role: m.role.trim() } : null
+}
+
+/** #143: a stable key of the form, to tell whether anything changed since the last load or save. */
+export function formKey(form: SetupForm): string {
+  return JSON.stringify(form)
+}
+
+/** #143: Save is on only when the form differs from what was loaded or last saved. No
+ *  baseline yet (not loaded) counts as changed, so the page never locks a real edit. */
+export function isSettingsDirty(baseline: string | null, form: SetupForm): boolean {
+  return baseline === null || formKey(form) !== baseline
 }

@@ -8,7 +8,8 @@ import { looksLikeProgress } from './keywords'
 // stored (webhook/process.ts), so a model failure can never lose it. Every answer is a
 // reply (free), never a push. Ordinary chat gets no reply.
 // #132: the free keyword list is a gate. A line without a progress word makes no model
-// call; only a match goes to the decision model, which then decides the Task and status.
+// call; only a match goes to the decision model (TypeSafe Jev), which then decides the Task
+// and status. When it does not answer, the free picker asks the group (F3.4).
 
 export type ProgressTextJob = {
   groupId: string
@@ -101,7 +102,7 @@ export async function handleProgressText(deps: Deps, job: ProgressTextJob): Prom
       return 'asked'
     }
 
-    case 'ambiguous': {
+    case 'unsure': {
       const picked = pickerCandidates(
         decision.taskIds.map((id) => tasks.find((t) => t.id === id)).filter((t): t is TaskRow => t !== undefined),
         decision.status,
@@ -109,13 +110,13 @@ export async function handleProgressText(deps: Deps, job: ProgressTextJob): Prom
       )
       if (picked.length === 0) return 'ignored'
       await line.reply(replyToken, [pickerCard({ messageId: job.storedMessageId, tasks: picked, targetStatus: decision.status })])
-      log('progress_picker', { groupId, choices: picked.length, reason: 'ambiguous' })
+      log('progress_picker', { groupId, choices: picked.length, reason: 'unsure' })
       return 'picker'
     }
 
     case 'failed': {
-      // No model answered (it failed, the Fair-use cap, no Owner): ask the group with the
-      // keyword's status. Free, no further model call.
+      // The model did not answer (refusal, error, the Fair-use cap, no Owner): ask the group
+      // with the keyword's status. Free, no further model call.
       const status = keywordStatus
       const candidates = pickerCandidates(tasks, status, job.senderLineUserId)
       if (candidates.length === 0) return 'ignored'

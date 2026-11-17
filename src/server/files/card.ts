@@ -14,7 +14,10 @@ export const FILE_SAVED_TEXT = {
   fileTitle: 'บันทึกไฟล์ลง Google Drive แล้ว',
   photoTitle: 'บันทึกรูปลง Google Drive แล้ว',
   photosTitle: (n: number) => `บันทึกรูป ${n} รูปลง Google Drive แล้ว`,
-  duplicate: 'ไฟล์นี้เคยบันทึกไว้แล้ว ใช้ลิงก์เดิม',
+  // #141: a duplicate has its own title, so it does not read as a second copy.
+  fileDuplicateTitle: 'ไฟล์นี้เคยบันทึกไว้แล้ว',
+  photoDuplicateTitle: 'รูปนี้เคยบันทึกไว้แล้ว',
+  duplicate: 'ไม่ได้บันทึกซ้ำ ใช้ลิงก์เดิมได้เลย',
   noAccount: 'เปิดลิงก์ได้เลย ไม่ต้องมีบัญชี Google',
   ownerOnly: 'ลิงก์นี้เปิดได้เฉพาะเจ้าของ Drive (Workspace ไม่อนุญาตให้แชร์ลิงก์)',
   photosFailedToo: (n: number) => `อีก ${n} รูปบันทึกไม่ได้`,
@@ -24,7 +27,8 @@ export const FILE_SAVED_TEXT = {
   failedBody: 'กรุณาบันทึกไฟล์เองก่อนที่ไฟล์ใน LINE จะหมดอายุ',
   tooLarge: 'ไฟล์ใหญ่เกิน 100 MB',
   // #99: why the save failed, shown above failedBody.
-  timeout: 'ไฟล์ใหญ่หรือเครือข่ายช้า บันทึกไม่ทันเวลา ลองส่งใหม่อีกครั้ง',
+  // #148: a save has about one minute; files near 100 MB often need longer.
+  timeout: 'ไฟล์ใหญ่หรือเครือข่ายช้า บันทึกไม่ทันเวลา (น้องจดดีมีเวลาราว 1 นาทีต่อไฟล์) ลองส่งใหม่ หรืออัปโหลดลง Google Drive เอง',
   gone: 'LINE ไม่มีไฟล์นี้แล้ว อาจถูกยกเลิกการส่ง',
   driveFull: 'Google Drive ของเจ้าของบอทเต็ม ให้เจ้าของบอทลบไฟล์หรือเพิ่มพื้นที่',
   failed: 'ระบบขัดข้องชั่วคราว ลองส่งใหม่อีกครั้ง',
@@ -56,14 +60,17 @@ export function fileSavedCard(p: {
   kind: 'file' | 'image'; fileName: string; sizeBytes: number | null; driveLink: string; duplicate: boolean
   linkShared: boolean | null
 }): LineMessage {
-  const t = p.kind === 'image' ? FILE_SAVED_TEXT.photoTitle : FILE_SAVED_TEXT.fileTitle
+  const image = p.kind === 'image'
+  const t = p.duplicate
+    ? (image ? FILE_SAVED_TEXT.photoDuplicateTitle : FILE_SAVED_TEXT.fileDuplicateTitle)
+    : (image ? FILE_SAVED_TEXT.photoTitle : FILE_SAVED_TEXT.fileTitle)
   const name = p.fileName.length > NAME_MAX ? `${p.fileName.slice(0, NAME_MAX - 1)}…` : p.fileName
   return {
     type: 'flex',
     altText: `${t}: ${name}`,
     contents: bubble(
       [
-        header('success', t),
+        header(p.duplicate ? 'info' : 'success', t),
         text(name, { weight: 'bold' }),
         ...(p.sizeBytes !== null ? [caption(formatSize(p.sizeBytes))] : []),
         ...(p.duplicate ? [caption(FILE_SAVED_TEXT.duplicate)] : []),
@@ -157,6 +164,8 @@ export const FILE_NOTICE_TEXT = {
   ownerButton: 'เป็นเจ้าของบอทแทน',
   driveButton: 'เชื่อม Google Drive',
   saving: (name: string) => `กำลังบันทึก ${name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1)}…` : name} ลง Google Drive…`,
+  /** #148: added to the saving notice above SLOW_FILE_BYTES. */
+  slowWarning: 'ไฟล์ใหญ่มาก อาจบันทึกไม่ทันใน 1 นาที ถ้าไม่สำเร็จ น้องจดดีจะแจ้ง แล้วอัปโหลดลง Google Drive เองได้',
 } as const
 
 /** UX review 2.1: why a file was not saved, with the button that fixes it. */

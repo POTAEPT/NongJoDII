@@ -11,6 +11,8 @@ export type ReviewView = {
     suggestedTags: string[]                                                     // #109
   }[]
   members: { lineUserId: string; displayName: string }[]                         // LINE names
+  /** #144: the group's tag set (#110), offered as tap-to-add chips. */
+  tagSet: string[]
 }
 
 export type Decision =

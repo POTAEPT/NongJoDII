@@ -1,5 +1,5 @@
 import { personTags, TAG_SET_MAX } from '../tasks/tags'
-import { driveDeadline, syncDriveForOwner } from '../google/drive-folders'
+import { driveDeadline, ensureGroupFolder, syncDriveForOwner } from '../google/drive-folders'
 import { pushToGroupWithinBudget, retryKeyFrom } from '../line/push-budget'
 import { log, logError } from '../log'
 import type { ApiResult, Defer, Deps, GroupSetup, Member, SetupMemberWrite, SetupOutcome } from '../ports'
@@ -18,6 +18,8 @@ import type { SetupFeatures, SetupResendResult, SetupSubmitResult } from './type
  *  matches the reminder post's 2%. Agent choice. */
 export const SETUP_PUSH_RESERVE = 0.02
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** The setup form's values without the Owner: what Settings (#28) edits too. */
 export type GroupValues = {
   workDescription: string | null; features: SetupFeatures; dailyReminderTime: string
@@ -25,7 +27,7 @@ export type GroupValues = {
   /** #110: the group's starting tags, optional (missing = none). */
   tagSet: string[]
 }
-type Parsed = GroupValues & { ownerLineUserId: string }
+type Parsed = GroupValues & { ownerLineUserId: string; attachProjectId: string | null }
 
 function isBool(v: unknown): v is boolean {
   return typeof v === 'boolean'
@@ -94,7 +96,10 @@ function parse(body: unknown): { ok: true; value: Parsed } | { ok: false; field:
   if (!values.ok) return values
   const owner = field(body, 'ownerLineUserId')
   if (typeof owner !== 'string' || owner === '') return { ok: false, field: 'ownerLineUserId' }
-  return { ok: true, value: { ...values.value, ownerLineUserId: owner } }
+  // #146: optional; missing or null = a new Project.
+  const attach = field(body, 'attachProjectId')
+  if (attach !== undefined && attach !== null && (typeof attach !== 'string' || !UUID.test(attach))) return { ok: false, field: 'attachProjectId' }
+  return { ok: true, value: { ...values.value, ownerLineUserId: owner, attachProjectId: (attach as string | null | undefined) ?? null } }
 }
 
 const closed: ApiResult = { status: 409, body: { error: 'setup_closed' } }
@@ -136,6 +141,9 @@ export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Prom
   const members = v.members.filter((m) => liveIds.has(m.lineUserId))
 
   const at = deps.now()
+  if (v.attachProjectId !== null) {
+    return attachSubGroup(deps, defer, deadline, { group, requester, v, members, at })
+  }
   const { outcome } = await deps.store.saveGroupSetup({
     groupId: group.groupId, byLineUserId: requester, workDescription: v.workDescription,
     features: {
@@ -165,17 +173,59 @@ export async function submitSetup(deps: Deps, body: unknown, defer: Defer): Prom
   return { status: 200, body: result }
 }
 
+/** #146: the form saved and the group attached as a Sub group of a Project the sender owns,
+ *  in one transaction (rpc setup_sub_group). The sender is the Project's owner, so they are
+ *  confirmed at once and need no new Google sign-in: the Sub group's folder is made in the
+ *  Project's Drive after the response. */
+async function attachSubGroup(
+  deps: Deps, defer: Defer, deadline: Date,
+  p: { group: GroupSetup; requester: string; v: Parsed; members: SetupMemberWrite[]; at: Date },
+): Promise<ApiResult> {
+  const { group, requester, v, members, at } = p
+  // The Sub group's Owner is the Project's owner: the form cannot name anyone else.
+  if (v.ownerLineUserId !== requester) return badRequest('ownerLineUserId')
+  const { outcome } = await deps.store.saveSubGroupSetup({
+    groupId: group.groupId, projectId: v.attachProjectId as string, byLineUserId: requester, workDescription: v.workDescription,
+    features: {
+      summarize: v.features.summarize, draftTasks: v.features.summarize, saveFiles: v.features.saveFiles,
+      trackRemind: v.features.trackRemind, weeklySummary: v.features.weeklySummary,
+    },
+    dailyReminderTime: v.dailyReminderTime, weeklySummaryWeekday: v.weeklySummaryWeekday,
+    weeklySummaryTime: v.weeklySummaryTime, members, at, tagSet: v.tagSet,
+  })
+  if (outcome === 'closed') return closed
+  if (outcome === 'not_member') return badRequest('ownerLineUserId')
+  if (outcome === 'not_project_owner') return { status: 403, body: { error: 'not_project_owner' } }
+  log('setup_saved', { groupId: group.groupId, ownerConfirmed: true, attached: true })
+  defer(async () => {
+    try {
+      await ensureGroupFolder(deps, group.groupId, deadline)
+    } catch (err) {
+      // The first file save makes the folder too (openGroupDrive), so this is only early.
+      logError('sub_group_folder_failed', { groupId: group.groupId }, err)
+    }
+  })
+  const posted = await pushSetupCard(deps, group, { owner: requester, outcome: 'confirmed', nominatedAt: at, pendingOwnerName: null })
+  const result: SetupSubmitResult = { state: 'confirmed', posted, attached: true }
+  return { status: 200, body: result }
+}
+
 /** The #2e card, under the key of its nomination (see submitSetup). */
-function pushSetupCard(
+async function pushSetupCard(
   deps: Deps,
   group: Pick<GroupSetup, 'groupId' | 'lineGroupId'>,
   c: { owner: string; outcome: SetupOutcome; nominatedAt: Date; pendingOwnerName: string | null },
 ) {
+  // #143: the card repeats what was saved; a failed read only drops the recap.
+  const recap = await deps.store.getGroupSetup(group.groupId).catch((err) => {
+    logError('setup_recap_read_failed', { groupId: group.groupId }, err)
+    return null
+  })
   return pushToGroupWithinBudget(deps, {
     purpose: 'setup_done',
     groupId: group.groupId,
     lineGroupId: group.lineGroupId,
-    messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName: c.pendingOwnerName })],
+    messages: [setupDoneCard({ liffId: deps.config.liffId, groupId: group.groupId, pendingOwnerName: c.pendingOwnerName, recap })],
     reserve: SETUP_PUSH_RESERVE,
     retryKey: retryKeyFrom(`setup_done:${group.groupId}:${c.owner}:${c.outcome}:${c.nominatedAt.toISOString()}`),
   })

@@ -1,4 +1,4 @@
-import { bubble, caption, column, commandRow, header } from '../line/flex-ui'
+import { bubble, button, caption, column, commandRow, header, uri } from '../line/flex-ui'
 import type { LineMessage } from '../line/types'
 import { log, logError } from '../log'
 import type { Deps } from '../ports'
@@ -15,9 +15,15 @@ export const HELP_TEXT = {
   requestFile: 'ตอบกลับข้อความไฟล์ แล้วพิมพ์คำนี้ เพื่อขอลิงก์ไฟล์',
   progress: 'พิมพ์ว่า "เสร็จแล้ว" ในแชตปกติได้เลย น้องจดดีจะถามว่าปิดงานไหนให้เอง',
   altText: 'น้องจดดีทำอะไรได้บ้าง: น้องจดดี สรุป · น้องจดดี ตั้งค่า · น้องจดดี done · น้องจดดี ขอไฟล์',
+  guideButton: 'ดูวิธีใช้ทั้งหมด',
 } as const
 
-export function helpCard(): LineMessage {
+/** #133: the public how-to page on the app domain. A plain URL, no IDs. */
+export function guideUrl(appBaseUrl: string): string {
+  return `${appBaseUrl}/guide`
+}
+
+export function helpCard(appBaseUrl: string): LineMessage {
   return {
     type: 'flex',
     altText: HELP_TEXT.altText,
@@ -30,7 +36,7 @@ export function helpCard(): LineMessage {
         commandRow(COMMAND_TEXT.requestFile, HELP_TEXT.requestFile),
       ], { spacing: 'md' }),
       caption(HELP_TEXT.progress),
-    ]),
+    ], [button('secondary', uri(HELP_TEXT.guideButton, guideUrl(appBaseUrl)))]),
     quickReply: commandQuickReply(),
   }
 }
@@ -38,7 +44,7 @@ export function helpCard(): LineMessage {
 /** Best effort: a failed reply is logged; the person can ask again. */
 export async function replyHelpCard(deps: Deps, p: { groupId: string; replyToken: string }): Promise<void> {
   try {
-    await deps.line.reply(p.replyToken, [helpCard()])
+    await deps.line.reply(p.replyToken, [helpCard(deps.config.appBaseUrl)])
     log('help_card_replied', { groupId: p.groupId })
   } catch (err) {
     logError('help_card_failed', { groupId: p.groupId }, err)

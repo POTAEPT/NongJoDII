@@ -3,6 +3,7 @@ import { loadConfig } from './config'
 import { GoogleHttpClient } from './google/client'
 import { LineHttpClient } from './line/client'
 import { OpenRouterClient } from './llm/openrouter'
+import { OpenRouterDecisionsClient } from './llm/openrouter-decisions'
 import type { Deps } from './ports'
 import { SupabaseStore } from './store/supabase-store'
 
@@ -20,6 +21,7 @@ export function getDeps(): Deps {
       loginChannelId: config.lineLoginChannelId,
     }),
     llm: new OpenRouterClient({ apiKey: config.openRouterApiKey }),
+    decisions: new OpenRouterDecisionsClient({ apiKey: config.openRouterApiKey }),
     google: new GoogleHttpClient({
       clientId: config.googleClientId,
       clientSecret: config.googleClientSecret,
@@ -36,6 +38,7 @@ export function getDeps(): Deps {
       liffId: config.liffId,
       tokenEncryptionKey: config.tokenEncryptionKey,
       tickSecret: config.tickSecret,
+      appBaseUrl: config.appBaseUrl,
     },
   }
   return cached

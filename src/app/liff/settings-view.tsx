@@ -1,17 +1,18 @@
 'use client'
 
+import { MembersHint } from './members-hint'
 import { TAG_SET_MAX } from '@/server/tasks/tags'
 import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NICKNAME_MAX, ROLE_MAX, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
 import { liffUrl } from '@/server/liff-links'
 import { formatThaiDateLong } from '@/server/time/bangkok'
-import type { SettingsLoad } from '@/server/settings/types'
+import { DELETE_NOW_PHRASE, type SettingsLoad, type StopUsingResult } from '@/server/settings/types'
 import { ERR_401, post } from './api'
 import type { LiffViewProps } from './liff-sdk'
 import { Avatar, Button, Chip, Field, IconCheck, IconLock, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
-import { initialSettingsForm, settingsFieldMessage, toMyProfileBody, toSettingsBody, validateMyRow, validateSettings } from './settings-model'
-import { FEATURES, TimeSelect } from './setup-parts'
+import { formKey, initialSettingsForm, isSettingsDirty, settingsFieldMessage, toMyProfileBody, toSettingsBody, validateMyRow, validateSettings } from './settings-model'
+import { FEATURES, TAG_SET_COPY, TIMES_COPY, TimeSelect } from './setup-parts'
 import { addNickname, removeNickname, setNickname, setRole, type SetupForm } from './setup-model'
 
 // #28 Settings, opened from the "น้องจดดี ตั้งค่า" card. `id` is groups.id. Two tabs:
@@ -43,17 +44,32 @@ function errorCopy(status: number, json: unknown, fallback: string): string {
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SettingsLoad }
 type Tab = 'settings' | 'plans'
 /** Stop using: idle, the confirm step, the call in flight, or done with the delete date. */
-type Stop = { kind: 'idle' } | { kind: 'confirm' } | { kind: 'leaving' } | { kind: 'done'; deleteAfter: string | null }
+type Stop = { kind: 'idle' } | { kind: 'confirm' } | { kind: 'leaving' } | { kind: 'done'; deleted: boolean; deleteAfter: string | null; wantedDelete: boolean }
+
+/** #147: the delete-now choice and its warnings. */
+const DELETE_NOW = {
+  label: 'ลบข้อมูลทันที ไม่รอ 7 วัน',
+  warn: 'ลบแชตที่เก็บไว้ งาน สรุป และรายชื่อสมาชิกของกลุ่มนี้ทันที กู้คืนไม่ได้ เชิญน้องจดดีกลับมาก็ไม่ได้ข้อมูลเดิม ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่ ไม่ถูกลบ',
+  type: (p: string) => `พิมพ์ “${p}” เพื่อยืนยัน`,
+  button: 'ยืนยัน เลิกใช้และลบข้อมูลทันที',
+  doneTitle: 'น้องจดดีออกจากกลุ่มและลบข้อมูลแล้ว',
+  doneMsg: 'ลบข้อมูลของกลุ่มนี้แล้ว กู้คืนไม่ได้ ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่',
+  failed: 'ลบทันทีไม่สำเร็จ ข้อมูลจะถูกลบตามกำหนดแทน',
+}
 
 export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
   const [form, setForm] = useState<SetupForm | null>(null)
+  /** #143: the form as last loaded or saved; Save stays off until something differs. */
+  const [baseline, setBaseline] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('settings')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [stop, setStop] = useState<Stop>({ kind: 'idle' })
   const [stopError, setStopError] = useState<string | null>(null)
+  const [deleteNow, setDeleteNow] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
   const started = useRef(false)
   const inFlight = useRef(false)
 
@@ -64,7 +80,9 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
       const { status, json } = await post('/api/settings/load', { idToken, groupId: id })
       if (status !== 200) return setLoad({ kind: 'error', message: errorCopy(status, json, ERR_LOAD) })
       const data = json as SettingsLoad
-      setForm(initialSettingsForm(data))
+      const initial = initialSettingsForm(data)
+      setForm(initial)
+      setBaseline(formKey(initial))
       setLoad({ kind: 'ready', data })
     } catch {
       setLoad({ kind: 'error', message: ERR_LOAD })
@@ -86,8 +104,10 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     setSaving(true)
     try {
       const { status, json } = await post('/api/settings/submit', { idToken, groupId: id, ...toSettingsBody(form) })
-      if (status === 200) setSaved(true)
-      else setError(errorCopy(status, json, ERR_SAVE))
+      if (status === 200) {
+        setSaved(true)
+        setBaseline(formKey(form))
+      } else setError(errorCopy(status, json, ERR_SAVE))
     } catch {
       setError(ERR_SAVE)
     } finally {
@@ -109,8 +129,10 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     setSaving(true)
     try {
       const { status, json } = await post('/api/me/save', { idToken, groupId: id, ...mine })
-      if (status === 200) setSaved(true)
-      else setError(errorCopy(status, json, ERR_SAVE))
+      if (status === 200) {
+        setSaved(true)
+        setBaseline(formKey(form))
+      } else setError(errorCopy(status, json, ERR_SAVE))
     } catch {
       setError(ERR_SAVE)
     } finally {
@@ -125,8 +147,13 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     setStopError(null)
     setStop({ kind: 'leaving' })
     try {
-      const { status, json } = await post('/api/settings/stop-using', { idToken, groupId: id, confirm: true })
-      if (status === 200) return setStop({ kind: 'done', deleteAfter: (json as { deleteAfter: string | null }).deleteAfter })
+      const { status, json } = await post('/api/settings/stop-using', {
+        idToken, groupId: id, confirm: true, ...(deleteNow ? { deleteNow: true, confirmText } : {}),
+      })
+      if (status === 200) {
+        const r = json as StopUsingResult
+        return setStop({ kind: 'done', deleted: r.deleted === true, deleteAfter: r.deleteAfter, wantedDelete: deleteNow })
+      }
       setStopError(errorCopy(status, json, ERR_STOP))
       setStop({ kind: 'confirm' })
     } catch {
@@ -147,11 +174,14 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
     )
   }
   const { data } = load
+  if (stop.kind === 'done' && stop.deleted) {
+    return <StatusScreen kind="done" appTitle={TITLE} onBack={close} title={DELETE_NOW.doneTitle} message={DELETE_NOW.doneMsg} onClose={close} />
+  }
   if (stop.kind === 'done') {
     const date = stop.deleteAfter ? formatThaiDateLong(new Date(stop.deleteAfter)) : null
     return (
       <StatusScreen kind="done" appTitle={TITLE} onBack={close} title="น้องจดดีออกจากกลุ่มแล้ว"
-        message={`ข้อมูลของกลุ่มนี้จะถูกลบ${date ? `วันที่ ${date}` : 'ใน 7 วัน'} ถ้าเชิญน้องจดดีกลับเข้ากลุ่มก่อนวันนั้น ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่ ไม่ถูกลบ`}
+        message={`${stop.wantedDelete ? `${DELETE_NOW.failed} ` : ''}ข้อมูลของกลุ่มนี้จะถูกลบ${date ? `วันที่ ${date}` : 'ใน 7 วัน'} ถ้าเชิญน้องจดดีกลับเข้ากลุ่มก่อนวันนั้น ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ของเจ้าของบอทยังอยู่ ไม่ถูกลบ`}
         onClose={close} />
     )
   }
@@ -176,6 +206,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
   const me = data.requesterLineUserId
   // #81: the Owner edits every row; anyone else only their own, shown first.
   const editingMine = tab === 'settings' && !data.canEdit && form.members.some((m) => m.lineUserId === me)
+  const dirty = isSettingsDirty(baseline, form)
   const rows = data.canEdit ? form.members : [...form.members].sort((a, b) => Number(b.lineUserId === me) - Number(a.lineUserId === me))
 
   return (
@@ -186,7 +217,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
         <div className="space-y-2">
           {error && <Notice>{error}</Notice>}
           {saved && <Notice tone="success">บันทึกแล้ว</Notice>}
-          <Button disabled={saving} onClick={() => void (editing ? save() : saveMine())}>
+          <Button disabled={saving || !dirty} onClick={() => void (editing ? save() : saveMine())}>
             {saving ? 'กำลังบันทึก...' : editing ? 'บันทึก' : 'บันทึกข้อมูลของฉัน'}
           </Button>
         </div>
@@ -233,14 +264,15 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
 
           {/* #110 */}
           <div>
-            <Field label="แท็กของกลุ่ม (ไม่บังคับ)">
+            <Field label={TAG_SET_COPY.label}>
               <TagsEditor tags={form.tagSet} max={TAG_SET_MAX} disabled={ro}
                 onChange={(tagSet) => set({ ...form, tagSet })} />
             </Field>
-            <p className="mt-1 text-xs text-ink-3">น้องจดดีจะเลือกแท็กจากชุดนี้ก่อนเวลาสรุปงาน แก้ได้ในหน้าตั้งค่า</p>
+            <p className="mt-1 text-xs text-ink-3">{TAG_SET_COPY.hint}</p>
           </div>
 
           <MemberRows rows={rows} me={me} canEdit={data.canEdit} saving={saving} onChange={set} form={form} />
+          <MembersHint known={form.members.length} total={data.lineMemberCount ?? null} />
 
           <section className="space-y-2">
             <span className="block text-sm font-semibold">ฟีเจอร์</span>
@@ -270,8 +302,9 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
 
           <section className="space-y-2 rounded-2xl border border-line bg-page p-4">
             <Field label="เตือนงานทุกวัน">
-              <TimeSelect value={form.dailyReminderTime} disabled={ro} onChange={(v) => set({ ...form, dailyReminderTime: v })} />
+              <TimeSelect value={form.dailyReminderTime} disabled={ro || !form.features.trackRemind} onChange={(v) => set({ ...form, dailyReminderTime: v })} />
             </Field>
+            <p className="text-xs text-ink-3">{form.features.trackRemind ? TIMES_COPY.dailyWhat : TIMES_COPY.dailyOff}</p>
           </section>
           <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
             <span className="block text-sm font-semibold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
@@ -284,7 +317,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
                     type="button"
                     aria-pressed={on}
                     className={`rounded-full px-4 py-1.5 text-sm font-semibold ${on ? 'bg-primary text-white' : 'border border-line bg-page text-ink-2'}`}
-                    disabled={ro}
+                    disabled={ro || !form.features.weeklySummary}
                     onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
                   >
                     {d.label}
@@ -292,7 +325,8 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
                 )
               })}
             </div>
-            <TimeSelect value={form.weeklySummaryTime} disabled={ro} onChange={(v) => set({ ...form, weeklySummaryTime: v })} />
+            <TimeSelect value={form.weeklySummaryTime} disabled={ro || !form.features.weeklySummary} onChange={(v) => set({ ...form, weeklySummaryTime: v })} />
+            <p className="text-xs text-ink-3">{form.features.weeklySummary ? TIMES_COPY.weeklyWhat : TIMES_COPY.weeklyOff}</p>
           </section>
           <p className="text-xs text-ink-3">
             เวลาเป็นเวลาประเทศไทย เปลี่ยนแล้วมีผลในรอบถัดไป ถ้าวันนี้เตือนไปแล้ว เวลาใหม่จะเริ่มพรุ่งนี้
@@ -320,6 +354,7 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
               <p className="text-xs text-ink-3">
                 น้องจดดีจะออกจากกลุ่ม และลบข้อมูลของกลุ่มนี้ (แชตที่เก็บไว้ งาน และสรุป) ใน 7 วัน
                 ถ้าเชิญกลับภายใน 7 วัน ข้อมูลจะกลับมาครบ ไฟล์ใน Google Drive ไม่ถูกลบ
+                ถ้าไม่อยากรอ เลือกลบข้อมูลทันทีได้ในขั้นยืนยัน
               </p>
               {stop.kind === 'idle' ? (
                 <button
@@ -333,16 +368,31 @@ export function SettingsView({ liff, idToken, liffId, id }: LiffViewProps) {
               ) : (
                 <div className="space-y-2">
                   <Notice>ยืนยันให้น้องจดดีออกจากกลุ่มนี้ใช่ไหม</Notice>
+                  {/* #147: an optional delete at once, behind a typed confirm. */}
+                  <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-line p-3 text-sm">
+                    <input type="checkbox" className="mt-1" checked={deleteNow} disabled={stop.kind === 'leaving'}
+                      onChange={(e) => { setDeleteNow(e.target.checked); setConfirmText('') }} />
+                    <span className="font-semibold">{DELETE_NOW.label}</span>
+                  </label>
+                  {deleteNow && (
+                    <div className="space-y-2">
+                      <Notice>{DELETE_NOW.warn}</Notice>
+                      <Field label={DELETE_NOW.type(DELETE_NOW_PHRASE)}>
+                        <input type="text" className={inputClass} value={confirmText} disabled={stop.kind === 'leaving'}
+                          autoComplete="off" onChange={(e) => setConfirmText(e.target.value)} />
+                      </Field>
+                    </div>
+                  )}
                   {stopError && <Notice>{stopError}</Notice>}
                   <button
                     type="button"
                     className="flex min-h-12 w-full items-center justify-center rounded-xl bg-danger px-4 text-base font-semibold text-white disabled:opacity-50"
-                    disabled={stop.kind === 'leaving' || saving}
+                    disabled={stop.kind === 'leaving' || saving || (deleteNow && confirmText.trim() !== DELETE_NOW_PHRASE)}
                     onClick={() => void stopUsing()}
                   >
-                    {stop.kind === 'leaving' ? 'กำลังออกจากกลุ่ม...' : 'ยืนยัน เลิกใช้'}
+                    {stop.kind === 'leaving' ? 'กำลังออกจากกลุ่ม...' : deleteNow ? DELETE_NOW.button : 'ยืนยัน เลิกใช้'}
                   </button>
-                  <Button variant="ghost" disabled={stop.kind === 'leaving'} onClick={() => { setStopError(null); setStop({ kind: 'idle' }) }}>
+                  <Button variant="ghost" disabled={stop.kind === 'leaving'} onClick={() => { setStopError(null); setDeleteNow(false); setConfirmText(''); setStop({ kind: 'idle' }) }}>
                     ยกเลิก
                   </Button>
                 </div>

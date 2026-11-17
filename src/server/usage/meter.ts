@@ -1,5 +1,7 @@
 import { log, logError } from '../log'
-import type { AiPurpose, AiUsageActual, Deps, LlmRequest, LlmResult } from '../ports'
+import type {
+  AiPurpose, AiUsageActual, DecisionsRequest, DecisionsResult, Deps, LlmRequest, LlmResult, LlmUsage,
+} from '../ports'
 import { FAIR_USE_CAP_TOKENS, FAIR_USE_CAP_USD } from './fair-use'
 import { priceTokens, roundUpUsd } from './pricing'
 
@@ -24,16 +26,26 @@ const SETTLE_ATTEMPTS = 3
  *     id and cannot save the charge twice. If every attempt fails, the estimate row
  *     stays: the Owner's usage is over-counted, never under-counted. */
 export async function runMeteredAi(deps: Deps, ctx: MeterContext, req: LlmRequest): Promise<LlmResult> {
-  const estimate = estimateUsage(req)
+  return runMetered(deps, ctx, estimateUsage(req), req.model, () => deps.llm.complete(req))
+}
+
+/** The same claim, call and settle for a Decisions API call (the progress decision model). */
+export async function runMeteredDecisions(deps: Deps, ctx: MeterContext, req: DecisionsRequest): Promise<DecisionsResult> {
+  return runMetered(deps, ctx, estimateDecisionsUsage(req), req.model, () => deps.decisions.decide(req))
+}
+
+async function runMetered<R extends { model: string; usage: LlmUsage | null }>(
+  deps: Deps, ctx: MeterContext, estimate: AiUsageActual, pricedModel: string, call: () => Promise<R>,
+): Promise<R> {
   const { claimId } = await deps.store.claimAiUsage(
     { ...ctx, ...estimate, createdAt: deps.now() },
     { capTokens: FAIR_USE_CAP_TOKENS, capCostUsd: FAIR_USE_CAP_USD },
   )
   if (claimId === null) throw new FairUseCapReachedError('fair-use cap reached')
 
-  let result: LlmResult
+  let result: R
   try {
-    result = await deps.llm.complete(req)
+    result = await call()
   } catch (err) {
     try {
       await deps.store.releaseAiUsage(claimId)
@@ -47,7 +59,9 @@ export async function runMeteredAi(deps: Deps, ctx: MeterContext, req: LlmReques
   if (result.usage) {
     const { inputTokens, outputTokens, costUsd: reported } = result.usage
     const costUsd = roundUpUsd(
-      reported !== null && Number.isFinite(reported) && reported >= 0 ? reported : priceTokens(inputTokens, outputTokens),
+      reported !== null && Number.isFinite(reported) && reported >= 0
+        ? reported
+        : priceTokens(pricedModel, inputTokens, outputTokens),
     )
     actual = { model: result.model, inputTokens, outputTokens, costUsd }
   } else {
@@ -71,5 +85,16 @@ export async function runMeteredAi(deps: Deps, ctx: MeterContext, req: LlmReques
 function estimateUsage(req: LlmRequest): AiUsageActual {
   const inputTokens = Math.ceil((req.system.length + req.user.length) / 2)
   const outputTokens = req.maxTokens
-  return { model: req.model, inputTokens, outputTokens, costUsd: priceTokens(inputTokens, outputTokens) }
+  return { model: req.model, inputTokens, outputTokens, costUsd: priceTokens(req.model, inputTokens, outputTokens) }
+}
+
+/** Decision models answer with probabilities, not text. A live Jev call with three questions
+ *  reported 87 output tokens (billed at $0), so the estimate allows this many. */
+const DECISIONS_OUTPUT_ESTIMATE = 256
+
+/** The input is the state and every question, as sent. */
+function estimateDecisionsUsage(req: DecisionsRequest): AiUsageActual {
+  const inputTokens = Math.ceil((req.state.length + JSON.stringify(req.questions).length) / 2)
+  const outputTokens = DECISIONS_OUTPUT_ESTIMATE
+  return { model: req.model, inputTokens, outputTokens, costUsd: priceTokens(req.model, inputTokens, outputTokens) }
 }

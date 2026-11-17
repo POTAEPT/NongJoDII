@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bangkokMonthRange, bangkokParts, bangkokTodayLabel, formatPromptTime, formatThaiDateLong, formatThaiShort, formatHhmm, formatRelativeDue, formatThaiWeekdayDay } from '@/server/time/bangkok'
+import { bangkokCalendar, bangkokMonthRange, bangkokParts, bangkokTodayLabel, formatPromptTime, formatThaiDateLong, formatThaiShort, formatHhmm, formatRelativeDue, formatThaiWeekdayDay } from '@/server/time/bangkok'
 
 describe('bangkok time', () => {
   it('shifts to UTC+7 wall-clock parts', () => {
@@ -45,5 +45,22 @@ describe('bangkok time', () => {
     expect(r.monthStartBkk).toBe('2027-01-01')
     expect(r.start.toISOString()).toBe('2026-12-31T17:00:00.000Z')
     expect(r.end.toISOString()).toBe('2027-01-31T17:00:00.000Z')
+  })
+})
+
+describe('bangkokCalendar (#161)', () => {
+  it('lists today and the next 14 days in Bangkok, each with its weekday', () => {
+    // Tuesday 17 Nov 2026, 10:00 in Bangkok.
+    const days = bangkokCalendar(new Date('2026-11-17T03:00:00Z'))
+    expect(days).toHaveLength(15)
+    expect(days.slice(0, 5)).toEqual([
+      'Tue 2026-11-17 (today)', 'Wed 2026-11-18 (tomorrow)', 'Thu 2026-11-19', 'Fri 2026-11-20', 'Sat 2026-11-21',
+    ])
+    expect(days[14]).toBe('Tue 2026-12-01')
+  })
+
+  it('uses the Bangkok date late at night UTC', () => {
+    // 23:30 UTC on 16 Nov is 06:30 on Tuesday 17 Nov in Bangkok.
+    expect(bangkokCalendar(new Date('2026-11-16T23:30:00Z'), 1)).toEqual(['Tue 2026-11-17 (today)', 'Wed 2026-11-18 (tomorrow)'])
   })
 })

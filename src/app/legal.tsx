@@ -34,7 +34,8 @@ export function LegalPage({ title, updated, intro, children }: {
 export function LegalFooter() {
   return (
     <footer className="flex flex-col items-center gap-2 border-t border-line px-6 py-6 text-center text-sm text-ink-3">
-      <nav className="flex gap-4">
+      <nav className="flex flex-wrap justify-center gap-x-4 gap-y-1">
+        <Link href="/guide" className="text-primary underline underline-offset-4">วิธีใช้งาน</Link>
         <Link href="/privacy" className="text-primary underline underline-offset-4">นโยบายความเป็นส่วนตัว</Link>
         <Link href="/terms" className="text-primary underline underline-offset-4">ข้อกำหนดการใช้งาน</Link>
       </nav>

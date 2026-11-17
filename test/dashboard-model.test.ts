@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  calendarWeek, canCompare, countByStatus, dueLabel, filterTasks, initialScope, memberCards, nextDueTask,
+  calendarWeek, canCompare, countByStatus, dueLabel, filterTasks, guideHref, initialScope, isNoGroups, memberCards, nextDueTask,
   overviewGroups, progressPercent, scopeAfterRefresh, summarizeGroups, tasksDueOn, unownedTasks,
-  type DashboardData, type DashboardGroup, type DashboardTask,
+  type DashboardData, type DashboardGroup, type DashboardTask, WELCOME_TEXT,
 } from '@/app/liff/dashboard-model'
 import { readLiffParams } from '@/app/liff/params'
 
@@ -128,5 +128,20 @@ describe('Dashboard model (#18)', () => {
   it('opens from the weekly insight link (view=dashboard)', () => {
     expect(readLiffParams('?view=dashboard&id=g1')).toEqual({ view: 'dashboard', id: 'g1' })
     expect(readLiffParams('?liff.state=%3Fview%3Ddashboard')).toEqual({ view: 'dashboard', id: null })
+  })
+})
+
+describe('first-time user with no group (#145)', () => {
+  it('tells a no_groups refusal from a not-a-member one', () => {
+    expect(isNoGroups(403, { error: 'no_groups' })).toBe(true)
+    expect(isNoGroups(403, { error: 'forbidden' })).toBe(false)
+    expect(isNoGroups(401, { error: 'no_groups' })).toBe(false)
+    expect(isNoGroups(403, null)).toBe(false)
+  })
+
+  it('welcomes them with the first step and a link to the guide (#133)', () => {
+    expect(WELCOME_TEXT.body).toBe('เพิ่มน้องจดดีเข้ากลุ่มแชต เพื่อเริ่มสรุปงานและดูภาพรวม')
+    expect(WELCOME_TEXT.steps[0]).toContain('เชิญน้องจดดีเข้ากลุ่ม')
+    expect(guideHref('https://nongjodii.test')).toBe('https://nongjodii.test/guide')
   })
 })

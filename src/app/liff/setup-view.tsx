@@ -5,13 +5,14 @@ import { TagsEditor } from './tags-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liffUrl } from '@/server/liff-links'
 import { NICKNAME_MAX, ROLE_MAX, SETUP_DEFAULTS, WEEKDAYS, WORK_DESCRIPTION_MAX } from '@/server/setup/rules'
+import { MembersHint } from './members-hint'
 import type { SetupLoad, SetupResendResult, SetupSubmitResult } from '@/server/setup/types'
 import { ERR_401, post } from './api'
 import { track } from './analytics'
 import type { LiffViewProps } from './liff-sdk'
-import { FEATURES, TimeSelect } from './setup-parts'
+import { FEATURES, OWNER_ROLE, OwnerRoleNote, TAG_SET_COPY, TIMES_COPY, TimeSelect } from './setup-parts'
 import {
-  addNickname, initialSetupForm, removeNickname, setNickname, setRole, SETUP_STEPS, stepForField, toSubmitBody,
+  addNickname, initialSetupForm, removeNickname, setAttach, setNickname, setRole, SETUP_STEPS, stepForField, toSubmitBody,
   submitView, validateAll, validateStep, type SetupForm,
 } from './setup-model'
 import { Avatar, Button, Field, IconCheck, IconPlus, Notice, Page, StatusScreen, inputClass } from './ui'
@@ -47,6 +48,17 @@ const STEP_TITLES = [
   { title: 'อยากให้น้องจดดีช่วยอะไร?', sub: 'เลือกได้หลายข้อ' },
   { title: 'ให้น้องจดดีเตือนตอนไหน?', sub: 'เวลาประเทศไทย' },
 ]
+
+/** #146: attach the group to a Project the requester owns. */
+const ATTACH = {
+  title: 'กลุ่มนี้เป็นส่วนหนึ่งของโปรเจกต์ที่มีอยู่ไหม',
+  sub: 'เลือกโปรเจกต์ที่คุณเป็นเจ้าของบอท กลุ่มนี้จะเป็นกลุ่มย่อย ใช้ Google Drive เดียวกัน (โฟลเดอร์แยก) และดูรวมใน Dashboard ได้',
+  newProject: 'ไม่ใช่ เริ่มโปรเจกต์ใหม่',
+  subOf: (name: string) => `เป็นกลุ่มย่อยของ “${name}”`,
+  unnamed: 'กลุ่มหลักของคุณ',
+  ownerFixed: 'กลุ่มย่อยใช้เจ้าของบอทคนเดียวกับโปรเจกต์ ซึ่งก็คือคุณ จึงไม่ต้องยืนยันหรือเชื่อม Google ใหม่',
+  done: 'กลุ่มนี้เป็นกลุ่มย่อยของโปรเจกต์แล้ว ไฟล์จะเก็บในโฟลเดอร์ของกลุ่มนี้ ใน Google Drive ของโปรเจกต์',
+}
 
 type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; data: SetupLoad }
 
@@ -212,6 +224,7 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
           {done.state === 'pending_owner' && ownerName && done.posted === 'pushed' && (
             <Notice tone="info">รอ {ownerName} ยืนยันเป็นเจ้าของบอท จากการ์ดในกลุ่ม</Notice>
           )}
+          {done.attached && <Notice tone="info">{ATTACH.done}</Notice>}
           {POSTED_NOTE[done.posted] && <Notice tone="info">{POSTED_NOTE[done.posted]}</Notice>}
           {formError && <Notice>{formError}</Notice>}
         </div>
@@ -265,6 +278,26 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
 
       {step === 1 && (
         <div className="mt-4">
+          {/* #146: a group of a Project the requester already owns can join it as a Sub group. */}
+          {(data.attachOptions ?? []).length > 0 && (
+            <fieldset className="mb-4 space-y-2 rounded-2xl border border-line bg-page p-4">
+              <legend className="px-1 text-sm font-semibold">{ATTACH.title}</legend>
+              <p className="text-xs text-ink-3">{ATTACH.sub}</p>
+              {[{ projectId: null as string | null, name: null as string | null }, ...data.attachOptions].map((o) => {
+                const on = form.attachProjectId === o.projectId
+                return (
+                  <label key={o.projectId ?? 'new'}
+                    className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 text-sm ${on ? 'border-primary bg-primary-soft' : 'border-line'}`}>
+                    <input type="radio" name="attach" checked={on} disabled={submitting}
+                      onChange={() => set(setAttach(form, o.projectId, data.requesterLineUserId))} />
+                    <span className="min-w-0 flex-1 font-semibold">
+                      {o.projectId === null ? ATTACH.newProject : ATTACH.subOf(o.name ?? ATTACH.unnamed)}
+                    </span>
+                  </label>
+                )
+              })}
+            </fieldset>
+          )}
           <Field label="เรื่องของกลุ่ม">
             <textarea
               maxLength={WORK_DESCRIPTION_MAX}
@@ -279,39 +312,43 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
           <p className="mt-1 text-right text-xs text-ink-3">{form.workDescription.length}/{WORK_DESCRIPTION_MAX}</p>
           {/* #110: the group's starting tags; the step can be left empty. */}
           <div className="mt-4">
-            <Field label="แท็กของกลุ่ม (ไม่บังคับ)">
+            <Field label={TAG_SET_COPY.label}>
               <TagsEditor tags={form.tagSet} max={TAG_SET_MAX} disabled={submitting}
                 onChange={(tagSet) => set({ ...form, tagSet })} />
             </Field>
-            <p className="mt-1 text-xs text-ink-3">น้องจดดีจะเลือกแท็กจากชุดนี้ก่อนเวลาสรุปงาน แก้ได้ในหน้าตั้งค่า</p>
+            <p className="mt-1 text-xs text-ink-3">{TAG_SET_COPY.hint} แก้ได้ในหน้าตั้งค่า</p>
           </div>
         </div>
       )}
 
       {step === 2 && (
         <div className="mt-4 space-y-3">
+          {form.attachProjectId ? <Notice tone="info">{ATTACH.ownerFixed}</Notice> : <OwnerRoleNote />}
           {form.members.map((m) => {
             const owner = form.ownerLineUserId === m.lineUserId
             return (
-              <section key={m.lineUserId} className="space-y-3 rounded-2xl border border-line bg-page p-4">
+              <section key={m.lineUserId}
+                className={`space-y-3 rounded-2xl border bg-page p-4 ${owner ? 'border-primary ring-2 ring-primary' : 'border-line'}`}>
                 <div className="flex items-center gap-3">
                   <Avatar name={m.displayName} id={m.lineUserId} size="md" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-semibold">{m.displayName}</p>
                     <p className="text-xs text-ink-3">ชื่อใน LINE</p>
                   </div>
-                  <label className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${owner ? 'bg-primary text-white' : 'bg-primary-soft text-primary'}`}>
+                  {(!form.attachProjectId || owner) && (
+                  <label className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${owner ? 'bg-primary text-white' : 'border border-primary bg-page text-primary'}`}>
                     <input
                       type="radio"
                       name="owner"
                       className="sr-only"
                       checked={owner}
-                      disabled={submitting}
+                      disabled={submitting || form.attachProjectId !== null}
                       onChange={() => set({ ...form, ownerLineUserId: m.lineUserId })}
                     />
                     {owner && <IconCheck className="h-3.5 w-3.5" />}
-                    เจ้าของบอท
+                    {owner ? OWNER_ROLE.chosen : OWNER_ROLE.choose}
                   </label>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {m.nicknames.map((n, i) => (
@@ -360,6 +397,7 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
               </section>
             )
           })}
+          <MembersHint known={form.members.length} total={data.lineMemberCount ?? null} />
           <p className="text-xs text-ink-3">
             เจ้าของบอทต้องกดยืนยันเองด้วยบัญชี LINE ก่อนจึงจะมีผล ชื่อเล่นใช้ให้น้องจดดีอ่านแชตเท่านั้น
           </p>
@@ -399,11 +437,13 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
             <Field label="เตือนงานทุกวัน">
               <TimeSelect
                 value={form.dailyReminderTime}
-                disabled={submitting}
+                disabled={submitting || !form.features.trackRemind}
                 onChange={(v) => set({ ...form, dailyReminderTime: v })}
               />
             </Field>
-            <p className="text-xs text-ink-3">เลือกเวลาได้ทีละ 15 นาที · ค่าเริ่มต้น {SETUP_DEFAULTS.dailyReminderTime}</p>
+            <p className="text-xs text-ink-3">
+              {form.features.trackRemind ? `${TIMES_COPY.dailyWhat} · เลือกเวลาได้ทีละ 15 นาที · ค่าเริ่มต้น ${SETUP_DEFAULTS.dailyReminderTime}` : TIMES_COPY.dailyOff}
+            </p>
           </section>
           <section className="space-y-3 rounded-2xl border border-line bg-page p-4">
             <span className="block text-sm font-semibold">โพสต์สรุปในกลุ่มทุกสัปดาห์</span>
@@ -416,7 +456,7 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
                     type="button"
                     aria-pressed={on}
                     className={`rounded-full px-4 py-1.5 text-sm font-semibold ${on ? 'bg-primary text-white' : 'border border-line bg-page text-ink-2'}`}
-                    disabled={submitting}
+                    disabled={submitting || !form.features.weeklySummary}
                     onClick={() => set({ ...form, weeklySummaryWeekday: d.iso })}
                   >
                     {d.label}
@@ -426,9 +466,10 @@ export function SetupView({ liff, idToken, liffId, id }: LiffViewProps) {
             </div>
             <TimeSelect
               value={form.weeklySummaryTime}
-              disabled={submitting}
+              disabled={submitting || !form.features.weeklySummary}
               onChange={(v) => set({ ...form, weeklySummaryTime: v })}
             />
+            <p className="text-xs text-ink-3">{form.features.weeklySummary ? TIMES_COPY.weeklyWhat : TIMES_COPY.weeklyOff}</p>
           </section>
           <p className="text-xs text-ink-3">เปลี่ยนได้ทุกเมื่อในตั้งค่า</p>
         </div>

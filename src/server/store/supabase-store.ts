@@ -62,6 +62,9 @@ import type {
   WeeklySummaryGroup,
   ProgressYes,
   ProgressYesOutcome,
+  OwnedProject,
+  SubGroupSetupOutcome,
+  SubGroupSetupWrite,
 } from '../ports'
 import {
   type DbCandidate,
@@ -357,13 +360,14 @@ export class SupabaseStore implements StorePort {
   }
 
   async linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }> {
-    const { data, error } = await this.db
-      .from('files')
-      .update({ message_id: messageId })
-      .eq('id', fileId)
-      .select('id')
+    // #140: a link row; files.message_id keeps the first message.
+    const { error } = await this.db
+      .from('file_messages')
+      .upsert({ file_id: fileId, message_id: messageId }, { onConflict: 'file_id,message_id', ignoreDuplicates: true })
+    // 23503: the file (group purged) or the message (unsent) is gone; nothing to link.
+    if (error?.code === '23503') return { updated: false }
     check('linkFileToMessage', error)
-    return { updated: (data ?? []).length > 0 }
+    return { updated: true }
   }
 
   async findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null> {
@@ -467,7 +471,18 @@ export class SupabaseStore implements StorePort {
       .limit(1)
     check('findQuotedFile', fileError)
     const file = ((files ?? []) as { file_name: string; drive_link: string }[])[0]
-    return file ? { kind: 'file', fileName: file.file_name, driveLink: file.drive_link } : { kind: 'no_file' }
+    if (file) return { kind: 'file', fileName: file.file_name, driveLink: file.drive_link }
+    // #140: a later message that carried a file saved before.
+    const { data: links, error: linkError } = await this.db
+      .from('file_messages')
+      .select('linked_at, files!inner(file_name, drive_link, group_id)')
+      .eq('message_id', (message as { id: string }).id)
+      .eq('files.group_id', groupId)
+      .order('linked_at', { ascending: false })
+      .limit(1)
+    check('findQuotedFile', linkError)
+    const linked = ((links ?? []) as unknown as { files: { file_name: string; drive_link: string } | null }[])[0]?.files
+    return linked ? { kind: 'file', fileName: linked.file_name, driveLink: linked.drive_link } : { kind: 'no_file' }
   }
 
   // ---- #15 Summary ----
@@ -1245,6 +1260,20 @@ export class SupabaseStore implements StorePort {
     return { updated: (data?.length ?? 0) > 0 }
   }
 
+  async reopenTask(t: { taskId: string; assignee: string | null; toStatus: 'in_process' | 'not_assigned'; by: string; at: Date }): Promise<{ updated: boolean }> {
+    const at = t.at.toISOString()
+    let q = this.db
+      .from('tasks')
+      .update({ status: t.toStatus, done_at: null, last_activity_at: at, last_edited_by_line_user_id: t.by })
+      .eq('id', t.taskId)
+      .is('deleted_at', null)
+      .eq('status', 'done')
+    q = t.assignee === null ? q.is('assignee_line_user_id', null) : q.eq('assignee_line_user_id', t.assignee)
+    const { data, error } = await q.select('id')
+    check('reopenTask', error)
+    return { updated: (data?.length ?? 0) > 0 }
+  }
+
   async restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
     const { data, error } = await this.db
       .from('tasks')
@@ -1442,6 +1471,42 @@ export class SupabaseStore implements StorePort {
       if (tagged.error) logError('group_tag_set_failed', { groupId: w.groupId }, new AdapterError(`supabase saveGroupSetup tag_set: ${tagged.error.code}`))
     }
     return { outcome: data }
+  }
+
+  async saveSubGroupSetup(w: SubGroupSetupWrite): Promise<{ outcome: SubGroupSetupOutcome }> {
+    const { data, error } = await this.db.rpc('setup_sub_group', {
+      p_group_id: w.groupId, p_project_id: w.projectId, p_by: w.byLineUserId, p_work_description: w.workDescription,
+      p_feature_summarize: w.features.summarize, p_feature_draft_tasks: w.features.draftTasks,
+      p_feature_save_files: w.features.saveFiles, p_feature_track_remind: w.features.trackRemind,
+      p_feature_weekly_summary: w.features.weeklySummary,
+      p_daily_reminder_time: w.dailyReminderTime, p_weekly_summary_weekday: w.weeklySummaryWeekday,
+      p_weekly_summary_time: w.weeklySummaryTime,
+      p_members: w.members.map((m) => ({ line_user_id: m.lineUserId, nicknames: m.nicknames, role: m.role })),
+      p_at: w.at.toISOString(),
+    })
+    check('saveSubGroupSetup', error)
+    const outcomes: SubGroupSetupOutcome[] = ['attached', 'closed', 'not_member', 'not_project_owner']
+    if (!outcomes.includes(data as SubGroupSetupOutcome)) throw new Error('saveSubGroupSetup: unexpected result from setup_sub_group')
+    if (data === 'attached' && w.tagSet.length > 0) {
+      const tagged = await this.db.from('groups').update({ tag_set: w.tagSet }).eq('id', w.groupId)
+      if (tagged.error) logError('group_tag_set_failed', { groupId: w.groupId }, new AdapterError(`supabase saveSubGroupSetup tag_set: ${tagged.error.code}`))
+    }
+    return { outcome: data as SubGroupSetupOutcome }
+  }
+
+  async listOwnedProjects(lineUserId: string): Promise<OwnedProject[]> {
+    const { data, error } = await this.db
+      .from('groups')
+      .select('id, project_id, name')
+      .eq('is_main', true)
+      .eq('nominated_owner_line_user_id', lineUserId)
+      .not('owner_confirmed_at', 'is', null)
+      .is('left_at', null)
+      .order('joined_at', { ascending: true })
+      .limit(PAGE_SIZE)
+    check('listOwnedProjects', error)
+    return ((data ?? []) as { id: string; project_id: string; name: string | null }[])
+      .map((r) => ({ projectId: r.project_id, mainGroupId: r.id, name: r.name }))
   }
 
   async confirmGroupOwner(groupId: string, lineUserId: string, at: Date): Promise<{ outcome: OwnerConfirmOutcome }> {

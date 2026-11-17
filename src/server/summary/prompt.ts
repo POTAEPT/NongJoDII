@@ -1,5 +1,5 @@
 import type { Member, MessageMention, StoredMessage, TaskStatus } from '../ports'
-import { bangkokTodayLabel, formatPromptTime } from '../time/bangkok'
+import { bangkokCalendar, bangkokTodayLabel, formatPromptTime } from '../time/bangkok'
 
 export type PromptRef = { ref: string; lineUserId: string }          // 'm1', 'm2', ...
 export type MessageRef = { ref: string; message: StoredMessage }     // 'msg1', 'msg2', ...
@@ -63,6 +63,8 @@ export function buildSummaryPrompt(p: {
 
   const user = [
     `Group context: ${p.workDescription ?? '-'}`,
+    // #161: weekdays, so "ศุกร์นี้" maps to a date.
+    `Calendar (Asia/Bangkok): ${bangkokCalendar(p.now).join(', ')}`,
     'Members:',
     ...lines,
     ...(existingTasks.length > 0
@@ -90,9 +92,15 @@ export function buildSummaryPrompt(p: {
     '- In summary, title and details, refer to a person ONLY by their member ref in braces, such as {m2}. Never write a person\'s name or nickname in those fields.',
     '- Never write a message ref (such as msg14) in summary, title or details; readers never see message refs. Use message refs only in source.',
     '- In the chat, @{m2} means the sender tagged that member; trust a tag over a name, since two members can share a LINE name.',
-    '- assignee: the member ref (such as "m2") of the person who should do it. Match people by tag, LINE name or nickname. null when unclear.',
+    '- assignee: the member ref (such as "m2") of the person who will do it. Match people by tag, LINE name or nickname.',
+    // #138 (E2E round 1): the model made the person who raised a task its owner.
+    '- The assignee is someone who said they will do it ("เดี๋ยวทำ", "เราเอง", "ได้ เดี๋ยวทำให้"), or someone named or tagged for it ("ฝาก {m2} ทำ") who did not refuse.',
+    '- The person who asks for the work, reminds others ("อย่าลืม...") or asks "ใครว่าง" / "ใครทำได้" is NOT the assignee for that reason alone. A maybe ("เดี๋ยวดูอีกที", "ไม่แน่ใจ") is not taking it.',
+    '- When nobody took the task, assignee is null. Prefer null to a guess.',
     `- due: ISO 8601 date-time with +07:00 offset when the chat states a deadline, else null. Today is ${bangkokTodayLabel(p.now)} (Asia/Bangkok).`,
     '- source: the message ref (such as "msg14") where the task was asked for or agreed.',
+    // #161: weekday deadlines came back as the wrong day.
+    '- Work out dates from "Calendar" in the user message. "ศุกร์นี้" or "วันศุกร์" is the first Friday on or after today; "ศุกร์หน้า" is the Friday of the next week (weeks start on Monday); "พรุ่งนี้" is tomorrow; "มะรืน" is the day after tomorrow. A time with no day is today if it is still ahead, else tomorrow. Thai times: "5 โมงเย็น" 17:00, "6 โมงเย็น" 18:00, "เที่ยง" 12:00, "บ่าย 2" 14:00, "2 ทุ่ม" 20:00. A deadline is never before today.',
     '- tags: 0 to 3 short labels (at most 20 characters each) for the kind of work, such as "ออกแบบ" or "เอกสาร". Pick from "Group tags" first, then reuse "Tags in use"; a new tag only when none fits. Never a person\'s name or nickname. [] when none fits.',
   ].join('\n')
 

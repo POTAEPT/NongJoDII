@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { FairUseCapReachedError, runMeteredAi } from '@/server/usage/meter'
-import { priceTokens } from '@/server/usage/pricing'
+import { FairUseCapReachedError, runMeteredAi, runMeteredDecisions } from '@/server/usage/meter'
+import { DECISION_MODEL, priceTokens, TEXT_MODEL } from '@/server/usage/pricing'
 import { makeTestDeps, TEST_NOW } from './harness'
 
 const REQ = { model: 'openai/gpt-oss-20b', system: 'abcd', user: 'efghij', maxTokens: 700 }
@@ -25,7 +25,7 @@ describe('runMeteredAi', () => {
       ownerLineUserId: 'Uowner1', groupId: t.groupId, projectId: null, purpose: 'summary',
       model: 'openai/gpt-oss-20b', inputTokens: 1000, outputTokens: 500,
     })
-    expect(rows[0].costUsd).toBe(priceTokens(1000, 500))
+    expect(rows[0].costUsd).toBe(priceTokens(TEXT_MODEL, 1000, 500))
     expect(rows[0].costUsd).toBe(0.000132)
     expect(rows[0].createdAt).toEqual(TEST_NOW)
   })
@@ -53,7 +53,7 @@ describe('runMeteredAi', () => {
     const row = t.store.tables.ai_usage[0]
     expect(row.outputTokens).toBe(REQ.maxTokens)
     expect(row.inputTokens).toBe(5)
-    expect(row.costUsd).toBe(priceTokens(5, 700))
+    expect(row.costUsd).toBe(priceTokens(TEXT_MODEL, 5, 700))
   })
 
   it('propagates an LLM error and records nothing', async () => {
@@ -99,13 +99,48 @@ describe('runMeteredAi', () => {
     expect(result.content).toBe('{}')
     expect(t.store.tables.ai_usage).toHaveLength(1)
     expect(t.store.tables.ai_usage[0]).toMatchObject({
-      inputTokens: 5, outputTokens: REQ.maxTokens, costUsd: priceTokens(5, 700), settledAt: null,
+      inputTokens: 5, outputTokens: REQ.maxTokens, costUsd: priceTokens(TEXT_MODEL, 5, 700), settledAt: null,
     })
   })
 })
 
 describe('priceTokens', () => {
   it('rounds the cost up to a micro-dollar', () => {
-    expect(priceTokens(2578, 1424)).toBe(0.000364)
+    expect(priceTokens(TEXT_MODEL, 2578, 1424)).toBe(0.000364)
+  })
+
+  it('prices each model at its own rate; Jev bills input only, an unknown slug gets the text price', () => {
+    expect(priceTokens(DECISION_MODEL, 1_000_000, 500)).toBe(0.042)
+    expect(priceTokens(TEXT_MODEL, 1_000_000, 0)).toBe(0.04488)
+    expect(priceTokens('other/model', 1_000_000, 0)).toBe(0.04488)
+  })
+})
+
+describe('runMeteredDecisions', () => {
+  const DREQ = { model: DECISION_MODEL, state: 'x'.repeat(100), questions: { q: { type: 'noul' as const, instructions: 'y' } } }
+
+  it('claims, calls the Decisions port and settles with the reported cost', async () => {
+    const t = await setup()
+    t.decisions.respond({ model: DECISION_MODEL, answers: { q: null }, usage: { inputTokens: 400, outputTokens: 0, costUsd: 0.0000168 } })
+    await runMeteredDecisions(t.deps, t.ctx, DREQ)
+    expect(t.llm.requests).toHaveLength(0)
+    expect(t.store.tables.ai_usage).toHaveLength(1)
+    // roundUpUsd keeps whole micro-dollars.
+    expect(t.store.tables.ai_usage[0]).toMatchObject({ model: DECISION_MODEL, inputTokens: 400, outputTokens: 0, costUsd: 0.000017 })
+    expect(t.store.tables.ai_usage[0].settledAt).not.toBeNull()
+  })
+
+  it('without a reported cost, prices by the slug asked for, not the dated slug OpenRouter echoes', async () => {
+    const t = await setup()
+    t.decisions.respond({ model: 'typesafe/jev-1.14-20261014', answers: {}, usage: { inputTokens: 1_000_000, outputTokens: 87, costUsd: null } })
+    await runMeteredDecisions(t.deps, t.ctx, DREQ)
+    expect(t.store.tables.ai_usage[0]).toMatchObject({ model: 'typesafe/jev-1.14-20261014', costUsd: 0.042 })
+  })
+
+  it('releases the claim when the port throws', async () => {
+    const t = await setup()
+    t.decisions.fail(new Error('openrouter decisions 500'))
+    await expect(runMeteredDecisions(t.deps, t.ctx, DREQ)).rejects.toThrow('500')
+    expect(t.store.tables.ai_usage).toHaveLength(0)
   })
 })

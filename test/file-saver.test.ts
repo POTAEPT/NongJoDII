@@ -5,7 +5,7 @@ import { SHARE_REFUSED_TEXT } from '@/server/google/share-refused'
 import { AdapterError, DriveShareRefused, DriveStorageFull } from '@/server/log'
 import { loadDashboard, type DashboardData } from '@/server/dashboard/load'
 import { FILE_NOTICE_TEXT, FILE_SAVED_TEXT } from '@/server/files/card'
-import { BATCH_QUIET_MS, MAX_FILE_BYTES, POST_SAVE_RESERVE_MS, PUSH_WORST_MS, SAVE_HARD_STOP_MS, SAVING_NOTICE_BYTES } from '@/server/files/save'
+import { BATCH_QUIET_MS, MAX_FILE_BYTES, POST_SAVE_RESERVE_MS, PUSH_WORST_MS, SAVE_HARD_STOP_MS, SAVING_NOTICE_BYTES, SLOW_FILE_BYTES } from '@/server/files/save'
 import { driveDeadline, ensureDriveFolders, MAIN_GROUP_FOLDER } from '@/server/google/drive-folders'
 import type { LineEvent } from '@/server/line/types'
 import { handleWebhookRequest } from '@/server/webhook/handle-request'
@@ -384,7 +384,7 @@ describe('file saver (#4)', () => {
     expect(cards[0]).toContain('อีก 1 รูปบันทึกไม่ได้')
   })
 
-  it('two identical photos in one batch (the second moves message_id) still complete the batch', async () => {
+  it('two identical photos in one batch (the second is linked, #140) still complete the batch', async () => {
     const h = await setup()
     h.line.contents.set('m-w1', { data: bytes('same photo'), contentType: 'image/jpeg' })
     h.line.contents.set('m-w2', { data: bytes('same photo'), contentType: 'image/jpeg' })
@@ -392,8 +392,9 @@ describe('file saver (#4)', () => {
     await h.runDeferred()
     await send(h, ev.groupImage({ groupId: SUB, messageId: 'm-w2', imageSet: { id: 'set-W', index: 2, total: 2 } }))
     await h.runDeferred()
-    // The files row now points at m-w2; m-w1 still counts as saved through its settled row.
-    expect(h.store.tables.files[0].messageId).toBe(messageId(h, 'm-w2'))
+    // #140: the files row keeps m-w1 and m-w2 gets a link; both count through their settled rows.
+    expect(h.store.tables.files[0].messageId).toBe(messageId(h, 'm-w1'))
+    expect(h.store.tables.file_messages).toEqual([expect.objectContaining({ fileId: h.store.tables.files[0].id, messageId: messageId(h, 'm-w2') })])
     expect(h.google.uploads).toHaveLength(1)
     expect(cardTexts(h)).toHaveLength(1)
     expect(cardTexts(h)[0]).toContain('2 รูป')
@@ -408,7 +409,7 @@ describe('file saver (#4)', () => {
     expect(cardTexts(h)).toEqual([])
   })
 
-  it('a duplicate (same hash) is saved once; its new message answers a quote-reply', async () => {
+  it('a duplicate (same hash) is saved once; the first and the new message both answer a quote-reply (#140)', async () => {
     const h = await setup()
     h.line.contents.set('m-a', { data: bytes('same'), contentType: 'application/pdf' })
     h.line.contents.set('m-b', { data: bytes('same'), contentType: 'application/pdf' })
@@ -421,16 +422,34 @@ describe('file saver (#4)', () => {
     expect(h.google.uploads).toHaveLength(1)
     expect(h.google.refreshCalls).toEqual([]) // no Google call for a duplicate
     expect(h.store.tables.files).toHaveLength(1)
-    expect(h.store.tables.files[0].messageId).toBe(messageId(h, 'm-b'))
+    expect(h.store.tables.files[0].messageId).toBe(messageId(h, 'm-a'))
     expect(h.line.replies).toHaveLength(2)
-    expect(flexText(h.line.replies[1].messages[0])).toContain('เคยบันทึกไว้แล้ว')
-    expect(JSON.stringify(h.line.replies[1].messages[0])).toContain(h.google.uploads[0].webViewLink)
+    // #141: its own title, not the new-save one, so it does not read as a second copy.
+    const dup = h.line.replies[1].messages[0]
+    expect(flexText(dup)).toContain(FILE_SAVED_TEXT.fileDuplicateTitle)
+    expect(flexText(dup)).toContain(FILE_SAVED_TEXT.duplicate)
+    expect(flexText(dup)).not.toContain(FILE_SAVED_TEXT.fileTitle)
+    expect(dup.type === 'flex' && dup.altText.startsWith(FILE_SAVED_TEXT.fileDuplicateTitle)).toBe(true)
+    expect(flexText(h.line.replies[0].messages[0])).toContain(FILE_SAVED_TEXT.fileTitle)
+    expect(JSON.stringify(dup)).toContain(h.google.uploads[0].webViewLink)
 
     // #33: quoting the re-sent message gives the stored link.
     await send(h, ev.groupText({ groupId: SUB, text: 'NongJoDII ขอไฟล์', quotedMessageId: 'm-b', replyToken: 'rt-ask' }))
     await h.runDeferred()
     const answer = h.line.replies.find((r) => r.replyToken === 'rt-ask')!
     expect(JSON.stringify(answer.messages)).toContain(h.google.uploads[0].webViewLink)
+
+    // #140: quoting the first message still gives it (before, its link had moved to m-b).
+    await send(h, ev.groupText({ groupId: SUB, text: 'NongJoDII ขอไฟล์', quotedMessageId: 'm-a', replyToken: 'rt-first' }))
+    await h.runDeferred()
+    const first = h.line.replies.find((r) => r.replyToken === 'rt-first')!
+    expect(JSON.stringify(first.messages)).toContain(h.google.uploads[0].webViewLink)
+
+    // An unsend of the re-sent message drops its link; the file and the first message stay.
+    await send(h, ev.unsend({ groupId: SUB, messageId: 'm-b' }))
+    await h.runDeferred()
+    expect(h.store.tables.file_messages).toEqual([])
+    expect(h.store.tables.files).toHaveLength(1)
   })
 
   it('the same content in another group is saved there too', async () => {
@@ -904,6 +923,19 @@ describe('the sender is told why (#99)', () => {
     await h.runDeferred()
     expect(h.line.replies).toEqual([])
     expect(h.store.tables.webhook_events.some((w) => w.webhookEventId.startsWith('file_paused:'))).toBe(false)
+  })
+
+  it('#148: a file above SLOW_FILE_BYTES is warned that it may not save in time; one below is not', async () => {
+    const h = await setup()
+    h.line.contents.set('m-S', { data: bytes('slow'), contentType: 'video/mp4' })
+    h.line.contents.set('m-M', { data: bytes('mid'), contentType: 'video/mp4' })
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-S', fileName: 'big.mp4', fileSize: SLOW_FILE_BYTES + 1, replyToken: 'rt-S' }))
+    await send(h, ev.groupFile({ groupId: SUB, messageId: 'm-M', fileName: 'mid.mp4', fileSize: SLOW_FILE_BYTES, replyToken: 'rt-M' }))
+    await h.runDeferred()
+    const text = (token: string) => (h.line.replies.find((r) => r.replyToken === token)!.messages[0] as { text: string }).text
+    expect(text('rt-S')).toBe(`${FILE_NOTICE_TEXT.saving('big.mp4')}\n${FILE_NOTICE_TEXT.slowWarning}`)
+    expect(text('rt-M')).toBe(FILE_NOTICE_TEXT.saving('mid.mp4'))
+    expect(FILE_SAVED_TEXT.timeout).toContain('อัปโหลดลง Google Drive เอง')
   })
 
   it('a large file gets "saving…" at once, then its card as a push through the budget', async () => {

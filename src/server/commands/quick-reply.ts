@@ -14,11 +14,16 @@ export const COMMAND_TEXT = {
   done: 'น้องจดดี done',
 } as const
 
+/** #142: what "👋 ทักน้องจดดี" sends. Not a command: the bot stays quiet, it only learns the sender. */
+export const HELLO_TEXT = 'สวัสดีน้องจดดี 👋'
+
 const BUTTON = {
   summarize: { label: '📝 สรุปแชต', text: COMMAND_TEXT.summarize },
   retrySummary: { label: '🔁 สรุปอีกครั้ง', text: COMMAND_TEXT.summarize },
   settings: { label: '⚙️ ตั้งค่า', text: COMMAND_TEXT.settings },
   help: { label: '❔ วิธีใช้', text: COMMAND_TEXT.help },
+  // #142: a first message, so the bot learns the person (LINE does not list who was there before it).
+  hello: { label: '👋 ทักน้องจดดี', text: HELLO_TEXT },
 } as const
 
 export type QuickButton = keyof typeof BUTTON

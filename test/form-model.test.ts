@@ -21,6 +21,7 @@ const view: ReviewView = {
     { id: 'c3', state: 'confirmed', title: 'งานสาม', details: null, suggestedAssigneeLineUserId: null, suggestedDueAt: null, suggestedTags: [] },
   ],
   members: [{ lineUserId: 'U1', displayName: 'Ann' }],
+  tagSet: [],
 }
 
 const form = (over: Partial<CandidateForm> = {}): CandidateForm => ({

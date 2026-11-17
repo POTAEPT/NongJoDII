@@ -135,9 +135,15 @@ describe('loadDashboard (#17)', () => {
     expect(JSON.stringify(data)).not.toContain('"เจ"')
   })
 
-  it('an outsider is refused', async () => {
+  it('a person in no group yet is refused with no_groups, so the LIFF can welcome them (#145)', async () => {
     const s = setup()
     const res = await s.load('t-out')
+    expect(res).toEqual({ status: 403, body: { error: 'no_groups' } })
+  })
+
+  it('an outsider opening a group link is refused as not a member (#145)', async () => {
+    const s = setup()
+    const res = await s.load('t-out', { groupId: s.dii.id })
     expect(res).toEqual({ status: 403, body: { error: 'forbidden' } })
   })
 

@@ -280,6 +280,29 @@ export function scopeAfterRefresh(data: DashboardData, current: Scope, linkedGro
   return initialScope(data, linkedGroupId)
 }
 
+/** #145: a first-time user who is in no group yet (the server's 403 'no_groups'). Not an
+ *  access error: the first step is to add the bot to a group chat. */
+export const WELCOME_TEXT = {
+  title: 'เริ่มจากเพิ่มน้องจดดีเข้ากลุ่ม',
+  body: 'เพิ่มน้องจดดีเข้ากลุ่มแชต เพื่อเริ่มสรุปงานและดูภาพรวม',
+  steps: [
+    'เชิญน้องจดดีเข้ากลุ่ม LINE ที่ใช้คุยงาน',
+    'กรอกฟอร์มตั้งค่ากลุ่มจากการ์ดที่น้องจดดีส่ง',
+    'คุยงานแล้วพิมพ์ “น้องจดดี สรุป” งานจะขึ้นที่นี่',
+  ],
+  guide: 'ดูวิธีใช้งาน',
+} as const
+
+/** True when a refused load means "in no group yet" rather than "not a member of this group". */
+export function isNoGroups(status: number, json: unknown): boolean {
+  return status === 403 && typeof json === 'object' && json !== null && (json as { error?: unknown }).error === 'no_groups'
+}
+
+/** The public how-to page (#133), on the same origin as the LIFF page. */
+export function guideHref(origin: string): string {
+  return `${origin}/guide`
+}
+
 export function errorCopy(status: number): string {
   if (status === 401) return 'ยืนยันตัวตน LINE ไม่สำเร็จ กรุณาเปิดจากแชทอีกครั้ง'
   if (status === 403) return 'ขอให้สมาชิกเชิญคุณเข้ากลุ่มใน LINE ก่อน จึงจะดูงานได้'

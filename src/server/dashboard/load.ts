@@ -21,7 +21,10 @@ import { badRequest, field } from '../review/load'
 //     someone else. access = 'mine'.
 //     The filter is applied here, so a Member's payload never holds other people's Tasks.
 //   - Someone can be a PM of one Project and a Member in another: access is per group.
-//   - Outsider (no live membership in any group of a Project): refused with 403.
+//   - Outsider (no live membership in any group of a Project): refused with 403. #145: when
+//     no group was linked (opened from the 1:1 chat or the Rich Menu), the error is
+//     'no_groups', so the LIFF can welcome a first-time user instead of showing an access
+//     error; a link to a group the person is not in stays 'forbidden'.
 // Every group says who its confirmed Owner is (ownerLineUserId), for the เจ้าของบอท badge.
 // The requester comes only from the verified LIFF ID token. Names are LINE names, never nicknames.
 
@@ -61,6 +64,9 @@ function insightOf(i: LatestWeeklyInsight | undefined): DashboardInsight | null 
   if (!i) return null
   return { weekStart: i.weekStart, ...i.counts, posted: i.postedAt !== null }
 }
+
+/** #145: the 403 error code for a person in no group yet (not opened from a group link). */
+export const DASHBOARD_NO_GROUPS = 'no_groups'
 
 /** Files per group on the Dashboard. */
 export const DASHBOARD_FILES_LIMIT = 20
@@ -108,7 +114,10 @@ export async function loadDashboard(deps: Deps, body: unknown): Promise<ApiResul
   const memberships = await deps.store.listDashboardMemberships(user.lineUserId)
   const projectIds = [...new Set(memberships.filter((m) => !m.left).map((m) => m.projectId))]
   const { groups, pm, overview } = visibleGroups(user.lineUserId, memberships, await deps.store.listProjectGroups(projectIds))
-  if (groups.length === 0) return { status: 403, body: { error: 'forbidden' } }
+  if (groups.length === 0) {
+    const linkedGroup = linked !== undefined && linked !== null
+    return { status: 403, body: { error: linkedGroup ? 'forbidden' : DASHBOARD_NO_GROUPS } }
+  }
 
   const groupIds = groups.map((g) => g.groupId)
   const [members, tasks, insights, files] = await Promise.all([

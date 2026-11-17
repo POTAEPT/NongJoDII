@@ -61,8 +61,7 @@ import type {
   UnownedTask,
   WeeklySummaryGroup,
   ProgressYes,
-  ProgressYesOutcome,
-} from '@/server/ports'
+  ProgressYesOutcome, OwnedProject, SubGroupSetupOutcome, SubGroupSetupWrite } from '@/server/ports'
 import { ownerCountDue } from '@/server/store/mappers'
 import { bangkokMonthRange } from '@/server/time/bangkok'
 
@@ -180,6 +179,8 @@ export type FakeTables = {
   drive_connections: DriveConnectionRecord[]
   owner_prompts: OwnerPromptRecord[]
   files: FileRecord[]
+  /** #140: file_messages, later messages that carried an already saved file. */
+  file_messages: { fileId: string; messageId: string; linkedAt: Date }[]
   image_set_cards: ImageSetCardRecord[]
 }
 
@@ -215,6 +216,7 @@ export class MemoryStore implements StorePort {
     drive_connections: [],
     owner_prompts: [],
     files: [],
+    file_messages: [],
     image_set_cards: [],
   }
 
@@ -621,6 +623,8 @@ export class MemoryStore implements StorePort {
     for (const p of this.tables.task_prompts) if (p.triggerMessageId === gone.id) p.triggerMessageId = null
     // files.message_id is ON DELETE SET NULL too: the saved file stays.
     for (const f of this.tables.files) if (f.messageId === gone.id) f.messageId = null
+    // file_messages.message_id is ON DELETE CASCADE (#140).
+    this.tables.file_messages = this.tables.file_messages.filter((l) => l.messageId !== gone.id)
     return { deleted: true }
   }
 
@@ -659,9 +663,11 @@ export class MemoryStore implements StorePort {
   async linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }> {
     this.fault('linkFileToMessage')
     const f = this.tables.files.find((r) => r.id === fileId)
-    if (!f) return { updated: false }
-    fk(this.tables.messages.some((m) => m.id === messageId), 'files.message_id')
-    f.messageId = messageId
+    // As the FK answer (23503) of the file_messages insert: nothing to link.
+    if (!f || !this.tables.messages.some((m) => m.id === messageId)) return { updated: false }
+    if (!this.tables.file_messages.some((l) => l.fileId === fileId && l.messageId === messageId)) {
+      this.tables.file_messages.push({ fileId, messageId, linkedAt: new Date() })
+    }
     return { updated: true }
   }
 
@@ -715,7 +721,14 @@ export class MemoryStore implements StorePort {
     const newest = this.tables.files
       .filter((f) => f.messageId === m.id)
       .sort((a, b) => b.savedAt.getTime() - a.savedAt.getTime() || (a.id < b.id ? 1 : -1))[0]
-    return newest ? { kind: 'file', fileName: newest.fileName, driveLink: newest.driveLink } : { kind: 'no_file' }
+    if (newest) return { kind: 'file', fileName: newest.fileName, driveLink: newest.driveLink }
+    // #140: a later message that carried a file saved before.
+    const link = this.tables.file_messages
+      .filter((l) => l.messageId === m.id)
+      .sort((a, b) => b.linkedAt.getTime() - a.linkedAt.getTime())
+      .map((l) => this.tables.files.find((f) => f.id === l.fileId && f.groupId === groupId))
+      .find((f) => f !== undefined)
+    return link ? { kind: 'file', fileName: link.fileName, driveLink: link.driveLink } : { kind: 'no_file' }
   }
 
   async getMessageRef(messageId: string): Promise<MessageRef | null> {
@@ -1400,6 +1413,15 @@ export class MemoryStore implements StorePort {
     return { updated: true }
   }
 
+  async reopenTask(t: { taskId: string; assignee: string | null; toStatus: 'in_process' | 'not_assigned'; by: string; at: Date }): Promise<{ updated: boolean }> {
+    this.fault('reopenTask')
+    fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
+    const row = this.tables.tasks.find((x) => x.id === t.taskId && x.deletedAt === null && x.status === 'done')
+    if (!row || (row.assigneeLineUserId ?? null) !== t.assignee) return { updated: false }
+    Object.assign(row, { status: t.toStatus, doneAt: null, lastActivityAt: t.at, lastEditedByLineUserId: t.by })
+    return { updated: true }
+  }
+
   async restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }> {
     this.fault('restoreTask')
     fk(this.hasLineUser(t.by), 'tasks.last_edited_by_line_user_id')
@@ -1458,29 +1480,7 @@ export class MemoryStore implements StorePort {
     const g = this.groupOf(w.groupId)
     if (g.ownerConfirmedAt !== null || g.projectId !== null) return { outcome: 'closed' }
     if (!this.isLiveMember(w.groupId, w.ownerLineUserId)) return { outcome: 'owner_not_member' }
-    fk(this.hasLineUser(w.byLineUserId), 'groups.owner_nominated_by_line_user_id')
-    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
-    const s = this.scheduleOf(w.groupId)
-    const x = this.setupOf(w.groupId)
-    Object.assign(g, {
-      workDescription: w.workDescription, featureSummarize: w.features.summarize,
-      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
-    })
-    const newNominee = g.nominatedOwnerLineUserId !== w.ownerLineUserId
-    // groups_owner_rules: a new nominee resets the confirmation.
-    if (newNominee) g.ownerConfirmedAt = null
-    g.nominatedOwnerLineUserId = w.ownerLineUserId
-    Object.assign(s, {
-      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
-      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
-    })
-    x.featureSaveFiles = w.features.saveFiles
-    // Who nominated and when change only with the nominee (the CASEs in setup_group).
-    if (newNominee) Object.assign(x, { ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
-    for (const m of w.members) {
-      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
-      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
-    }
+    this.writeSetupValues(w, w.ownerLineUserId)
     if (w.ownerLineUserId === w.byLineUserId) {
       const { outcome } = this.confirmOwner(w.groupId, w.ownerLineUserId, w.at)
       // Cannot happen: the checks above (no confirmed Owner, no Project, the Owner a live
@@ -1525,6 +1525,62 @@ export class MemoryStore implements StorePort {
   }
 
   /** Same rules as confirm_group_owner. */
+  /** The setup form's values and the nominee, as setup_group and setup_sub_group write them. */
+  private writeSetupValues(w: Omit<GroupSetupWrite, 'ownerLineUserId'>, nominee: string): void {
+    const g = this.groupOf(w.groupId)
+    fk(this.hasLineUser(w.byLineUserId), 'groups.owner_nominated_by_line_user_id')
+    if (w.workDescription !== null && w.workDescription.length > 2000) throw new Error('check violation: groups.work_description')
+    const s = this.scheduleOf(w.groupId)
+    const x = this.setupOf(w.groupId)
+    Object.assign(g, {
+      workDescription: w.workDescription, featureSummarize: w.features.summarize,
+      featureDraftTasks: w.features.draftTasks, featureTrackRemind: w.features.trackRemind,
+    })
+    const newNominee = g.nominatedOwnerLineUserId !== nominee
+    // groups_owner_rules: a new nominee resets the confirmation.
+    if (newNominee) g.ownerConfirmedAt = null
+    g.nominatedOwnerLineUserId = nominee
+    Object.assign(s, {
+      featureWeeklySummary: w.features.weeklySummary, dailyReminderTime: `${w.dailyReminderTime}:00`,
+      weeklySummaryWeekday: w.weeklySummaryWeekday, weeklySummaryTime: `${w.weeklySummaryTime}:00`,
+    })
+    x.featureSaveFiles = w.features.saveFiles
+    // Who nominated and when change only with the nominee (the CASEs in setup_group).
+    if (newNominee) Object.assign(x, { ownerNominatedByLineUserId: w.byLineUserId, ownerNominatedAt: w.at })
+    for (const m of w.members) {
+      const row = this.tables.group_members.find((r) => r.groupId === w.groupId && r.lineUserId === m.lineUserId && r.leftAt === null)
+      if (row) Object.assign(row, { nicknames: [...m.nicknames], role: m.role })
+    }
+  }
+
+  async saveSubGroupSetup(w: SubGroupSetupWrite): Promise<{ outcome: SubGroupSetupOutcome }> {
+    this.fault('saveSubGroupSetup')
+    const g = this.groupOf(w.groupId)
+    if (g.ownerConfirmedAt !== null || g.projectId !== null) return { outcome: 'closed' }
+    if (!this.isLiveMember(w.groupId, w.byLineUserId)) return { outcome: 'not_member' }
+    const project = this.tables.projects.find((p) => p.id === w.projectId)
+    if (!project || project.ownerLineUserId !== w.byLineUserId) return { outcome: 'not_project_owner' }
+    const main = this.tables.groups.find((x) => x.projectId === w.projectId && this.setupOf(x.id).isMain)
+    const mainIn = main && main.nominatedOwnerLineUserId === w.byLineUserId && main.ownerConfirmedAt !== null
+      && (this.tables.group_schedules.find((r) => r.groupId === main.id)?.leftAt ?? null) === null
+    if (!mainIn) return { outcome: 'not_project_owner' }
+    this.writeSetupValues(w, w.byLineUserId)
+    g.projectId = w.projectId
+    g.ownerConfirmedAt = w.at
+    g.ownerLeftAt = null
+    this.setupOf(w.groupId).isMain = false
+    if (w.tagSet.length > 0) this.setupOf(w.groupId).tagSet = [...w.tagSet] // #110
+    return { outcome: 'attached' }
+  }
+
+  async listOwnedProjects(lineUserId: string): Promise<OwnedProject[]> {
+    this.fault('listOwnedProjects')
+    return this.tables.groups
+      .filter((x) => x.projectId !== null && this.setupOf(x.id).isMain && x.nominatedOwnerLineUserId === lineUserId
+        && x.ownerConfirmedAt !== null && (this.tables.group_schedules.find((r) => r.groupId === x.id)?.leftAt ?? null) === null)
+      .map((x) => ({ projectId: x.projectId as string, mainGroupId: x.id, name: x.name ?? null }))
+  }
+
   private confirmOwner(groupId: string, lineUserId: string, at: Date): { outcome: OwnerConfirmOutcome } {
     const g = this.groupOf(groupId)
     if (g.nominatedOwnerLineUserId !== lineUserId) return { outcome: 'not_nominee' }
@@ -1974,6 +2030,9 @@ export class MemoryStore implements StorePort {
     const summaryIds = new Set(t.summaries.filter((x) => x.groupId === groupId).map((x) => x.id))
     t.groups = t.groups.filter((g) => g.id !== groupId)
     t.group_members = t.group_members.filter((x) => x.groupId !== groupId)
+    const fileIds = new Set(t.files.filter((x) => x.groupId === groupId).map((x) => x.id))
+    const messageIds = new Set(t.messages.filter((x) => x.groupId === groupId).map((x) => x.id))
+    t.file_messages = t.file_messages.filter((l) => !fileIds.has(l.fileId) && !messageIds.has(l.messageId))
     t.messages = t.messages.filter((x) => x.groupId !== groupId)
     t.summaries = t.summaries.filter((x) => x.groupId !== groupId)
     t.task_candidates = t.task_candidates.filter((x) => !summaryIds.has(x.summaryId))

@@ -51,6 +51,28 @@ export type LlmUsage = { inputTokens: number; outputTokens: number; costUsd: num
 export type LlmResult = { content: string; model: string; usage: LlmUsage | null }
 export interface LlmPort { complete(req: LlmRequest): Promise<LlmResult> }
 
+// ---- OpenRouter Decisions API (TypeSafe Jev, openrouter.ai/docs/guides/features/decisions) ----
+/** One typed question. noul: probability a statement is true (criteria optionally define
+ *  true and false). choice: one key of `criteria`. score: a position on the ordered `criteria`. */
+export type DecisionQuestion =
+  | { type: 'noul'; instructions: string; criteria?: { true: string; false: string } }
+  | { type: 'choice'; instructions: string; criteria: Record<string, string> }
+  | { type: 'score'; instructions: string; criteria: string[] }
+/** timeoutMs (optional) shortens the adapter's own timeout for this call. */
+export type DecisionsRequest = {
+  model: string; state: string; questions: Record<string, DecisionQuestion>
+  user?: string; sessionId?: string; timeoutMs?: number
+}
+/** confidence is null when the provider left it out. */
+export type DecisionAnswer =
+  | { type: 'noul'; noul: number; confidence: number | null }
+  | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number | null }
+  | { type: 'score'; score: number; probabilities: Record<string, number>; confidence: number | null }
+/** One entry per question asked. null = not answered (a refusal, a missing key, or a shape
+ *  that does not match the question): never a negative verdict. */
+export type DecisionsResult = { model: string; answers: Record<string, DecisionAnswer | null>; usage: LlmUsage | null }
+export interface DecisionsPort { decide(req: DecisionsRequest): Promise<DecisionsResult> }
+
 // ---- Google (OAuth #12, Drive folders #13) ----
 export type GoogleTokenResult = {
   refreshToken: string | null; scopes: string[]; subject: string | null; email: string | null
@@ -292,6 +314,15 @@ export type GroupSetupWrite = {
   members: SetupMemberWrite[]; ownerLineUserId: string; at: Date
   tagSet: string[]   // #110
 }
+/** #146: the setup form attaching the group to a Project the sender owns, as a Sub group.
+ *  The sender is the Owner (the Project's owner), so there is no ownerLineUserId. */
+export type SubGroupSetupWrite = Omit<GroupSetupWrite, 'ownerLineUserId'> & { projectId: string }
+/** #146: 'attached'; 'closed' as setup_group; 'not_member': the sender is not a live Member;
+ *  'not_project_owner': the Project is unknown, not the sender's, or its main group is not
+ *  confirmed by them or has no bot. */
+export type SubGroupSetupOutcome = 'attached' | 'closed' | 'not_member' | 'not_project_owner'
+/** #146: a Project the person owns, named by its main group, for the attach picker. */
+export type OwnedProject = { projectId: string; mainGroupId: string; name: string | null }
 /** 'closed': the group has a confirmed Owner or already belongs to a Project. */
 export type SetupOutcome = 'confirmed' | 'pending' | 'closed' | 'owner_not_member'
 export type OwnerConfirmOutcome = 'confirmed' | 'already_confirmed' | 'not_nominee' | 'not_member' | 'closed'
@@ -395,9 +426,10 @@ export interface StorePort {
   /** INSERT ... ON CONFLICT (group_id, content_sha256) DO NOTHING. inserted false: another
    *  save of the same content got in first; `file` is then that row. */
   insertFile(f: NewFile): Promise<{ inserted: boolean; file: SavedFile }>
-  /** A re-sent file (same hash): points the row's message_id at the newest message that
-   *  carried it, so a quote-reply to that message (#33) finds the link. updated false when
-   *  the row is gone (group purged). */
+  /** A re-sent file (same hash): links the newer message to the saved file (file_messages,
+   *  #140), so a quote-reply (#33) to the first message or to any later one finds the link.
+   *  files.message_id stays on the first message. A repeat link is a no-op. updated false
+   *  when the file row is gone (group purged). */
   linkFileToMessage(fileId: string, messageId: string): Promise<{ updated: boolean }>
   /** The Project's active drive_connections row, or null. */
   findActiveDriveConnection(projectId: string): Promise<{ id: string; googleAccountId: string } | null>
@@ -537,6 +569,10 @@ export interface StorePort {
   deleteTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
   /** Undo of deleteTask: clears deleted_at and deleted_by; only a Task a person deleted (deleted_by set). */
   restoreTask(t: { taskId: string; by: string; at: Date }): Promise<{ updated: boolean }>
+  /** #139 "ยังไม่เสร็จ" on the Task page: a Done Task goes back to toStatus (In Process with an
+   *  assignee, else Not Assigned), done_at cleared, last_activity_at and last_edited_by set.
+   *  Only a live Done Task whose assignee is still `assignee`, so a change since the read wins. */
+  reopenTask(t: { taskId: string; assignee: string | null; toStatus: 'in_process' | 'not_assigned'; by: string; at: Date }): Promise<{ updated: boolean }>
   // #29 member leaves. One UPDATE each, conditions in WHERE, so a repeat changes nothing.
   /** Sets left_at on a live membership row, or adds a left row when there is none (so a late
    *  message cannot add the person back); updated false = already left. */
@@ -588,6 +624,12 @@ export interface StorePort {
    *  when the sender named themselves, confirms them and creates the Project as
    *  confirmGroupOwner does. */
   saveGroupSetup(s: GroupSetupWrite): Promise<{ outcome: SetupOutcome }>
+  /** #146 rpc setup_sub_group: the setup form's values and the attach as a Sub group of
+   *  projectId, in one transaction, the sender confirmed as Owner. The tag set follows in a
+   *  second statement, as saveGroupSetup. */
+  saveSubGroupSetup(s: SubGroupSetupWrite): Promise<{ outcome: SubGroupSetupOutcome }>
+  /** #146: Projects whose main group this person is the confirmed Owner of, bot still in. */
+  listOwnedProjects(lineUserId: string): Promise<OwnedProject[]>
   /** One transaction (rpc confirm_group_owner): only the nominee, while a live Member,
    *  confirms; this creates the Project (owner = the nominee) with the group as its main
    *  group. A repeat by the confirmed Owner answers already_confirmed and changes nothing. */
@@ -772,9 +814,15 @@ export interface StorePort {
 }
 
 // ---- Composition ----
-export type HandlerConfig = { lineChannelSecret: string; liffId: string; tokenEncryptionKey: Buffer; tickSecret: string }
+export type HandlerConfig = {
+  lineChannelSecret: string; liffId: string; tokenEncryptionKey: Buffer; tickSecret: string
+  /** The app's public origin, no trailing slash (#133: the help card links to /guide). */
+  appBaseUrl: string
+}
 export type Deps = {
   line: LinePort; llm: LlmPort; google: GooglePort; store: StorePort
+  /** The decision model (progress, #7): OpenRouter's Decisions API, not chat completions. */
+  decisions: DecisionsPort
   now: () => Date; config: HandlerConfig
   /** Waits `ms` (#4: the quiet wait of a photo batch without a total). Absent = setTimeout.
    *  The test harness moves its clock instead. */

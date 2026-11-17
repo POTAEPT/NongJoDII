@@ -34,9 +34,14 @@ export type SetupLoad = {
   values: SetupValues
   /** Live Members by LINE name; the requester is always one of them. */
   members: SetupMember[]
+  /** #142: LINE's member count of the group (null when LINE did not answer). */
+  lineMemberCount: number | null
   nominee: { lineUserId: string; displayName: string } | null
   /** #30: the Owner left this group; a live Member can take the role over. */
   ownerNeeded: boolean
+  /** #146: Projects the requester owns, so the form can attach this group as a Sub group.
+   *  Empty when none, or when the form is closed. */
+  attachOptions: { projectId: string; name: string | null }[]
 }
 
 export type SetupSubmitBody = {
@@ -51,11 +56,13 @@ export type SetupSubmitBody = {
   ownerLineUserId: string
   /** #110: optional; missing = no starting tags. */
   tagSet?: string[]
+  /** #146: attach to this Project (one the sender owns) as a Sub group; the sender is the Owner. */
+  attachProjectId?: string | null
 }
 
 /** The #2e card's push result: skipped or failed still means the setup is saved, and a
  *  resend with the same nominee pushes the same card again under the same retry key. */
-export type SetupSubmitResult = { state: 'confirmed' | 'pending_owner'; posted: GroupPushResult }
+export type SetupSubmitResult = { state: 'confirmed' | 'pending_owner'; posted: GroupPushResult; attached?: boolean }
 /** POST /api/setup/resend-card: the card pushed again for the saved nomination; ownerName
  *  is the nominee the group holds now, which may differ from the page's form. */
 export type SetupResendResult = { state: 'pending_owner'; posted: GroupPushResult; ownerName: string }

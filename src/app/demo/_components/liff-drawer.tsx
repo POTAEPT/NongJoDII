@@ -5,9 +5,11 @@ import type { Liff } from '@line/liff'
 import { cn } from 'cn'
 import { X } from 'lucide-react'
 import { setApiBase } from '@/app/liff/api'
+import { LiffAutofillContext } from '@/app/liff/autofill'
 import { LiffView } from '@/app/liff/liff-app'
 import type { LiffParams } from '@/app/liff/params'
-import { parseDemoLiff, type LiffTarget } from './demo-context'
+import { demoAutofill } from '../_lib/autofill'
+import { parseDemoLiff, useDemo, type LiffTarget } from './demo-context'
 
 // The LIFF views run in the demo against /demo/api (same paths, demo deps). Set once, when
 // this module loads; the live /liff page never imports it.
@@ -29,6 +31,8 @@ export function LiffDrawer({ target, lineUserId, onNavigate, onClose }: {
   onClose: () => void
 }) {
   const open = target !== null && lineUserId !== null
+  const personas = useDemo().state?.personas
+  const autofill = useMemo(() => demoAutofill(personas ?? []), [personas])
   const idToken = lineUserId ? `demo:${lineUserId}` : ''
 
   // The stub of the LIFF SDK the views use: closeWindow, openWindow, isInClient, getIDToken.
@@ -90,8 +94,10 @@ export function LiffDrawer({ target, lineUserId, onNavigate, onClose }: {
         <div onClickCapture={onClickCapture}
           className="demo-liff demo-scroll relative flex-1 transform-gpu overflow-y-auto bg-[#F4F6F9]">
           {open && params && (
-            <LiffView key={`${target?.view}:${target?.id}:${lineUserId}`} params={params}
-              props={{ liff, idToken, liffId: 'demo-liff' }} />
+            <LiffAutofillContext.Provider value={autofill}>
+              <LiffView key={`${target?.view}:${target?.id}:${lineUserId}`} params={params}
+                props={{ liff, idToken, liffId: 'demo-liff' }} />
+            </LiffAutofillContext.Provider>
           )}
         </div>
       </div>

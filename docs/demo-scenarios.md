@@ -69,7 +69,7 @@ How a group joins the bot in the demo, the same steps as in LINE (#151, #159):
 
 1. **สร้างกลุ่ม** in the presenter panel: a name and the members. The bot joins and posts its setup card, which asks everyone to say hi. The bot knows no one yet, and the group picker shows "ยังไม่ตั้งค่า".
 2. **ให้ทุกคนทักทาย** (under the group picker, shown while the bot does not know some members): each of them sends one greeting, and the bot learns them.
-3. Tap **ตั้งค่า** on the setup card. In the form, pick a new Project or "attach to your Project" (a Project Nont owns: the group becomes its Sub group), then send it.
+3. Tap **ตั้งค่า** on the setup card. Tap **✨ เติมข้อมูลตัวอย่าง** to fill the description, tags, nicknames and roles without typing. In the form, pick a new Project or "attach to your Project" (a Project Nont owns: the group becomes its Sub group), then send it.
 4. A new Project waits for its Owner: when someone else is named Owner, that persona confirms on the card that follows. A Sub group attached by the Project's Owner is confirmed at once.
 5. Open the Dashboard as Nont: the group is listed. Its file in `src/app/demo/groups/` now records the outcome, so Reset brings it back set up.
 
